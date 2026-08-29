@@ -55,13 +55,22 @@ static BOOL isWidgetGlassHostContainer(UIView *view) {
     if (!isExactClass(view, @"UIView")) return NO;
     if (view.bounds.size.width < 120.0 || view.bounds.size.height < 120.0) return NO;
     if (!widgetNearestStackController(view)) return NO;
-    if (!widgetHasAncestorNamedWithinDepth(view, @"SBFTouchPassThroughView", 8)) return NO;
-    if (!widgetHasAncestorNamedWithinDepth(view, @"SBIconView", 10)) return NO;
+    // FIX: Added iOS 26 alternative class names for ancestor detection.
+    // SBFTouchPassThroughView / SBIconView may be renamed on iOS 26.
+    BOOL hasTouchThrough = widgetHasAncestorNamedWithinDepth(view, @"SBFTouchPassThroughView", 8) ||
+                           widgetHasAncestorNamedWithinDepth(view, @"SBHomeScreenTouchPassThroughView", 8);
+    if (!hasTouchThrough) return NO;
+    BOOL hasIconView = widgetHasAncestorNamedWithinDepth(view, @"SBIconView", 10) ||
+                       widgetHasAncestorNamedWithinDepth(view, @"SBHomeScreenIconView", 10) ||
+                       widgetHasAncestorNamedWithinDepth(view, @"SBHWidgetStackView", 10);
+    if (!hasIconView) return NO;
     for (UIView *sub in view.subviews) {
         if (!isExactClass(sub, @"UIView") && !isExactClass(sub, @"BSUIScrollView")) continue;
         UIView *scroll = isExactClass(sub, @"BSUIScrollView") ? sub
                        : widgetFindDescendantNamed(sub, @"BSUIScrollView");
-        if (scroll && widgetSubtreeContainsClass(scroll, @"SBHWidgetContainerView")) return YES;
+        // FIX: Also check for alternative container class names on iOS 26
+        if (scroll && (widgetSubtreeContainsClass(scroll, @"SBHWidgetContainerView") ||
+                       widgetSubtreeContainsClass(scroll, @"CHHWidgetContainerView"))) return YES;
     }
     return NO;
 }
@@ -139,35 +148,13 @@ static void injectWidgetGlass(UIView *container) {
 }
 %end
 
-%hook CHUISAvocadoHostViewController
-- (void)_updateBackgroundMaterialAndColor {
-    if (self.widget.extensionBundleIdentifier.length) return;
-    %orig;
-}
-- (id)screenshotManager {
-    if (self.widget.extensionBundleIdentifier.length) return nil;
-    return %orig;
-}
-%end
-
-%hook CHUISWidgetHostViewController
-- (void)_updateBackgroundMaterialAndColor {
-    if (self.widget.extensionBundleIdentifier.length) return;
-    %orig;
-}
-- (void)_updatePersistedSnapshotContent {
-    if (self.widget.extensionBundleIdentifier.length) return;
-    %orig;
-}
-- (void)_updatePersistedSnapshotContentIfNecessary {
-    if (self.widget.extensionBundleIdentifier.length) return;
-    %orig;
-}
-- (id)_snapshotImageFromURL:(id)arg1 {
-    if (self.widget.extensionBundleIdentifier.length) return nil;
-    return %orig;
-}
-%end
+// FIX: Removed CHUISAvocadoHostViewController and CHUISWidgetHostViewController hooks.
+// These hooks had early-return guards like:
+//   if (self.widget.extensionBundleIdentifier.length) return;
+// which blocked _updateBackgroundMaterialAndColor, _updatePersistedSnapshotContent,
+// _snapshotImageFromURL — all critical for widget content rendering.
+// Widget glass injection is handled entirely by BSUIScrollView hook, no need to
+// intercept the widget host controller's content methods.
 
 %hook BSUIScrollView
 - (void)didMoveToWindow {

@@ -117,20 +117,34 @@ jobs:
           pattern: "*-package"
           merge-multiple: true
 
-      - name: update nightly release
+      - name: read version
+        id: version
+        run: |
+          DEB_FILE=$(ls ./all-packages/*.deb 2>/dev/null | head -1)
+          if [ -n "$DEB_FILE" ]; then
+            BASENAME=$(basename "$DEB_FILE")
+            VERSION=$(echo "$BASENAME" | sed -n 's/.*_\([^_]*\)_.*/\1/p')
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+          else
+            echo "version=unknown" >> $GITHUB_OUTPUT
+            echo "tag=v$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: create per-version release
         uses: ncipollo/release-action@v1
         with:
           artifacts: "./all-packages/*.deb"
-          allowUpdates: true
-          tag: nightly
-          name: "Nightly"
+          tag: ${{ steps.version.outputs.tag }}
+          name: "LiquidAss ${{ steps.version.outputs.version }}"
           body: |
-            This build was automatically generated from the latest commit on `main`.
-            
-            **Commit SHA:** ${{ github.sha }}
-            **Triggered by:** @${{ github.actor }}
-            
-            > [!NOTE]
-            > A nightly build is basically the next update partially done. Additionally, this build might have the old version number but the code itself should has the latest commit.
-          prerelease: true
+            **版本:** ${{ steps.version.outputs.version }}
+            **Commit:** ${{ github.sha }}
+
+            ### 下载说明
+            - **rootless**: 适用于 Dopamine / Palera1n rootless 越狱
+            - **rootful**: 适用于传统 rootful 越狱
+            - **roothide**: 适用于 Palera1n roothide 越狱
+          prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: false

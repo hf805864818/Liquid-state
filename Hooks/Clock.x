@@ -671,11 +671,28 @@ static NSString *LGClockHostKind(UIView *host) {
 static BOOL LGIsModernClockSourceLabel(UIView *view) {
     if (![view isKindOfClass:[UILabel class]]) return NO;
     if (!LGHasAncestorClassNamed(view, @"CSProminentTimeView")) return NO;
-    if ([NSStringFromClass(view.class) isEqualToString:@"_UIAnimatingLabel"]) return YES;
+
+    // FIX: Broaden label class matching for iOS 26 compatibility.
+    NSString *clsName = NSStringFromClass(view.class);
+    if ([clsName isEqualToString:@"_UIAnimatingLabel"]) return YES;
+    // iOS 26 alternatives — any label with "animating"/"time"/"clock" in name
+    if ([clsName rangeOfString:@"Animating" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    if ([clsName rangeOfString:@"TimeLabel" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    if ([clsName rangeOfString:@"ClockLabel" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
 
     UILabel *label = (UILabel *)view;
     NSString *text = label.text.length ? label.text : label.attributedText.string;
-    if (text.length == 0) return NO;
+
+    // FIX: Accept labels with empty text inside CSProminentTimeView.
+    // On iOS 26, the text may be set asynchronously AFTER didMoveToWindow.
+    // If we reject empty-text labels, the clock overlay never gets created
+    // and the stock label gets hidden with no replacement — causing the
+    // intermittent "no time displayed" bug.
+    if (text.length == 0) {
+        // Accept if the font is large enough to be a time label
+        if (label.font.pointSize >= 30.0) return YES;
+        return NO;
+    }
     if (label.font.pointSize < 30.0) return NO;
     return YES;
 }
@@ -2391,9 +2408,20 @@ static void LGApplyClockReplacement(UIView *host) {
         [overlay removeFromSuperview];
         objc_setAssociatedObject(host, kLGClockOverlayKey, nil, OBJC_ASSOCIATION_ASSIGN);
         LGDetachClockScrollObserver(host);
+        // Restore previously hidden source views
         for (UIView *view in visibleSourceViews) {
             LGRestoreClockSourceView(view);
         }
+        // FIX: Also scan the entire host subtree for any views that had their
+        // alpha set to 0 but are no longer in visibleSourceViews (e.g. because
+        // source label detection failed on iOS 26). This ensures the stock clock
+        // is always restored even if label detection fails.
+        LGTraverseViews(host, ^(UIView *view) {
+            NSNumber *originalAlpha = objc_getAssociatedObject(view, kLGClockOriginalAlphaKey);
+            if (originalAlpha) {
+                LGRestoreClockSourceView(view);
+            }
+        });
         return;
     }
     objc_setAssociatedObject(host, kLGClockLastBailReasonKey, nil, OBJC_ASSOCIATION_ASSIGN);
@@ -2455,10 +2483,21 @@ static void LGScheduleClockApply(UIView *host, BOOL includeRecoveryRetry, CFTime
             objc_setAssociatedObject(host, kLGClockDeferredApplyPendingKey, nil, OBJC_ASSOCIATION_ASSIGN);
             return;
         }
+        // FIX: Added more retry passes at increasing intervals.
+        // On iOS 26, source label text may be set asynchronously and may not
+        // be available at the 0.05s retry. We now retry at 0.05s, 0.15s, 0.3s.
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             LGClockRunDeferredApply(host);
-            objc_setAssociatedObject(host, kLGClockDeferredApplyPendingKey, nil, OBJC_ASSOCIATION_ASSIGN);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                LGClockRunDeferredApply(host);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    LGClockRunDeferredApply(host);
+                    objc_setAssociatedObject(host, kLGClockDeferredApplyPendingKey, nil, OBJC_ASSOCIATION_ASSIGN);
+                });
+            });
         });
     };
     if (delay <= 0.0) {
