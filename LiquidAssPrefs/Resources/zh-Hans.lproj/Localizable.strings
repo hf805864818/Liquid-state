@@ -318,3 +318,9 @@
 "prefs.theme.matte.subtitle" = "柔和的磨砂外观，高度模糊。";
 "prefs.theme.crystal" = "水晶";
 "prefs.theme.crystal.subtitle" = "超清晰，强烈的色散效果。";
+"prefs.theme.neon" = "霓虹";
+"prefs.theme.neon.subtitle" = "赛博朋克风格，强烈色散与鲜艳色调。";
+"prefs.theme.paper" = "宣纸";
+"prefs.theme.paper.subtitle" = "温润纸质质感，柔和漫射效果。";
+"prefs.theme.aurora" = "极光";
+"prefs.theme.aurora.subtitle" = "梦幻渐变色彩，流动色散效果。";

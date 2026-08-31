@@ -1269,8 +1269,62 @@ NSArray<NSDictionary *> *LGMoreOptionsItems(void) {
     [items addObject:LGNavSetting(LGLocalized(@"prefs.misc.import_prefs.title"),
                                   LGLocalized(@"prefs.misc.import_prefs.subtitle"),
                                   @"importPreferences")];
+    [items addObject:LGSectionSetting(@"", @"")];
+    [items addObject:LGSectionSetting(LGLocalized(@"prefs.misc.debug_section.title"),
+                                      LGLocalized(@"prefs.misc.debug_section.subtitle"))];
+    [items addObject:LGNavSetting(LGLocalized(@"prefs.misc.copy_debug_info.title"),
+                                  LGLocalized(@"prefs.misc.copy_debug_info.subtitle"),
+                                  @"copyDebugInfo")];
 
     return [items copy];
+}
+
+NSString *LGDebugInfoString(void) {
+    NSMutableString *info = [NSMutableString string];
+
+    // App & version
+    [info appendFormat:@"Liquid Glass %@\n", LG_PACKAGE_VERSION];
+
+    // Device info
+    UIDevice *device = [UIDevice currentDevice];
+    [info appendFormat:@"Device: %@\n", device.model];
+    [info appendFormat:@"iOS: %@\n", device.systemVersion];
+    [info appendFormat:@"Language: %@\n", LGCurrentPrefsLanguageCode() ?: @"unknown"];
+
+    // Key settings
+    [info appendString:@"\n--- Key Settings ---\n"];
+    [info appendFormat:@"Global.Enabled: %@\n", LGReadPreferenceObject(@"Global.Enabled", @YES)];
+    [info appendFormat:@"Global.Quality: %@\n", LGReadPreferenceObject(@"Global.Quality", @(1.0))];
+    [info appendFormat:@"SurfaceSort.Mode: %@\n", LGReadPreferenceObject(@"SurfaceSort.Mode", @"default")];
+    [info appendFormat:@"PresetTheme.Current: %@\n", LGReadPreferenceObject(@"PresetTheme.Current", @"balanced")];
+
+    // Performance features
+    [info appendString:@"\n--- Performance ---\n"];
+    [info appendFormat:@"LowPower.Enabled: %@\n", LGReadPreferenceObject(@"LowPower.Enabled", @YES)];
+    [info appendFormat:@"FocusMode.Enabled: %@\n", LGReadPreferenceObject(@"FocusMode.Enabled", @NO)];
+    [info appendFormat:@"DynamicQuality.Enabled: %@\n", LGReadPreferenceObject(@"DynamicQuality.Enabled", @YES)];
+    [info appendFormat:@"MemorySaving.Enabled: %@\n", LGReadPreferenceObject(@"MemorySaving.Enabled", @NO)];
+    [info appendFormat:@"AdaptiveBlur.Enabled: %@\n", LGReadPreferenceObject(@"AdaptiveBlur.Enabled", @YES)];
+
+    // Host enabled status
+    [info appendString:@"\n--- Surfaces ---\n"];
+    NSArray *surfaces = @[
+        @"Dock", @"FolderIcon", @"OpenFolder", @"AppIcons",
+        @"ControlCenter", @"Notification", @"NotificationCenter",
+        @"DynamicIsland", @"CoverSheet", @"Widgets", @"ContextMenu",
+        @"Alerts", @"QuickActions", @"Passcode", @"Clock",
+        @"TabBar", @"Keyboard", @"AppLibrary", @"Spotlight",
+        @"SearchPill", @"Banner", @"LandscapeVolume"
+    ];
+    for (NSString *surface in surfaces) {
+        NSString *key = [NSString stringWithFormat:@"%@.Enabled", surface];
+        NSNumber *enabled = LGReadPreferenceObject(key, nil);
+        if (enabled) {
+            [info appendFormat:@"%@.Enabled: %@\n", surface, enabled];
+        }
+    }
+
+    return [info copy];
 }
 
 NSString *LGExportPreferencesJSONString(void) {
@@ -1467,6 +1521,21 @@ NSArray<NSDictionary *> *LGPresetThemes(void) {
             @"name": LGLocalized(@"prefs.theme.crystal"),
             @"subtitle": LGLocalized(@"prefs.theme.crystal.subtitle"),
         },
+        @{
+            @"id": @"neon",
+            @"name": LGLocalized(@"prefs.theme.neon"),
+            @"subtitle": LGLocalized(@"prefs.theme.neon.subtitle"),
+        },
+        @{
+            @"id": @"paper",
+            @"name": LGLocalized(@"prefs.theme.paper"),
+            @"subtitle": LGLocalized(@"prefs.theme.paper.subtitle"),
+        },
+        @{
+            @"id": @"aurora",
+            @"name": LGLocalized(@"prefs.theme.aurora"),
+            @"subtitle": LGLocalized(@"prefs.theme.aurora.subtitle"),
+        },
     ];
 }
 
@@ -1528,6 +1597,39 @@ static NSDictionary *LGThemePresets(NSString *themeId) {
                 @"specularMultiplier": @(1.3),
                 @"lightTint": @"#FFFFFF0A",
                 @"darkTint": @"#0000001A",
+            },
+            @"neon": @{
+                @"Global.Quality": @(1.0),
+                // Neon Glow: cyberpunk style with intense dispersion and deep tint
+                @"blurMultiplier": @(0.8),
+                @"thicknessMultiplier": @(1.1),
+                @"refractionMultiplier": @(1.6),
+                @"dispersionMultiplier": @(2.5),
+                @"specularMultiplier": @(1.5),
+                @"lightTint": @"#00FFFF14",
+                @"darkTint": @"#FF00FF40",
+            },
+            @"paper": @{
+                @"Global.Quality": @(0.8),
+                // Paper Texture: warm matte paper feel with soft diffusion
+                @"blurMultiplier": @(2.0),
+                @"thicknessMultiplier": @(0.6),
+                @"refractionMultiplier": @(0.2),
+                @"dispersionMultiplier": @(0.0),
+                @"specularMultiplier": @(0.3),
+                @"lightTint": @"#FFF5E633",
+                @"darkTint": @"#2D24164D",
+            },
+            @"aurora": @{
+                @"Global.Quality": @(1.0),
+                // Aurora Dream: dreamy gradient with flowing dispersion
+                @"blurMultiplier": @(1.1),
+                @"thicknessMultiplier": @(1.0),
+                @"refractionMultiplier": @(1.2),
+                @"dispersionMultiplier": @(1.8),
+                @"specularMultiplier": @(0.9),
+                @"lightTint": @"#7FFF7F1A",
+                @"darkTint": @"#4B008259",
             },
         };
     });

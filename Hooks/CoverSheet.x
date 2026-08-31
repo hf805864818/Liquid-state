@@ -799,7 +799,7 @@ static void LGCoverSheetSetMode(LGCoverSheetMode mode) {
         LGCoverSheetRegisterWallpaperController((UIViewController *)self);
     if (LGWallpaperTintEnabled()) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            LGExtractAndSaveWallpaperTint(self.view);
+            LGExtractAndSaveWallpaperTint([(UIViewController *)self view]);
         });
     }
 }
@@ -808,7 +808,7 @@ static void LGCoverSheetSetMode(LGCoverSheetMode mode) {
     %orig;
     if (LGWallpaperTintEnabled()) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            LGExtractAndSaveWallpaperTint(self.view);
+            LGExtractAndSaveWallpaperTint([(UIViewController *)self view]);
         });
     }
 }
@@ -920,6 +920,20 @@ static void LGBrightnessDidChange(NSNotification *notification) {
     LGUpdateAdaptiveBlurBrightness();
 }
 
+// Helper: write a preference value
+static void LGWritePrefValue(NSString *key, id value) {
+    CFPreferencesSetAppValue((__bridge CFStringRef)key,
+                             (__bridge CFTypeRef)value,
+                             (__bridge CFStringRef)LGPrefsDomain);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+}
+
+// UIScrollView notification names (private API)
+static NSString * const LGUIScrollViewDidBeginDraggingNotification = @"UIScrollViewDidBeginDraggingNotification";
+static NSString * const LGUIScrollViewDidEndDeceleratingNotification = @"UIScrollViewDidEndDeceleratingNotification";
+static NSString * const LGUIScrollViewDidEndDraggingNotification = @"UIScrollViewDidEndDraggingNotification";
+static NSString * const LGUIScrollViewDidEndDraggingNotificationUserInfoDecelerateKey = @"UIScrollViewDidEndDraggingNotificationUserInfoDecelerateKey";
+
 %ctor {
     sLGCoverSheetPanels = [NSHashTable weakObjectsHashTable];
     sLGCoverSheetWallpaperControllers = [NSHashTable weakObjectsHashTable];
@@ -957,12 +971,12 @@ static void LGBrightnessDidChange(NSNotification *notification) {
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
         BOOL lowPower = [NSProcessInfo processInfo].lowPowerModeEnabled;
-        LGWritePreference(@"LowPower.Active", @(lowPower));
+        LGWritePrefValue(@"LowPower.Active", @(lowPower));
         notify_post(LGPrefsChangedNotificationCString);
     }];
     // Initial low power state
     BOOL initialLowPower = [NSProcessInfo processInfo].lowPowerModeEnabled;
-    LGWritePreference(@"LowPower.Active", @(initialLowPower));
+    LGWritePrefValue(@"LowPower.Active", @(initialLowPower));
 
     // Focus Mode observation
     // Try to detect focus mode via DND/Focus state notifications
@@ -985,7 +999,7 @@ static void LGBrightnessDidChange(NSNotification *notification) {
             }
         }
 
-        LGWritePreference(@"FocusMode.Active", @(focusActive));
+        LGWritePrefValue(@"FocusMode.Active", @(focusActive));
         notify_post(LGPrefsChangedNotificationCString);
     };
 
@@ -1019,7 +1033,7 @@ static void LGBrightnessDidChange(NSNotification *notification) {
         static BOOL currentHighLoad = NO;
         if (currentHighLoad != active) {
             currentHighLoad = active;
-            LGWritePreference(@"DynamicQuality.HighLoadActive", @(active));
+            LGWritePrefValue(@"DynamicQuality.HighLoadActive", @(active));
             notify_post(LGPrefsChangedNotificationCString);
         }
     };
@@ -1039,7 +1053,7 @@ static void LGBrightnessDidChange(NSNotification *notification) {
     };
 
     // Observe scroll view scrolling - indicates high load
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIScrollViewDidBeginDraggingNotification
+    [[NSNotificationCenter defaultCenter] addObserverForName:LGUIScrollViewDidBeginDraggingNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
@@ -1048,7 +1062,7 @@ static void LGBrightnessDidChange(NSNotification *notification) {
         triggerHighLoad();
     }];
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIScrollViewDidEndDeceleratingNotification
+    [[NSNotificationCenter defaultCenter] addObserverForName:LGUIScrollViewDidEndDeceleratingNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
@@ -1058,11 +1072,11 @@ static void LGBrightnessDidChange(NSNotification *notification) {
         }
     }];
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIScrollViewDidEndDraggingNotification
+    [[NSNotificationCenter defaultCenter] addObserverForName:LGUIScrollViewDidEndDraggingNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
-        BOOL decelerate = [note.userInfo[UIScrollViewDidEndDraggingNotificationUserInfoDecelerateKey] boolValue];
+        BOOL decelerate = [note.userInfo[LGUIScrollViewDidEndDraggingNotificationUserInfoDecelerateKey] boolValue];
         if (!decelerate) {
             sLGActiveScrollCount = MAX(0, sLGActiveScrollCount - 1);
         }
@@ -1076,17 +1090,17 @@ static void LGBrightnessDidChange(NSNotification *notification) {
 
     if (memoryPressureSource) {
         dispatch_source_set_event_handler(memoryPressureSource, ^{
-            dispatch_memorypressure_flags_t pressure = dispatch_source_get_data(memoryPressureSource);
+            dispatch_source_memorypressure_flags_t pressure = dispatch_source_get_data(memoryPressureSource);
             BOOL memorySaving = LG_prefBool(@"MemorySaving.Enabled", NO);
 
             if (memorySaving && pressure >= DISPATCH_MEMORYPRESSURE_WARN) {
                 // Boost memory saving level during high pressure
                 CGFloat baseLevel = LG_prefFloat(@"MemorySaving.Level", 0.5);
                 CGFloat boostedLevel = pressure >= DISPATCH_MEMORYPRESSURE_CRITICAL ? 1.0f : MIN(1.0f, baseLevel + 0.3f);
-                LGWritePreference(@"MemorySaving.ActivePressure", @(boostedLevel));
+                LGWritePrefValue(@"MemorySaving.ActivePressure", @(boostedLevel));
                 LGLog(@"[memory] pressure=%ld boosted level=%.2f", (long)pressure, boostedLevel);
             } else {
-                LGWritePreference(@"MemorySaving.ActivePressure", @(0.0));
+                LGWritePrefValue(@"MemorySaving.ActivePressure", @(0.0));
             }
             notify_post(LGPrefsChangedNotificationCString);
         });

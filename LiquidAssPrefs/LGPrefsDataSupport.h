@@ -69,6 +69,7 @@ NSArray<NSDictionary *> *LGMoreOptionsItems(void);
 
 NSString *LGExportPreferencesJSONString(void);
 BOOL LGImportPreferencesJSONString(NSString *jsonString, NSError **error);
+NSString *LGDebugInfoString(void);
 
 void LGResetAllPreferences(void);
 void LGResetPreferencesForKeys(NSArray<NSString *> *keys);

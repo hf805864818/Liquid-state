@@ -261,6 +261,12 @@
 "prefs.theme.matte.subtitle" = "Soft frosted look with heavy blur.";
 "prefs.theme.crystal" = "Crystal Clear";
 "prefs.theme.crystal.subtitle" = "Ultra-clear with strong dispersion effects.";
+"prefs.theme.neon" = "Neon Glow";
+"prefs.theme.neon.subtitle" = "Cyberpunk style with intense dispersion and vibrant tint.";
+"prefs.theme.paper" = "Paper Texture";
+"prefs.theme.paper.subtitle" = "Warm matte paper feel with soft diffusion.";
+"prefs.theme.aurora" = "Aurora Dream";
+"prefs.theme.aurora.subtitle" = "Dreamy gradient with flowing dispersion effects.";
 "prefs.misc.rwb_third_party.title" = "RWB list";
 "prefs.misc.rwb_third_party.subtitle" = "Enter widget bundle ids for the RWB allowlist.";
 "prefs.misc.rwb_third_party.editor_body" = "Enter one bundle id per line.";
