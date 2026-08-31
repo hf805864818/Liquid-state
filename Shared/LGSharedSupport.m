@@ -337,6 +337,46 @@ BOOL LG_globalEnabled(void) {
     return LG_prefBool(@"Global.Enabled", NO);
 }
 
+BOOL LG_currentAppIsExcluded(void) {
+    static BOOL sChecked = NO;
+    static BOOL sExcluded = NO;
+    if (sChecked) return sExcluded;
+
+    // SpringBoard and Preferences processes are never excluded
+    if (LGIsSpringBoardProcess() || LGIsPreferencesProcess()) {
+        sChecked = YES;
+        sExcluded = NO;
+        return NO;
+    }
+
+    id stored = LGPreferenceValue(@"AppExclusion.List");
+    NSString *exclusions = [stored isKindOfClass:NSString.class]
+        ? (NSString *)stored : @"";
+    if (!exclusions.length) {
+        sChecked = YES;
+        sExcluded = NO;
+        return NO;
+    }
+
+    NSString *bundleID = NSBundle.mainBundle.bundleIdentifier.lowercaseString ?: @"";
+    NSString *executable = NSBundle.mainBundle.executablePath.lastPathComponent.lowercaseString ?: @"";
+    NSString *processName = NSProcessInfo.processInfo.processName.lowercaseString ?: @"";
+    NSCharacterSet *separators = [NSCharacterSet characterSetWithCharactersInString:@"\n,;"];
+
+    for (NSString *rawEntry in [exclusions componentsSeparatedByCharactersInSet:separators]) {
+        NSString *entry = [rawEntry stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet].lowercaseString;
+        if (!entry.length || [entry hasPrefix:@"#"]) continue;
+        if ([entry isEqualToString:bundleID] || [entry isEqualToString:executable] ||
+            [entry isEqualToString:processName]) {
+            sExcluded = YES;
+            break;
+        }
+    }
+    sChecked = YES;
+    return sExcluded;
+}
+
 void LGLog(NSString *format, ...) {
 #if LIQUIDASS_DEBUG
     va_list args;

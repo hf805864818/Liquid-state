@@ -75,3 +75,4 @@ void LGPresentPreferencesExport(UIViewController *controller);
 BOOL LGImportPreferencesFromURL(UIViewController *controller, NSURL *url);
 void LGPresentThirdPartyRWBEditor(UIViewController *controller);
 void LGPresentGlobalControlsExclusionEditor(UIViewController *controller);
+void LGPresentAppExclusionEditor(UIViewController *controller);

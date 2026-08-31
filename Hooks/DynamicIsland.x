@@ -79,10 +79,11 @@ static void LGRemoveDynamicIslandGlass(UIView *containerView) {
 %hook SBDynamicIslandView
 - (void)didMoveToWindow {
     %orig;
-    if (self.window) {
-        LGInstallDynamicIslandGlass((UIView *)self);
+    UIView *selfView = (UIView *)self;
+    if (selfView.window) {
+        LGInstallDynamicIslandGlass(selfView);
     } else {
-        LGRemoveDynamicIslandGlass((UIView *)self);
+        LGRemoveDynamicIslandGlass(selfView);
     }
 }
 - (void)layoutSubviews {
@@ -95,10 +96,11 @@ static void LGRemoveDynamicIslandGlass(UIView *containerView) {
 %hook SBUIProudLockContainerView
 - (void)didMoveToWindow {
     %orig;
-    if (self.window && LGDynamicIslandEnabled()) {
-        LGInstallDynamicIslandGlass((UIView *)self);
+    UIView *selfView = (UIView *)self;
+    if (selfView.window && LGDynamicIslandEnabled()) {
+        LGInstallDynamicIslandGlass(selfView);
     } else {
-        LGRemoveDynamicIslandGlass((UIView *)self);
+        LGRemoveDynamicIslandGlass(selfView);
     }
 }
 - (void)layoutSubviews {

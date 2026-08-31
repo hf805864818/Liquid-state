@@ -63,6 +63,7 @@ NSInteger LG_prefInteger(NSString *key, NSInteger fallback);
 NSString *LG_prefString(NSString *key, NSString *fallback);
 BOOL LGHasExplicitPreferenceValue(NSString *key);
 BOOL LG_globalEnabled(void);
+BOOL LG_currentAppIsExcluded(void);
 void LGReloadPreferences(void);
 void LGObservePreferenceChanges(dispatch_block_t block);
 

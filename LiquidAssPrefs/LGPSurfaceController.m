@@ -347,6 +347,10 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     LGPresentGlobalControlsExclusionEditor(self);
 }
 
+- (void)editAppExclusionList {
+    LGPresentAppExclusionEditor(self);
+}
+
 - (void)openCustomCCBgSettings {
     NSURL *prefsURL = [NSURL URLWithString:@"prefs:root=CustomCCBgPrefs"];
     if ([[UIApplication sharedApplication] canOpenURL:prefsURL]) {

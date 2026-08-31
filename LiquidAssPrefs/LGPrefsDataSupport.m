@@ -1233,6 +1233,11 @@ NSArray<NSDictionary *> *LGMoreOptionsItems(void) {
                         LGLocalized(@"prefs.subtitle.memory_pressure_boost"),
                         YES),
         @"MemorySaving.Enabled", @YES)];
+    [items addObject:LGSectionSetting(LGLocalized(@"prefs.section.app_exclusion.title"),
+                                      LGLocalized(@"prefs.section.app_exclusion.subtitle"))];
+    [items addObject:LGNavSetting(LGLocalized(@"prefs.control.app_exclusion_list"),
+                                  LGLocalized(@"prefs.subtitle.app_exclusion_list"),
+                                  @"editAppExclusionList")];
     [items addObject:LGSectionSetting(LGLocalized(@"prefs.section.cc_quick_toggle.title"),
                                       LGLocalized(@"prefs.section.cc_quick_toggle.subtitle"))];
     [items addObject:LGSwitchSetting(@"QuickToggle.CCEnabled",

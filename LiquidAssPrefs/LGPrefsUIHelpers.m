@@ -1542,6 +1542,29 @@ void LGPresentGlobalControlsExclusionEditor(UIViewController *controller) {
     });
 }
 
+void LGPresentAppExclusionEditor(UIViewController *controller) {
+    NSString *defaults = @"";
+    id storedValue = LGReadPreferenceObject(@"AppExclusion.List", defaults);
+    NSString *existing = [storedValue isKindOfClass:NSString.class] ? storedValue : defaults;
+    LGPresentMultilineTextInputSheet(controller,
+                                     LGLocalized(@"prefs.app_exclusion.title"),
+                                     LGLocalized(@"prefs.app_exclusion.body"),
+                                     existing,
+                                     LGLocalized(@"prefs.app_exclusion.placeholder"),
+                                     ^(NSString *text) {
+        NSMutableOrderedSet<NSString *> *entries = [NSMutableOrderedSet orderedSet];
+        NSCharacterSet *separators = [NSCharacterSet characterSetWithCharactersInString:@"\n,;"];
+        for (NSString *rawEntry in [text componentsSeparatedByCharactersInSet:separators]) {
+            NSString *entry = [rawEntry stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (entry.length) [entries addObject:entry];
+        }
+        NSString *normalized = [entries.array componentsJoinedByString:@"\n"];
+
+        LGWritePreferenceObject(@"AppExclusion.List", normalized);
+    });
+}
+
 void LGPresentPreferencesExport(UIViewController *controller) {
     NSString *jsonString = LGExportPreferencesJSONString();
     if (!jsonString.length) {

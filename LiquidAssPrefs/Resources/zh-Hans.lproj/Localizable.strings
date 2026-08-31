@@ -293,6 +293,13 @@
 "prefs.subtitle.memory_saving_level" = "内存使用的减少程度。";
 "prefs.control.memory_pressure_boost" = "压力增强";
 "prefs.subtitle.memory_pressure_boost" = "系统内存不足时自动增加节省力度。";
+"prefs.section.app_exclusion.title" = "应用排除";
+"prefs.section.app_exclusion.subtitle" = "在指定应用中禁用玻璃效果。";
+"prefs.control.app_exclusion_list" = "排除列表";
+"prefs.subtitle.app_exclusion_list" = "在这些应用中禁用玻璃效果。";
+"prefs.app_exclusion.title" = "应用排除列表";
+"prefs.app_exclusion.body" = "每行输入一个应用的Bundle ID或进程名。匹配的应用中将完全禁用玻璃效果。";
+"prefs.app_exclusion.placeholder" = "com.spotify.client\nTikTok\nYouTube";
 "prefs.section.cc_quick_toggle.title" = "控制中心开关";
 "prefs.section.cc_quick_toggle.subtitle" = "从控制中心快速开启或关闭液态玻璃效果。";
 "prefs.control.cc_quick_toggle" = "在控制中心显示";

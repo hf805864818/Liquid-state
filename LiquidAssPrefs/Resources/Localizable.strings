@@ -227,6 +227,13 @@
 "prefs.subtitle.memory_saving_level" = "How aggressively to reduce memory usage.";
 "prefs.control.memory_pressure_boost" = "Pressure Boost";
 "prefs.subtitle.memory_pressure_boost" = "Automatically increase savings when system memory is low.";
+"prefs.section.app_exclusion.title" = "App Exclusion";
+"prefs.section.app_exclusion.subtitle" = "Disable glass effects in specific apps.";
+"prefs.control.app_exclusion_list" = "Exclusion List";
+"prefs.subtitle.app_exclusion_list" = "Apps where glass effects will be disabled.";
+"prefs.app_exclusion.title" = "App Exclusion List";
+"prefs.app_exclusion.body" = "Enter one app bundle ID or process name per line. Glass effects will be completely disabled in matching apps.";
+"prefs.app_exclusion.placeholder" = "com.spotify.client\nTikTok\nYouTube";
 "prefs.section.cc_quick_toggle.title" = "Control Center Toggle";
 "prefs.section.cc_quick_toggle.subtitle" = "Quickly enable or disable Liquid Glass from Control Center.";
 "prefs.control.cc_quick_toggle" = "Show in Control Center";
