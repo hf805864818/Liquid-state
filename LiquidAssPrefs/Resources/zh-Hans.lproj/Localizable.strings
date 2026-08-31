@@ -151,6 +151,15 @@
 "prefs.misc.export_prefs.subtitle" = "导出一个可共享的偏好设置 JSON 文件，并打开分享菜单。";
 "prefs.misc.import_prefs.title" = "导入偏好设置";
 "prefs.misc.import_prefs.subtitle" = "导入一个偏好设置 JSON 文件。";
+"prefs.misc.debug_section.title" = "调试";
+"prefs.misc.debug_section.subtitle" = "用于问题排查的诊断信息。";
+"prefs.misc.copy_debug_info.title" = "复制调试信息";
+"prefs.misc.copy_debug_info.subtitle" = "将设备和设置信息复制到剪贴板。";
+"prefs.misc.debug_info.copied_title" = "调试信息已复制";
+"prefs.misc.debug_info.copied_message" = "调试信息已复制到剪贴板。";
+"prefs.common.ok" = "好的";
+"prefs.button.confirm" = "确认";
+"prefs.button.save" = "保存";
 "prefs.misc.settings_controls.title" = "iOS 26 设置";
 "prefs.misc.settings_controls.subtitle" = "尝试复现 iOS 26 设置应用的体验。";
 

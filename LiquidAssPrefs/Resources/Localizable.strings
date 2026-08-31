@@ -298,6 +298,15 @@
 "prefs.misc.export_prefs.subtitle" = "Exports a shareable JSON preferences file and opens the share sheet.";
 "prefs.misc.import_prefs.title" = "Import Preferences";
 "prefs.misc.import_prefs.subtitle" = "Imports a JSON preferences file.";
+"prefs.misc.debug_section.title" = "Debug";
+"prefs.misc.debug_section.subtitle" = "Diagnostic information for troubleshooting.";
+"prefs.misc.copy_debug_info.title" = "Copy Debug Info";
+"prefs.misc.copy_debug_info.subtitle" = "Copy device and settings info to clipboard.";
+"prefs.misc.debug_info.copied_title" = "Debug Info Copied";
+"prefs.misc.debug_info.copied_message" = "Debug information has been copied to the clipboard.";
+"prefs.common.ok" = "OK";
+"prefs.button.confirm" = "Confirm";
+"prefs.button.save" = "Save";
 "prefs.misc.settings_controls.title" = "iOS 26 Settings";
 "prefs.misc.settings_controls.subtitle" = "Tries to replicate iOS 26 Settings app experience.";
 "prefs.surface.global_controls.title" = "Controls";

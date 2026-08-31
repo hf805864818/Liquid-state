@@ -322,6 +322,23 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     [self presentViewController:picker animated:YES completion:nil];
 }
 
+- (void)copyDebugInfo {
+    NSString *info = LGDebugInfoString();
+    if (!info.length) return;
+
+    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+    pasteboard.string = info;
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:LGLocalized(@"prefs.misc.debug_info.copied_title")
+                         message:LGLocalized(@"prefs.misc.debug_info.copied_message")
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:LGLocalized(@"prefs.common.ok")
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)editThirdPartyAppRWB {
     LGPresentThirdPartyRWBEditor(self);
 }
