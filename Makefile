@@ -3,6 +3,9 @@ export ARCHS ?= arm64 arm64e
 LIQUIDASS_DEBUG ?= 0
 export LIQUIDASS_DEBUG
 
+LG_PACKAGE_VERSION := $(shell sed -n 's/^Version: //p' control | head -n 1)
+export LG_PACKAGE_VERSION
+
 INSTALL_TARGET_PROCESSES = backboardd SpringBoard
 include $(THEOS)/makefiles/common.mk
 
@@ -17,7 +20,7 @@ liquidass_FILES     = Tweak.x Hooks/Dock.x Hooks/Folder.x Hooks/AppIcons.x Hooks
                       LiquidAssPrefs/LGPrefsLiquidSwitch.m \
                       Shared/LGGlassKit.x Shared/LGLiveBackdropView.m \
                       Shared/LGSharedSupport.m
-liquidass_CFLAGS    = -fobjc-arc -DLIQUIDASS_DEBUG=$(LIQUIDASS_DEBUG)
+liquidass_CFLAGS    = -fobjc-arc -DLIQUIDASS_DEBUG=$(LIQUIDASS_DEBUG) -DLG_PACKAGE_VERSION=@\"$(LG_PACKAGE_VERSION)\"
 liquidass_FRAMEWORKS = UIKit QuartzCore CoreText CoreGraphics CoreMotion
 
 include $(THEOS)/makefiles/tweak.mk

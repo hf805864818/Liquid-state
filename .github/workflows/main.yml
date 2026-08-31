@@ -110,6 +110,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
       - name: download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -148,3 +151,26 @@ jobs:
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: false
+
+      - name: bump version and push
+        run: |
+          # 读取当前版本
+          CURRENT_VERSION=$(sed -n 's/^Version: //p' control | head -n 1)
+          echo "Current version: $CURRENT_VERSION"
+
+          # 递增版本号：支持 0.1.7b 格式（数字部分递增，保留字母后缀）
+          # 提取最后一个数字并递增
+          NEW_VERSION=$(echo "$CURRENT_VERSION" | perl -pe 's/(\d+)(?=\D*$)/$1+1/e')
+          echo "New version: $NEW_VERSION"
+
+          # 更新 control 文件
+          sed -i "s/^Version: .*/Version: $NEW_VERSION/" control
+
+          # 配置 git
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 提交并推送（带 [skip ci] 避免触发循环构建）
+          git add control
+          git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}
