@@ -938,6 +938,225 @@ static void lgReloadHostPrefs(void) {
             overrides++;
         }
     }
+
+    // Wallpaper color tint override
+    if (prefs) {
+        NSNumber *wallpaperTintEnabled = prefs[@"WallpaperTint.Enabled"];
+        if ([wallpaperTintEnabled isKindOfClass:[NSNumber class]] && wallpaperTintEnabled.boolValue) {
+            simd_float4 wpLightTint;
+            simd_float4 wpDarkTint;
+            BOOL hasLight = lgDecodeTintColor(prefs[@"WallpaperTint.LightColor"], &wpLightTint);
+            BOOL hasDark = lgDecodeTintColor(prefs[@"WallpaperTint.DarkColor"], &wpDarkTint);
+            if (hasLight || hasDark) {
+                int wpOverrides = 0;
+                for (int i = 1; i < kHostCount; i++) {
+                    if (hasLight) {
+                        g_hostParams[i].tintR = wpLightTint.x;
+                        g_hostParams[i].tintG = wpLightTint.y;
+                        g_hostParams[i].tintB = wpLightTint.z;
+                        g_hostParams[i].tintStrength = wpLightTint.w;
+                        wpOverrides++;
+                    }
+                    if (hasDark) {
+                        g_hostParams[i].darkTintR = wpDarkTint.x;
+                        g_hostParams[i].darkTintG = wpDarkTint.y;
+                        g_hostParams[i].darkTintB = wpDarkTint.z;
+                        g_hostParams[i].darkTintStrength = wpDarkTint.w;
+                        wpOverrides++;
+                    }
+                }
+                lglog("wallpaper tint applied to %d hosts (light=%d dark=%d)", wpOverrides / 2, hasLight, hasDark);
+            }
+        }
+    }
+
+    // Adaptive blur based on screen brightness
+    if (prefs) {
+        NSNumber *adaptiveBlurEnabled = prefs[@"AdaptiveBlur.Enabled"];
+        if ([adaptiveBlurEnabled isKindOfClass:[NSNumber class]] && adaptiveBlurEnabled.boolValue) {
+            NSNumber *brightnessNum = prefs[@"AdaptiveBlur.CurrentBrightness"];
+            NSNumber *intensityNum = prefs[@"AdaptiveBlur.Intensity"];
+            NSNumber *minBlurNum = prefs[@"AdaptiveBlur.MinBlur"];
+            NSNumber *maxBlurNum = prefs[@"AdaptiveBlur.MaxBlur"];
+
+            CGFloat brightness = [brightnessNum isKindOfClass:[NSNumber class]] ? brightnessNum.floatValue : 0.5f;
+            CGFloat intensity = [intensityNum isKindOfClass:[NSNumber class]] ? intensityNum.floatValue : 0.5f;
+            CGFloat minBlur = [minBlurNum isKindOfClass:[NSNumber class]] ? minBlurNum.floatValue : 10.0f;
+            CGFloat maxBlur = [maxBlurNum isKindOfClass:[NSNumber class]] ? maxBlurNum.floatValue : 40.0f;
+
+            brightness = fminf(1.0f, fmaxf(0.0f, brightness));
+            intensity = fminf(1.0f, fmaxf(0.0f, intensity));
+
+            CGFloat adaptiveBlur = minBlur + (maxBlur - minBlur) * brightness;
+            int blurOverrides = 0;
+
+            for (int i = 1; i < kHostCount; i++) {
+                CGFloat baseBlur = g_hostParams[i].blur;
+                CGFloat finalBlur = baseBlur * (1.0f - intensity) + adaptiveBlur * intensity;
+                g_hostParams[i].blur = fminf(50.0f, fmaxf(0.0f, finalBlur));
+                blurOverrides++;
+            }
+
+            lglog("adaptive blur applied: brightness=%.2f intensity=%.2f adaptive=%.1f hosts=%d",
+                  brightness, intensity, adaptiveBlur, blurOverrides);
+        }
+    }
+
+    // Low Power Mode optimization
+    if (prefs) {
+        NSNumber *lowPowerEnabled = prefs[@"LowPower.Enabled"];
+        NSNumber *lowPowerActive = prefs[@"LowPower.Active"];
+
+        if ([lowPowerEnabled isKindOfClass:[NSNumber class]] && lowPowerEnabled.boolValue &&
+            [lowPowerActive isKindOfClass:[NSNumber class]] && lowPowerActive.boolValue) {
+
+            NSNumber *blurReduction = prefs[@"LowPower.BlurReduction"];
+            NSNumber *disableDispersion = prefs[@"LowPower.DisableDispersion"];
+
+            CGFloat blurReduceAmount = [blurReduction isKindOfClass:[NSNumber class]] ? blurReduction.floatValue : 0.5f;
+            BOOL disableDisp = [disableDispersion isKindOfClass:[NSNumber class]] ? disableDispersion.boolValue : YES;
+
+            blurReduceAmount = fminf(1.0f, fmaxf(0.0f, blurReduceAmount));
+
+            int lpOverrides = 0;
+            for (int i = 1; i < kHostCount; i++) {
+                // Reduce blur
+                CGFloat baseBlur = g_hostParams[i].blur;
+                g_hostParams[i].blur = baseBlur * (1.0f - blurReduceAmount);
+
+                // Reduce refraction
+                g_hostParams[i].refractionScale *= 0.5f;
+
+                // Reduce dispersion
+                g_hostParams[i].dispersionStrength *= (disableDisp ? 0.0f : 0.4f);
+
+                lpOverrides++;
+            }
+
+            lglog("low power mode active: blur reduced by %.0f%%, refraction halved, dispersion=%s, hosts=%d",
+                  blurReduceAmount * 100.0f,
+                  disableDisp ? "off" : "reduced",
+                  lpOverrides);
+        }
+    }
+
+    // Focus Mode optimization
+    if (prefs) {
+        NSNumber *focusEnabled = prefs[@"FocusMode.Enabled"];
+        NSNumber *focusActive = prefs[@"FocusMode.Active"];
+
+        if ([focusEnabled isKindOfClass:[NSNumber class]] && focusEnabled.boolValue &&
+            [focusActive isKindOfClass:[NSNumber class]] && focusActive.boolValue) {
+
+            NSNumber *qualityReduction = prefs[@"FocusMode.QualityReduction"];
+            NSNumber *disableDispersion = prefs[@"FocusMode.DisableDispersion"];
+
+            CGFloat qualityReduceAmount = [qualityReduction isKindOfClass:[NSNumber class]] ? qualityReduction.floatValue : 0.3f;
+            BOOL disableDisp = [disableDispersion isKindOfClass:[NSNumber class]] ? disableDispersion.boolValue : NO;
+
+            qualityReduceAmount = fminf(1.0f, fmaxf(0.0f, qualityReduceAmount));
+
+            int focusOverrides = 0;
+            for (int i = 1; i < kHostCount; i++) {
+                // Reduce blur
+                CGFloat baseBlur = g_hostParams[i].blur;
+                g_hostParams[i].blur = baseBlur * (1.0f - qualityReduceAmount);
+
+                // Reduce refraction slightly
+                g_hostParams[i].refractionScale *= (1.0f - qualityReduceAmount * 0.5f);
+
+                // Reduce dispersion
+                if (disableDisp) {
+                    g_hostParams[i].dispersionStrength = 0.0f;
+                } else {
+                    g_hostParams[i].dispersionStrength *= (1.0f - qualityReduceAmount * 0.5f);
+                }
+
+                focusOverrides++;
+            }
+
+            lglog("focus mode active: quality reduced by %.0f%%, dispersion=%s, hosts=%d",
+                  qualityReduceAmount * 100.0f,
+                  disableDisp ? "off" : "reduced",
+                  focusOverrides);
+        }
+    }
+
+    // Memory Optimization - Memory Saving Mode
+    if (prefs) {
+        NSNumber *memorySavingEnabled = prefs[@"MemorySaving.Enabled"];
+
+        if ([memorySavingEnabled isKindOfClass:[NSNumber class]] && memorySavingEnabled.boolValue) {
+
+            NSNumber *memoryLevel = prefs[@"MemorySaving.Level"];
+            CGFloat memLevel = [memoryLevel isKindOfClass:[NSNumber class]] ? memoryLevel.floatValue : 0.5f;
+            memLevel = fminf(1.0f, fmaxf(0.0f, memLevel));
+
+            int memOverrides = 0;
+            for (int i = 1; i < kHostCount; i++) {
+                // Reduce glass thickness (less volume = simpler render)
+                g_hostParams[i].glassThickness *= (1.0f - memLevel * 0.4f);
+
+                // Reduce refraction scale
+                g_hostParams[i].refractionScale *= (1.0f - memLevel * 0.3f);
+
+                // Reduce blur
+                g_hostParams[i].blur *= (1.0f - memLevel * 0.25f);
+
+                // Reduce or disable dispersion
+                if (memLevel > 0.7f) {
+                    g_hostParams[i].dispersionStrength = 0.0f;
+                } else {
+                    g_hostParams[i].dispersionStrength *= (1.0f - memLevel * 0.6f);
+                }
+
+                memOverrides++;
+            }
+
+            lglog("memory saving mode active: level=%.0f%%, hosts=%d",
+                  memLevel * 100.0f, memOverrides);
+        }
+    }
+
+    // Dynamic Quality - reduce quality during high-load scenes
+    if (prefs) {
+        NSNumber *dynamicQualityEnabled = prefs[@"DynamicQuality.Enabled"];
+
+        if ([dynamicQualityEnabled isKindOfClass:[NSNumber class]] && dynamicQualityEnabled.boolValue) {
+
+            NSNumber *dynamicLevel = prefs[@"DynamicQuality.Aggressiveness"];
+            CGFloat aggressiveness = [dynamicLevel isKindOfClass:[NSNumber class]] ? dynamicLevel.floatValue : 0.4f;
+            aggressiveness = fminf(1.0f, fmaxf(0.0f, aggressiveness));
+
+            // Check if system is under high load (signaled by SpringBoard)
+            NSNumber *highLoadActive = prefs[@"DynamicQuality.HighLoadActive"];
+            BOOL isHighLoad = [highLoadActive isKindOfClass:[NSNumber class]] && highLoadActive.boolValue;
+
+            if (isHighLoad) {
+                int dqOverrides = 0;
+                for (int i = 1; i < kHostCount; i++) {
+                    // Temporarily reduce blur
+                    g_hostParams[i].blur *= (1.0f - aggressiveness * 0.5f);
+
+                    // Temporarily reduce refraction
+                    g_hostParams[i].refractionScale *= (1.0f - aggressiveness * 0.4f);
+
+                    // Reduce or disable dispersion during high load
+                    if (aggressiveness > 0.6f) {
+                        g_hostParams[i].dispersionStrength *= 0.3f;
+                    } else {
+                        g_hostParams[i].dispersionStrength *= (1.0f - aggressiveness * 0.5f);
+                    }
+
+                    dqOverrides++;
+                }
+
+                lglog("dynamic quality: high load active, aggressiveness=%.0f%%, hosts=%d",
+                      aggressiveness * 100.0f, dqOverrides);
+            }
+        }
+    }
+
     g_hostParamsInit = true;
 
     lglog("lgReloadHostPrefs: %s (%d hosts, %d overrides) banner.bezel=%.3f refr=%.2f",

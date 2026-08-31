@@ -1,0 +1,5 @@
+#!/bin/sh
+# 清理旧的 CustomCCBg 独立设置入口(已并入 深度液态 安装包)
+rm -f /var/jb/Library/PreferenceLoader/Preferences/CustomCCBg.plist
+rm -f /Library/PreferenceLoader/Preferences/CustomCCBg.plist
+exit 0

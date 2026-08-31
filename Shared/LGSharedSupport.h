@@ -74,3 +74,6 @@ NSNumber *LGTextureScaleKey(CGFloat scale);
 NSNumber *LGBlurSettingKey(CGFloat blur);
 NSString *LGImageStableCacheKey(UIImage *image);
 void LGSetImageStableCacheKey(UIImage *image, NSString *cacheKey);
+
+UIColor *LGAverageColorOfImage(UIImage *image);
+UIColor *LGAdjustedTintColorFromAverageColor(UIColor *averageColor, BOOL darkMode);

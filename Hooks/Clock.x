@@ -15,6 +15,7 @@ extern NSString *LG_prefString(NSString *key, NSString *fallback);
 
 #define LG_FLOAT_PREF_FUNC(fn, key, def)        static CGFloat fn(void) { return LG_prefFloat(@key, (CGFloat)(def)); }
 #define LG_BOOL_PREF_FUNC(fn, key, def)         static BOOL fn(void) { return LG_prefBool(@key, (def)); }
+#define LG_STRING_PREF_FUNC(fn, key, def)       static NSString *fn(void) { return LG_prefString(@key, (def)); }
 
 static void LGClockLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
 static void LGClockLog(NSString *fmt, ...) {
@@ -237,12 +238,13 @@ static void LGScheduleClockRefreshForLegacyRevealHint(UIView *view);
 @end
 
 LG_BOOL_PREF_FUNC(LGClockVariableFontEnabled, "Clock.VariableFont.Enabled", YES)
+LG_STRING_PREF_FUNC(LGClockVariableFontName, "Clock.VariableFont.Name", @"adaptive")
 LG_FLOAT_PREF_FUNC(LGClockVariableFontSizeScale, "Clock.VariableFont.SizeScale", 1.4)
 LG_FLOAT_PREF_FUNC(LGClockVariableFontWeight, "Clock.VariableFont.Weight", 750.0)
 LG_FLOAT_PREF_FUNC(LGClockVariableFontWidth, "Clock.VariableFont.Width", 100.0)
 LG_FLOAT_PREF_FUNC(LGClockVariableFontHeight, "Clock.VariableFont.Height", 350.0)
 LG_FLOAT_PREF_FUNC(LGClockVariableFontSoftness, "Clock.VariableFont.Softness", 56.0)
-LG_BOOL_PREF_FUNC(LGClockDateFormatEnabled, "Lockscreen.Clock.DateFormat.Enabled", YES)
+LG_BOOL_PREF_FUNC(LGClockDateFormatEnabled, "Clock.DateFormat.Enabled", NO)
 
 static BOOL LGClockViewIsVisiblyPresent(UIView *view);
 static BOOL LGClockHasBlockingPresentation(UIView *host);
@@ -346,6 +348,14 @@ static void LGClockSeedObstacleRegistriesFromWindow(UIWindow *window) {
 
 #pragma mark - Variable font loading
 
+static NSString *LGClockVariableFontFileName(void) {
+    NSString *fontName = LGClockVariableFontName();
+    if ([fontName isEqualToString:@"soft"]) return @"LWAdaptiveSoftNumeric.ttf";
+    if ([fontName isEqualToString:@"newyork"]) return @"LWNewYorkAdaptiveNumeric.ttf";
+    // default: adaptive
+    return @"LWAdaptiveNumeric.ttf";
+}
+
 static NSArray<NSString *> *LGClockVariableFontDylibRelativePaths(void) {
     Dl_info info = {0};
     if (dladdr((const void *)&LGClockVariableFontDylibRelativePaths, &info) == 0) return @[];
@@ -354,6 +364,7 @@ static NSArray<NSString *> *LGClockVariableFontDylibRelativePaths(void) {
     NSString *dylibPath = [NSString stringWithUTF8String:info.dli_fname];
     if (!dylibPath.length) return @[];
 
+    NSString *fontFileName = LGClockVariableFontFileName();
     NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
     NSArray<NSString *> *bases = @[
         dylibPath,
@@ -365,7 +376,7 @@ static NSArray<NSString *> *LGClockVariableFontDylibRelativePaths(void) {
         NSString *cursor = [basePath stringByDeletingLastPathComponent];
         for (NSUInteger depth = 0; depth < 8 && cursor.length > 1; depth++) {
             [candidates addObject:[[cursor stringByAppendingPathComponent:@"Library/PreferenceBundles/LiquidAssPrefs.bundle"]
-                stringByAppendingPathComponent:@"SFAdaptiveSoftNumeric-VF.otf"]];
+                stringByAppendingPathComponent:fontFileName]];
             NSString *parent = [cursor stringByDeletingLastPathComponent];
             if ([parent isEqualToString:cursor]) break;
             cursor = parent;
@@ -379,10 +390,11 @@ static NSString *LGClockVariableFontPath(void) {
     static NSString *path = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        NSString *fontFileName = LGClockVariableFontFileName();
         NSMutableArray<NSString *> *candidates = [NSMutableArray array];
         [candidates addObjectsFromArray:LGClockVariableFontDylibRelativePaths()];
         [candidates addObjectsFromArray:@[
-            jbroot(@"/Library/PreferenceBundles/LiquidAssPrefs.bundle/SFAdaptiveSoftNumeric-VF.otf"),
+            jbroot([@"/Library/PreferenceBundles/LiquidAssPrefs.bundle" stringByAppendingPathComponent:fontFileName]),
         ]];
         NSFileManager *fm = [NSFileManager defaultManager];
         for (NSString *candidate in candidates) {
@@ -761,7 +773,7 @@ static BOOL LGIsModernClockDateLabel(UIView *view) {
 }
 
 static NSString *LGClockDateFormatString(void) {
-    NSString *format = LG_prefString(@"Lockscreen.Clock.DateFormat.Format", @"EEE MMM d");
+    NSString *format = LG_prefString(@"Clock.DateFormat.Format", @"EEE MMM d");
     return format.length ? format : @"EEE MMM d";
 }
 

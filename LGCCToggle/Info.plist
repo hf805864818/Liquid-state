@@ -1,0 +1,13 @@
+{
+    CFBundleDevelopmentRegion = en;
+    CFBundleExecutable = LGCCToggle;
+    CFBundleIdentifier = "dylv.liquidglass.cctoggle";
+    CFBundleInfoDictionaryVersion = "6.0";
+    CFBundleName = "Liquid Glass";
+    CFBundlePackageType = BNDL;
+    CFBundleShortVersionString = "1.0";
+    CFBundleSignature = "????";
+    CFBundleVersion = "1.0";
+    NSPrincipalClass = LGCCToggleModule;
+    "CCModuleIdentifier" = "dylv.liquidglass.cctoggle";
+}

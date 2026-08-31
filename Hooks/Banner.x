@@ -1,7 +1,66 @@
 #import <UIKit/UIKit.h>
 #import "../Shared/LGLiveBackdropView.h"
 #import "../Shared/LGGlassKit.h"
+#import "../Shared/LGSharedSupport.h"
 #import <objc/runtime.h>
+
+static const void *kLGBannerGlassAnimatedKey = &kLGBannerGlassAnimatedKey;
+static const void *kLGBannerGlassViewKey = &kLGBannerGlassViewKey;
+
+static BOOL LGBannerSmoothAnimationEnabled(void) {
+    return LG_prefBool(@"Banner.Animation.SmoothGlass", NO);
+}
+
+static CGFloat LGBannerAnimationDuration(void) {
+    return LG_prefFloat(@"Banner.Animation.Duration", 0.5);
+}
+
+static BOOL LGBannerSpringEffectEnabled(void) {
+    return LG_prefBool(@"Banner.Animation.SpringEffect", YES);
+}
+
+static void LGBannerAnimateGlassIn(UIView *glassView) {
+    if (!glassView || !LGBannerSmoothAnimationEnabled()) return;
+
+    glassView.alpha = 0.0;
+    CGFloat duration = LGBannerAnimationDuration();
+    BOOL spring = LGBannerSpringEffectEnabled();
+
+    if (spring) {
+        [UIView animateWithDuration:duration
+                              delay:0.0
+             usingSpringWithDamping:0.7
+              initialSpringVelocity:0.3
+                            options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+            glassView.alpha = 1.0;
+        } completion:nil];
+    } else {
+        [UIView animateWithDuration:duration
+                              delay:0.0
+                            options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+            glassView.alpha = 1.0;
+        } completion:nil];
+    }
+}
+
+static void LGBannerAnimateGlassOut(UIView *glassView, void (^completion)(void)) {
+    if (!glassView || !LGBannerSmoothAnimationEnabled()) {
+        if (completion) completion();
+        return;
+    }
+
+    CGFloat duration = LGBannerAnimationDuration() * 0.6;
+    [UIView animateWithDuration:duration
+                          delay:0.0
+                        options:UIViewAnimationOptionCurveEaseIn | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        glassView.alpha = 0.0;
+    } completion:^(BOOL finished) {
+        if (completion) completion();
+    }];
+}
 
 static BOOL LGHasMaterialAncestorBefore(UIView *material, NSString *stopClassName) {
     Class stopCls = NSClassFromString(stopClassName);
@@ -111,8 +170,18 @@ static void LGUpdatePlatterGlass(UIView *material) {
             objc_setAssociatedObject(material, kLGPlatterClassificationKey, prefix,
                                      OBJC_ASSOCIATION_COPY_NONATOMIC);
         }
-        LGInstallRegisteredGlassInMaterial(material, kGlassKey, prefix,
+        LGLiveBackdropView *glassView = LGInstallRegisteredGlassInMaterial(material, kGlassKey, prefix,
                                            UIEdgeInsetsZero, -1.0, nil);
+
+        // Trigger fade-in animation for top banners
+        if (topBanner && glassView && LGBannerSmoothAnimationEnabled()) {
+            NSNumber *alreadyAnimated = objc_getAssociatedObject(material, kLGBannerGlassAnimatedKey);
+            if (!alreadyAnimated || !alreadyAnimated.boolValue) {
+                objc_setAssociatedObject(material, kLGBannerGlassAnimatedKey, @(YES), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(material, kLGBannerGlassViewKey, glassView, OBJC_ASSOCIATION_ASSIGN);
+                LGBannerAnimateGlassIn((UIView *)glassView);
+            }
+        }
     } else if (LGIsPlatterActionMaterial(material)) {
 
         LGInstallRegisteredGlassInMaterial(material, kGlassKey, @"Notification",

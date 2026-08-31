@@ -608,6 +608,115 @@ static void roundMRUSliderFill(UIView *slider) {
     }
 }
 
+#pragma mark - Slider Haptic Feedback
+
+static const void *kCCSliderHapticLastValueKey = &kCCSliderHapticLastValueKey;
+static const void *kCCSliderHapticAtMinKey = &kCCSliderHapticAtMinKey;
+static const void *kCCSliderHapticAtMaxKey = &kCCSliderHapticAtMaxKey;
+static const void *kCCSliderHapticLastHapticTimeKey = &kCCSliderHapticLastHapticTimeKey;
+static const void *kCCSliderHapticFeedbackKey = &kCCSliderHapticFeedbackKey;
+
+static BOOL ccSliderHapticsEnabled(void) {
+    return LG_prefBool(@"ControlCenter.SliderHaptics.Enabled", NO);
+}
+
+static CGFloat ccSliderHapticIntensity(void) {
+    return LG_prefFloat(@"ControlCenter.SliderHaptics.Intensity", 0.5);
+}
+
+static BOOL ccSliderEdgeFeedbackEnabled(void) {
+    return LG_prefBool(@"ControlCenter.SliderHaptics.EdgeFeedback", YES);
+}
+
+static UIImpactFeedbackGenerator *ccSliderHapticGenerator(UIView *slider) {
+    UIImpactFeedbackGenerator *gen = objc_getAssociatedObject(slider, kCCSliderHapticFeedbackKey);
+    if (!gen) {
+        gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        objc_setAssociatedObject(slider, kCCSliderHapticFeedbackKey, gen, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return gen;
+}
+
+static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
+    // Try to get the value from the slider view's _value or similar
+    // Fallback: use the subview layout to estimate
+    for (UIView *subview in slider.subviews) {
+        if ([subview isKindOfClass:NSClassFromString(@"UISlider")]) {
+            UISlider *s = (UISlider *)subview;
+            CGFloat range = s.maximumValue - s.minimumValue;
+            if (range <= 0) return 0.5;
+            return (s.value - s.minimumValue) / range;
+        }
+    }
+    // Try to find a fill view and calculate from its width
+    for (UIView *subview in slider.subviews) {
+        if (!isExactClass(subview, @"UIView")) continue;
+        for (UIView *gc in subview.subviews) {
+            if (isExactClass(gc, @"MTMaterialView")) {
+                CGFloat sliderWidth = CGRectGetWidth(slider.bounds);
+                CGFloat fillWidth = CGRectGetWidth(gc.frame);
+                if (sliderWidth > 0) return MIN(1.0, MAX(0.0, fillWidth / sliderWidth));
+            }
+        }
+    }
+    return 0.5;
+}
+
+static void ccSliderTriggerHaptic(UIView *slider, BOOL isEdge) {
+    if (!ccSliderHapticsEnabled()) return;
+    if (ccHasSBElasticHierarchy(slider)) return;
+
+    UIImpactFeedbackGenerator *gen = ccSliderHapticGenerator(slider);
+    CGFloat intensity = ccSliderHapticIntensity();
+
+    if (isEdge && ccSliderEdgeFeedbackEnabled()) {
+        [gen impactOccurredWithIntensity:MIN(1.0, intensity * 1.5)];
+    } else if (!isEdge) {
+        // Throttle continuous haptics
+        NSNumber *lastTimeNum = objc_getAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey);
+        NSTimeInterval lastTime = lastTimeNum ? lastTimeNum.doubleValue : 0;
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        if (now - lastTime < 0.08) return; // ~12Hz max
+        objc_setAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        [gen impactOccurredWithIntensity:MAX(0.1, intensity * 0.6)];
+    }
+}
+
+static void ccSliderUpdateHapticState(UIView *slider) {
+    if (!ccSliderHapticsEnabled()) return;
+    if (ccHasSBElasticHierarchy(slider)) return;
+
+    CGFloat currentValue = ccSliderGetNormalizedValue(slider);
+    NSNumber *lastValueNum = objc_getAssociatedObject(slider, kCCSliderHapticLastValueKey);
+    CGFloat lastValue = lastValueNum ? lastValueNum.doubleValue : currentValue;
+
+    if (fabs(currentValue - lastValue) < 0.001) return;
+
+    BOOL wasAtMin = [objc_getAssociatedObject(slider, kCCSliderHapticAtMinKey) boolValue];
+    BOOL wasAtMax = [objc_getAssociatedObject(slider, kCCSliderHapticAtMaxKey) boolValue];
+
+    BOOL isAtMin = currentValue <= 0.01;
+    BOOL isAtMax = currentValue >= 0.99;
+
+    // Edge feedback
+    if (isAtMin && !wasAtMin) {
+        ccSliderTriggerHaptic(slider, YES);
+    } else if (isAtMax && !wasAtMax) {
+        ccSliderTriggerHaptic(slider, YES);
+    } else if (!isAtMin && !isAtMax) {
+        // Continuous haptic based on step size
+        CGFloat step = fabs(currentValue - lastValue);
+        if (step > 0.02) {
+            ccSliderTriggerHaptic(slider, NO);
+        }
+    }
+
+    objc_setAssociatedObject(slider, kCCSliderHapticLastValueKey, @(currentValue), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(slider, kCCSliderHapticAtMinKey, @(isAtMin), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(slider, kCCSliderHapticAtMaxKey, @(isAtMax), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void roundToggleFills(UIView *buttonModule) {
     UIView *module = ccModuleAncestor(buttonModule);
     BOOL eligible = module && ccIsModuleCandidate(module) &&
@@ -642,12 +751,12 @@ static void roundModuleContainer(UIView *module) {
 %end
 
 %hook CCUIContinuousSliderView
-- (void)layoutSubviews { %orig; roundContinuousSliderFill((UIView *)self); }
+- (void)layoutSubviews { %orig; roundContinuousSliderFill((UIView *)self); ccSliderUpdateHapticState((UIView *)self); }
 - (void)didMoveToWindow { %orig; roundContinuousSliderFill((UIView *)self); }
 %end
 
 %hook MRUContinuousSliderView
-- (void)layoutSubviews { %orig; roundMRUSliderFill((UIView *)self); }
+- (void)layoutSubviews { %orig; roundMRUSliderFill((UIView *)self); ccSliderUpdateHapticState((UIView *)self); }
 - (void)didMoveToWindow { %orig; roundMRUSliderFill((UIView *)self); }
 %end
 

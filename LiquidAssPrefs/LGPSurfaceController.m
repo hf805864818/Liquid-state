@@ -330,6 +330,268 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     LGPresentGlobalControlsExclusionEditor(self);
 }
 
+- (void)openCustomCCBgSettings {
+    NSURL *prefsURL = [NSURL URLWithString:@"prefs:root=CustomCCBgPrefs"];
+    if ([[UIApplication sharedApplication] canOpenURL:prefsURL]) {
+        [[UIApplication sharedApplication] openURL:prefsURL options:@{} completionHandler:nil];
+    } else {
+        // Fallback: try to present the bundle view controller directly
+        NSString *bundlePath = @"/var/jb/Library/PreferenceBundles/CustomCCBgPrefs.bundle";
+        NSBundle *prefsBundle = [NSBundle bundleWithPath:bundlePath];
+        if (!prefsBundle) {
+            // Try rootless path
+            bundlePath = @"/Library/PreferenceBundles/CustomCCBgPrefs.bundle";
+            prefsBundle = [NSBundle bundleWithPath:bundlePath];
+        }
+        if (prefsBundle && [prefsBundle load]) {
+            Class controllerClass = NSClassFromString(@"CCBGRootListController");
+            if (controllerClass) {
+                UIViewController *vc = [[controllerClass alloc] init];
+                [self.navigationController pushViewController:vc animated:YES];
+            }
+        }
+    }
+}
+
+#pragma mark - Clock Font Helpers
+
+- (void)presentClockFontWeightPresets {
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:LGLocalized(@"prefs.control.variable_font_weight_preset")
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+
+    NSArray *presets = @[
+        @{ @"title": @"Regular", @"value": @(400.0) },
+        @{ @"title": @"Medium", @"value": @(500.0) },
+        @{ @"title": @"Semibold", @"value": @(600.0) },
+        @{ @"title": @"Bold", @"value": @(700.0) },
+    ];
+
+    for (NSDictionary *preset in presets) {
+        [sheet addAction:[UIAlertAction
+            actionWithTitle:preset[@"title"]
+                      style:UIAlertActionStyleDefault
+                    handler:^(__unused UIAlertAction *_Nonnull action) {
+            CGFloat weight = [preset[@"value"] doubleValue];
+            LGWritePreference(@"Clock.VariableFont.Weight", @(weight));
+            [self reloadVisibleSettings];
+            [self updateRespringBarAnimated:YES];
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                  style:UIAlertActionStyleCancel
+                handler:nil]];
+
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2.0, self.view.bounds.size.height / 2.0, 1.0, 1.0);
+    sheet.popoverPresentationController.permittedArrowDirections = 0;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentClockDateFormatEditor {
+    NSString *currentFormat = LGReadPreference(@"Clock.DateFormat.Format", @"EEE MMM d");
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:LGLocalized(@"prefs.control.date_format")
+                         message:LGLocalized(@"prefs.subtitle.date_format")
+                  preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.text = currentFormat;
+        textField.placeholder = @"EEE MMM d";
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+
+    [alert addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                  style:UIAlertActionStyleCancel
+                handler:nil]];
+
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.save")
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *_Nonnull action) {
+        NSString *newFormat = alert.textFields.firstObject.text;
+        if (newFormat.length == 0) newFormat = @"EEE MMM d";
+        LGWritePreference(@"Clock.DateFormat.Format", newFormat);
+        [weakSelf reloadVisibleSettings];
+        [weakSelf updateRespringBarAnimated:YES];
+    }]];
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)resetClockFontToDefault {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:LGLocalized(@"prefs.clock_font.reset_default")
+                         message:LGLocalized(@"prefs.clock_font.reset_default_subtitle")
+                  preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                  style:UIAlertActionStyleCancel
+                handler:nil]];
+
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.confirm")
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *_Nonnull action) {
+        LGWritePreference(@"Clock.VariableFont.Name", @"adaptive");
+        LGWritePreference(@"Clock.VariableFont.Weight", @(750.0));
+        LGWritePreference(@"Clock.VariableFont.SizeScale", @(1.4));
+        LGWritePreference(@"Clock.VariableFont.Width", @(100.0));
+        LGWritePreference(@"Clock.VariableFont.Height", @(350.0));
+        LGWritePreference(@"Clock.VariableFont.Softness", @(56.0));
+        [weakSelf reloadVisibleSettings];
+        [weakSelf updateRespringBarAnimated:YES];
+    }]];
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)resetModuleWithTitle:(NSString *)title message:(NSString *)message itemsBlock:(NSArray<NSDictionary *> * (^)(void))itemsBlock {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:title
+                         message:message
+                  preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                  style:UIAlertActionStyleCancel
+                handler:nil]];
+
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.confirm")
+                  style:UIAlertActionStyleDestructive
+                handler:^(__unused UIAlertAction *_Nonnull action) {
+        NSArray<NSString *> *keys = LGKeysFromItems(itemsBlock());
+        LGResetPreferencesForKeys(keys);
+        [weakSelf reloadVisibleSettings];
+        [weakSelf updateRespringBarAnimated:YES];
+    }]];
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)resetDockToDefault {
+    [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
+                       message:LGLocalized(@"prefs.subtitle.reset_dock_confirm")
+                    itemsBlock:^NSArray<NSDictionary *> *{
+        return LGRendererItemsForHostPrefix(@"Dock");
+    }];
+}
+
+- (void)resetFolderToDefault {
+    [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
+                       message:LGLocalized(@"prefs.subtitle.reset_folder_confirm")
+                    itemsBlock:^NSArray<NSDictionary *> *{
+        NSMutableArray *items = [NSMutableArray array];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"FolderIcon")];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"OpenFolder")];
+        return items;
+    }];
+}
+
+- (void)resetAppIconsToDefault {
+    [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
+                       message:LGLocalized(@"prefs.subtitle.reset_app_icons_confirm")
+                    itemsBlock:^NSArray<NSDictionary *> *{
+        return LGRendererItemsForHostPrefix(@"AppIcons");
+    }];
+}
+
+- (void)resetSearchPillToDefault {
+    [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
+                       message:LGLocalized(@"prefs.subtitle.reset_search_pill_confirm")
+                    itemsBlock:^NSArray<NSDictionary *> *{
+        return LGRendererItemsForHostPrefix(@"SearchPill");
+    }];
+}
+
+- (void)resetControlCenterToDefault {
+    [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
+                       message:LGLocalized(@"prefs.subtitle.reset_control_center_confirm")
+                    itemsBlock:^NSArray<NSDictionary *> *{
+        NSMutableArray *items = [NSMutableArray array];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"ControlCenter")];
+        [items addObject:@{ @"key": @"ControlCenter.SliderHaptics.Enabled" }];
+        [items addObject:@{ @"key": @"ControlCenter.SliderHaptics.Intensity" }];
+        [items addObject:@{ @"key": @"ControlCenter.SliderHaptics.EdgeFeedback" }];
+        return items;
+    }];
+}
+
+- (void)resetClockToDefault {
+    [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
+                       message:LGLocalized(@"prefs.subtitle.reset_clock_confirm")
+                    itemsBlock:^NSArray<NSDictionary *> *{
+        NSMutableArray *items = [NSMutableArray array];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"Clock")];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Enabled" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Name" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Weight" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.SizeScale" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Width" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Height" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Softness" }];
+        [items addObject:@{ @"key": @"Clock.DateFormat.Enabled" }];
+        [items addObject:@{ @"key": @"Clock.DateFormat.Format" }];
+        return items;
+    }];
+}
+
+- (void)resetTabBarToDefault {
+    [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
+                       message:LGLocalized(@"prefs.subtitle.reset_tab_bar_confirm")
+                    itemsBlock:^NSArray<NSDictionary *> *{
+        NSMutableArray *items = [NSMutableArray array];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"TabBar")];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"TabBarSelection")];
+        return items;
+    }];
+}
+
+- (void)resetLockscreenToDefault {
+    [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
+                       message:LGLocalized(@"prefs.subtitle.reset_lockscreen_confirm")
+                    itemsBlock:^NSArray<NSDictionary *> *{
+        NSMutableArray *items = [NSMutableArray array];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"Notification")];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"NotificationCenter")];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"DynamicIsland")];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"QuickActions")];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"Passcode")];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"Clock")];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Enabled" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Name" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Weight" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.SizeScale" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Width" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Height" }];
+        [items addObject:@{ @"key": @"Clock.VariableFont.Softness" }];
+        [items addObject:@{ @"key": @"Clock.DateFormat.Enabled" }];
+        [items addObject:@{ @"key": @"Clock.DateFormat.Format" }];
+        return items;
+    }];
+}
+
+- (void)resetAppLibraryToDefault {
+    [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
+                       message:LGLocalized(@"prefs.subtitle.reset_app_library_confirm")
+                    itemsBlock:^NSArray<NSDictionary *> *{
+        NSMutableArray *items = [NSMutableArray array];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"AppLibrary")];
+        [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"AppLibSearch")];
+        return items;
+    }];
+}
+
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     (void)controller;
     NSURL *url = urls.firstObject;
@@ -1697,6 +1959,77 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     panel.alpha = enabled ? 1.0 : 0.42;
     panel.userInteractionEnabled = enabled;
     [_contentStack addArrangedSubview:panel];
+}
+
+#pragma mark - Preset Themes
+
+- (void)browsePresetThemes {
+    NSArray<NSDictionary *> *themes = LGPresetThemes();
+    NSString *currentTheme = LGCurrentPresetTheme();
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:LGLocalized(@"prefs.theme.picker_title")
+                         message:LGLocalized(@"prefs.theme.picker_message")
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+
+    for (NSDictionary *theme in themes) {
+        NSString *themeId = theme[@"id"];
+        NSString *themeName = theme[@"name"];
+        NSString *themeSubtitle = theme[@"subtitle"];
+        BOOL isCurrent = [themeId isEqualToString:currentTheme];
+
+        UIAlertAction *action = [UIAlertAction
+            actionWithTitle:isCurrent
+                ? [NSString stringWithFormat:@"✓ %@", themeName]
+                : themeName
+            style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *_Nonnull action) {
+            [self confirmApplyTheme:themeId name:themeName];
+        }];
+        [alert addAction:action];
+    }
+
+    [alert addAction:[UIAlertAction actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+
+    // iPad popover support
+    alert.popoverPresentationController.sourceView = self.view;
+    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
+                                                                 CGRectGetMidY(self.view.bounds), 0, 0);
+    alert.popoverPresentationController.permittedArrowDirections = 0;
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)confirmApplyTheme:(NSString *)themeId name:(NSString *)themeName {
+    NSString *message = [NSString stringWithFormat:
+        LGLocalized(@"prefs.theme.apply_confirm_format"), themeName];
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:LGLocalized(@"prefs.theme.apply_confirm_title")
+                         message:message
+                  preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addAction:[UIAlertAction actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.apply")
+                  style:UIAlertActionStyleDestructive
+                handler:^(__unused UIAlertAction *_Nonnull action) {
+        LGApplyPresetTheme(themeId);
+        [weakSelf reloadLocalizedContent];
+        [weakSelf reloadVisibleSettings];
+        [weakSelf updateRespringBarAnimated:YES];
+        LGPresentInfoSheet(weakSelf,
+                           LGLocalized(@"prefs.theme.applied_title"),
+                           [NSString stringWithFormat:LGLocalized(@"prefs.theme.applied_message"), themeName]);
+    }]];
+
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end

@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
+#import <notify.h>
 #import "../Shared/LGLiveBackdropView.h"
 #import "../Shared/LGGlassKit.h"
 #import "../Shared/LGSharedSupport.h"
@@ -157,6 +158,63 @@ static UIDeviceOrientation LGCoverSheetDeviceOrientation(UIView *view) {
 
 static BOOL LGCoverSheetEnabled(void) {
     return lgHostEnabled(@"CoverSheet");
+}
+
+static BOOL LGWallpaperTintEnabled(void) {
+    return LG_prefBool(@"WallpaperTint.Enabled", NO);
+}
+
+static void LGWriteWallpaperTintColor(NSString *colorKey, UIColor *color, CGFloat strength) {
+    if (!color) return;
+
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    [color getRed:&r green:&g blue:&b alpha:&a];
+
+    // Write as hex string with alpha for strength
+    unsigned int hexR = (unsigned int)(r * 255.0);
+    unsigned int hexG = (unsigned int)(g * 255.0);
+    unsigned int hexB = (unsigned int)(b * 255.0);
+    unsigned int hexA = (unsigned int)(strength * 255.0);
+    NSString *hexString = [NSString stringWithFormat:@"%02X%02X%02X%02X",
+                           hexR, hexG, hexB, hexA];
+
+    CFPreferencesSetAppValue((__bridge CFStringRef)colorKey,
+                             (__bridge CFStringRef)hexString,
+                             (__bridge CFStringRef)LGPrefsDomain);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+    notify_post(LGPrefsChangedNotificationCString);
+}
+
+static void LGExtractAndSaveWallpaperTint(UIView *wallpaperView) {
+    if (!LGWallpaperTintEnabled()) return;
+    if (!wallpaperView || wallpaperView.bounds.size.width == 0) return;
+
+    // Use dispatch_async to avoid blocking the main thread during color extraction
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        @autoreleasepool {
+            // Capture a snapshot of the wallpaper view
+            UIGraphicsBeginImageContextWithOptions(wallpaperView.bounds.size, YES, 1.0);
+            [wallpaperView drawViewHierarchyInRect:wallpaperView.bounds afterScreenUpdates:NO];
+            UIImage *snapshot = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+
+            if (!snapshot) return;
+
+            UIColor *averageColor = LGAverageColorOfImage(snapshot);
+            if (!averageColor) return;
+
+            CGFloat strength = LG_prefFloat(@"WallpaperTint.Strength", 0.6);
+
+            // Generate light and dark mode tint colors
+            UIColor *lightTint = LGAdjustedTintColorFromAverageColor(averageColor, NO);
+            UIColor *darkTint = LGAdjustedTintColorFromAverageColor(averageColor, YES);
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                LGWriteWallpaperTintColor(@"WallpaperTint.LightColor", lightTint, strength);
+                LGWriteWallpaperTintColor(@"WallpaperTint.DarkColor", darkTint, strength);
+            });
+        }
+    });
 }
 
 static BOOL LGCoverSheetModeUsesGlass(LGCoverSheetMode mode) {
@@ -739,6 +797,20 @@ static void LGCoverSheetSetMode(LGCoverSheetMode mode) {
     %orig;
     if (LGCoverSheetEnabled())
         LGCoverSheetRegisterWallpaperController((UIViewController *)self);
+    if (LGWallpaperTintEnabled()) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LGExtractAndSaveWallpaperTint(self.view);
+        });
+    }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (LGWallpaperTintEnabled()) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            LGExtractAndSaveWallpaperTint(self.view);
+        });
+    }
 }
 
 %end
@@ -817,6 +889,37 @@ prepareForDismissalTransitionForReversingTransition:(BOOL)reversing
 
 %end
 
+#pragma mark - Adaptive Blur Brightness Observer
+
+static NSTimeInterval sLGLastBrightnessUpdate = 0.0;
+
+static BOOL LGAdaptiveBlurEnabled(void) {
+    return LG_prefBool(@"AdaptiveBlur.Enabled", NO);
+}
+
+static void LGUpdateAdaptiveBlurBrightness(void) {
+    if (!LGAdaptiveBlurEnabled()) return;
+
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    // Throttle to max 2 updates per second
+    if (now - sLGLastBrightnessUpdate < 0.5) return;
+    sLGLastBrightnessUpdate = now;
+
+    CGFloat brightness = [UIScreen mainScreen].brightness;
+
+    // Write brightness to prefs - backboardd will pick it up
+    CFPreferencesSetAppValue(CFSTR("AdaptiveBlur.CurrentBrightness"),
+                             (__bridge CFNumberRef)@(brightness),
+                             (__bridge CFStringRef)LGPrefsDomain);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+    notify_post(LGPrefsChangedNotificationCString);
+}
+
+static void LGBrightnessDidChange(NSNotification *notification) {
+    (void)notification;
+    LGUpdateAdaptiveBlurBrightness();
+}
+
 %ctor {
     sLGCoverSheetPanels = [NSHashTable weakObjectsHashTable];
     sLGCoverSheetWallpaperControllers = [NSHashTable weakObjectsHashTable];
@@ -835,4 +938,158 @@ prepareForDismissalTransitionForReversingTransition:(BOOL)reversing
             LGCoverSheetSyncPanel(panel);
         }
     });
+
+    // Adaptive blur: observe screen brightness changes
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIScreenBrightnessDidChangeNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        LGBrightnessDidChange(note);
+    }];
+    // Initial update
+    dispatch_async(dispatch_get_main_queue(), ^{
+        LGUpdateAdaptiveBlurBrightness();
+    });
+
+    // Low Power Mode observation
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSProcessInfoPowerStateDidChangeNotification
+                                                      object:[NSProcessInfo processInfo]
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        BOOL lowPower = [NSProcessInfo processInfo].lowPowerModeEnabled;
+        LGWritePreference(@"LowPower.Active", @(lowPower));
+        notify_post(LGPrefsChangedNotificationCString);
+    }];
+    // Initial low power state
+    BOOL initialLowPower = [NSProcessInfo processInfo].lowPowerModeEnabled;
+    LGWritePreference(@"LowPower.Active", @(initialLowPower));
+
+    // Focus Mode observation
+    // Try to detect focus mode via DND/Focus state notifications
+    // We observe both the notification center and Darwin notifications
+    void (^updateFocusState)(void) = ^{
+        // Try to determine if focus mode is active
+        BOOL focusActive = NO;
+
+        // Method 1: Check DND state via user defaults
+        NSUserDefaults *dndDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.dnd"];
+        if (dndDefaults) {
+            NSNumber *dndEnabled = [dndDefaults objectForKey:@"dndEnabled"];
+            if ([dndEnabled isKindOfClass:[NSNumber class]] && dndEnabled.boolValue) {
+                focusActive = YES;
+            }
+            // Also check for focus mode active
+            NSNumber *focusModeActive = [dndDefaults objectForKey:@"focusModeActive"];
+            if ([focusModeActive isKindOfClass:[NSNumber class]] && focusModeActive.boolValue) {
+                focusActive = YES;
+            }
+        }
+
+        LGWritePreference(@"FocusMode.Active", @(focusActive));
+        notify_post(LGPrefsChangedNotificationCString);
+    };
+
+    // Observe DND state change notifications
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"DNDStateChangedNotification"
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        updateFocusState();
+    }];
+
+    // Observe focus mode change notifications
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"FCFocusModeConfigurationDidChangeNotification"
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        updateFocusState();
+    }];
+
+    // Initial focus state check
+    dispatch_async(dispatch_get_main_queue(), ^{
+        updateFocusState();
+    });
+
+    // Dynamic Quality: high-load detection
+    // Detect scrolling and animation activity to signal quality reduction
+    static NSTimer *sLGHighLoadResetTimer = nil;
+    static NSInteger sLGActiveScrollCount = 0;
+
+    void (^setHighLoad)(BOOL) = ^(BOOL active) {
+        static BOOL currentHighLoad = NO;
+        if (currentHighLoad != active) {
+            currentHighLoad = active;
+            LGWritePreference(@"DynamicQuality.HighLoadActive", @(active));
+            notify_post(LGPrefsChangedNotificationCString);
+        }
+    };
+
+    void (^triggerHighLoad)(void) = ^{
+        setHighLoad(YES);
+        if (sLGHighLoadResetTimer) {
+            [sLGHighLoadResetTimer invalidate];
+        }
+        sLGHighLoadResetTimer = [NSTimer scheduledTimerWithTimeInterval:0.8
+                                                                  repeats:NO
+                                                                    block:^(NSTimer *timer) {
+            setHighLoad(NO);
+            sLGHighLoadResetTimer = nil;
+        }];
+        [[NSRunLoop mainRunLoop] addTimer:sLGHighLoadResetTimer forMode:NSRunLoopCommonModes];
+    };
+
+    // Observe scroll view scrolling - indicates high load
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIScrollViewDidBeginDraggingNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        if (!LG_prefBool(@"DynamicQuality.Enabled", NO)) return;
+        sLGActiveScrollCount++;
+        triggerHighLoad();
+    }];
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIScrollViewDidEndDeceleratingNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        sLGActiveScrollCount = MAX(0, sLGActiveScrollCount - 1);
+        if (sLGActiveScrollCount == 0 && sLGHighLoadResetTimer) {
+            // Will reset after timer fires
+        }
+    }];
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIScrollViewDidEndDraggingNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        BOOL decelerate = [note.userInfo[UIScrollViewDidEndDraggingNotificationUserInfoDecelerateKey] boolValue];
+        if (!decelerate) {
+            sLGActiveScrollCount = MAX(0, sLGActiveScrollCount - 1);
+        }
+    }];
+
+    // Memory pressure monitoring
+    // Use dispatch source to monitor memory pressure
+    dispatch_source_t memoryPressureSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
+        DISPATCH_MEMORYPRESSURE_NORMAL | DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL,
+        dispatch_get_main_queue());
+
+    if (memoryPressureSource) {
+        dispatch_source_set_event_handler(memoryPressureSource, ^{
+            dispatch_memorypressure_flags_t pressure = dispatch_source_get_data(memoryPressureSource);
+            BOOL memorySaving = LG_prefBool(@"MemorySaving.Enabled", NO);
+
+            if (memorySaving && pressure >= DISPATCH_MEMORYPRESSURE_WARN) {
+                // Boost memory saving level during high pressure
+                CGFloat baseLevel = LG_prefFloat(@"MemorySaving.Level", 0.5);
+                CGFloat boostedLevel = pressure >= DISPATCH_MEMORYPRESSURE_CRITICAL ? 1.0f : MIN(1.0f, baseLevel + 0.3f);
+                LGWritePreference(@"MemorySaving.ActivePressure", @(boostedLevel));
+                LGLog(@"[memory] pressure=%ld boosted level=%.2f", (long)pressure, boostedLevel);
+            } else {
+                LGWritePreference(@"MemorySaving.ActivePressure", @(0.0));
+            }
+            notify_post(LGPrefsChangedNotificationCString);
+        });
+        dispatch_resume(memoryPressureSource);
+    }
 }

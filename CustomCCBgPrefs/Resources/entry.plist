@@ -5,17 +5,17 @@
 	<key>entry</key>
 	<dict>
 		<key>bundle</key>
-		<string>LiquidAssPrefs</string>
+		<string>CustomCCBgPrefs</string>
 		<key>cell</key>
 		<string>PSLinkCell</string>
 		<key>detail</key>
-		<string>LGPRootListController</string>
+		<string>CCBGRootListController</string>
 		<key>icon</key>
 		<string>icon.png</string>
 		<key>isController</key>
 		<true/>
 		<key>label</key>
-		<string>深度液态</string>
+		<string>控制中心背景</string>
 	</dict>
 </dict>
 </plist>

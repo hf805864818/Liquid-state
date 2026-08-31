@@ -391,3 +391,88 @@ void LGSetImageStableCacheKey(UIImage *image, NSString *cacheKey) {
                              [cacheKey copy],
                              OBJC_ASSOCIATION_COPY_NONATOMIC);
 }
+
+UIColor *LGAverageColorOfImage(UIImage *image) {
+    if (!image) return nil;
+
+    CGImageRef cgImage = image.CGImage;
+    if (!cgImage) return nil;
+
+    size_t width = CGImageGetWidth(cgImage);
+    size_t height = CGImageGetHeight(cgImage);
+    if (width == 0 || height == 0) return nil;
+
+    // Downscale for performance - use a thumbnail size
+    size_t thumbSize = 50;
+    CGFloat scale = MIN((CGFloat)thumbSize / width, (CGFloat)thumbSize / height);
+    size_t scaledWidth = MAX(1, (size_t)(width * scale));
+    size_t scaledHeight = MAX(1, (size_t)(height * scale));
+
+    CGColorSpaceRef colorSpace = LGSharedRGBColorSpace();
+    unsigned char *buffer = calloc(scaledWidth * scaledHeight * 4, sizeof(unsigned char));
+    if (!buffer) return nil;
+
+    CGContextRef context = CGBitmapContextCreate(buffer,
+                                                  scaledWidth,
+                                                  scaledHeight,
+                                                  8,
+                                                  scaledWidth * 4,
+                                                  colorSpace,
+                                                  kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    if (!context) {
+        free(buffer);
+        return nil;
+    }
+
+    CGContextDrawImage(context, CGRectMake(0, 0, scaledWidth, scaledHeight), cgImage);
+    CGContextRelease(context);
+
+    CGFloat totalR = 0.0, totalG = 0.0, totalB = 0.0;
+    NSUInteger pixelCount = scaledWidth * scaledHeight;
+
+    for (NSUInteger i = 0; i < pixelCount; i++) {
+        NSUInteger offset = i * 4;
+        CGFloat r = buffer[offset] / 255.0;
+        CGFloat g = buffer[offset + 1] / 255.0;
+        CGFloat b = buffer[offset + 2] / 255.0;
+        CGFloat a = buffer[offset + 3] / 255.0;
+        if (a < 0.01) continue; // skip fully transparent pixels
+
+        totalR += r;
+        totalG += g;
+        totalB += b;
+    }
+
+    free(buffer);
+
+    if (pixelCount == 0) return [UIColor grayColor];
+
+    CGFloat avgR = totalR / pixelCount;
+    CGFloat avgG = totalG / pixelCount;
+    CGFloat avgB = totalB / pixelCount;
+
+    return [UIColor colorWithRed:avgR green:avgG blue:avgB alpha:1.0];
+}
+
+UIColor *LGAdjustedTintColorFromAverageColor(UIColor *averageColor, BOOL darkMode) {
+    if (!averageColor) return nil;
+
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    [averageColor getRed:&r green:&g blue:&b alpha:&a];
+
+    // Convert to HSB for better color adjustment
+    CGFloat hue = 0, saturation = 0, brightness = 0;
+    [averageColor getHue:&hue saturation:&saturation brightness:&brightness alpha:nil];
+
+    if (darkMode) {
+        // Dark mode: boost saturation slightly, keep brightness moderate
+        saturation = MIN(1.0, saturation * 1.2);
+        brightness = MAX(0.2, brightness * 0.6);
+    } else {
+        // Light mode: boost saturation, lower brightness for better tint effect
+        saturation = MIN(1.0, saturation * 1.3);
+        brightness = MAX(0.3, brightness * 0.75);
+    }
+
+    return [UIColor colorWithHue:hue saturation:saturation brightness:brightness alpha:1.0];
+}

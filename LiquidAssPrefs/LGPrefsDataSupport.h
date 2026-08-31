@@ -72,3 +72,9 @@ BOOL LGImportPreferencesJSONString(NSString *jsonString, NSError **error);
 
 void LGResetAllPreferences(void);
 void LGResetPreferencesForKeys(NSArray<NSString *> *keys);
+NSArray<NSString *> *LGKeysFromItems(NSArray<NSDictionary *> *items);
+
+// Preset themes
+NSArray<NSDictionary *> *LGPresetThemes(void);
+NSString *LGCurrentPresetTheme(void);
+void LGApplyPresetTheme(NSString *themeId);

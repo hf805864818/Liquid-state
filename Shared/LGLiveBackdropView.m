@@ -187,8 +187,53 @@ static CGFloat LGQualityValue(void) {
     return fmin(1.0, fmax(0.1, quality));
 }
 
+static CGFloat LGMemorySavingScaleFactor(void) {
+    id enabled = LGGlassPreferenceValue(@"MemorySaving.Enabled");
+    if (![enabled isKindOfClass:[NSNumber class]] || ![(NSNumber *)enabled boolValue]) {
+        return 1.0;
+    }
+
+    CGFloat level = 0.5f;
+    id levelVal = LGGlassPreferenceValue(@"MemorySaving.Level");
+    if ([levelVal isKindOfClass:[NSNumber class]]) {
+        level = [(NSNumber *)levelVal floatValue];
+    }
+
+    // Check for active memory pressure boost
+    id pressureVal = LGGlassPreferenceValue(@"MemorySaving.ActivePressure");
+    if ([pressureVal isKindOfClass:[NSNumber class]] && [(NSNumber *)pressureVal floatValue] > 0.01) {
+        level = MAX(level, [(NSNumber *)pressureVal floatValue]);
+    }
+
+    level = fmin(1.0, fmax(0.0, level));
+    // Reduce scale budget by up to 50% at max memory saving
+    return 1.0 - level * 0.5;
+}
+
+static CGFloat LGDynamicQualityScaleFactor(void) {
+    id enabled = LGGlassPreferenceValue(@"DynamicQuality.Enabled");
+    if (![enabled isKindOfClass:[NSNumber class]] || ![(NSNumber *)enabled boolValue]) {
+        return 1.0;
+    }
+
+    id highLoad = LGGlassPreferenceValue(@"DynamicQuality.HighLoadActive");
+    if (![highLoad isKindOfClass:[NSNumber class]] || ![(NSNumber *)highLoad boolValue]) {
+        return 1.0;
+    }
+
+    CGFloat aggressiveness = 0.4f;
+    id aggVal = LGGlassPreferenceValue(@"DynamicQuality.Aggressiveness");
+    if ([aggVal isKindOfClass:[NSNumber class]]) {
+        aggressiveness = [(NSNumber *)aggVal floatValue];
+    }
+    aggressiveness = fmin(1.0, fmax(0.0, aggressiveness));
+
+    // Reduce scale budget during high load
+    return 1.0 - aggressiveness * 0.35;
+}
+
 static CGFloat LGScaleBudget(void) {
-    return kLGDefaultScaleBudget * LGQualityValue();
+    return kLGDefaultScaleBudget * LGQualityValue() * LGMemorySavingScaleFactor() * LGDynamicQualityScaleFactor();
 }
 
 static CGFloat LGScaleForSize(CGSize s) {

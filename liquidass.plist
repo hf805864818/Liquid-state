@@ -3,9 +3,11 @@
         Bundles = (
             "com.apple.UIKit",
             "com.apple.mobilesafari",
+            "com.apple.DocumentsApp",
         );
         Executables = (
             "MobileSafari",
+            "Files",
         );
     };
 }
