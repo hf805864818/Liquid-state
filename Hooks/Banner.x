@@ -194,7 +194,18 @@ static void LGUpdatePlatterGlass(UIView *material) {
 - (void)didMoveToWindow {
     %orig;
     UIView *self_ = (UIView *)self;
-    if (self_.window) LGUpdatePlatterGlass(self_);
+    if (self_.window) {
+        LGUpdatePlatterGlass(self_);
+    } else {
+        // Trigger fade-out animation for top banners when removed from window
+        if (LGIsTopBannerPresentation(self_) && LGBannerSmoothAnimationEnabled()) {
+            LGLiveBackdropView *glassView = objc_getAssociatedObject(self_, kLGBannerGlassViewKey);
+            if (glassView) {
+                LGBannerAnimateGlassOut((UIView *)glassView, nil);
+                objc_setAssociatedObject(self_, kLGBannerGlassAnimatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+    }
 }
 - (void)layoutSubviews {
     %orig;
