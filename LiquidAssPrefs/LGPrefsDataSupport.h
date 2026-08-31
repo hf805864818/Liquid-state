@@ -82,3 +82,15 @@ void LGApplyPresetTheme(NSString *themeId);
 
 // Surface sorting
 NSArray<NSDictionary *> *LGSortedItemsBySectionGroups(NSArray<NSDictionary *> *items);
+
+// Appearance mode (separate light/dark parameters)
+typedef NS_ENUM(NSInteger, LGAppearanceEditMode) {
+    LGAppearanceEditModeUnified = 0,
+    LGAppearanceEditModeLight = 1,
+    LGAppearanceEditModeDark = 2,
+};
+
+BOOL LGIsSeparateAppearanceModeEnabled(void);
+LGAppearanceEditMode LGCurrentAppearanceEditMode(void);
+void LGSetCurrentAppearanceEditMode(LGAppearanceEditMode mode);
+NSArray<NSDictionary *> *LGItemsWithAppearanceMode(NSArray<NSDictionary *> *items, LGAppearanceEditMode mode);

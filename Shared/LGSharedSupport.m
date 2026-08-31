@@ -377,6 +377,62 @@ BOOL LG_currentAppIsExcluded(void) {
     return sExcluded;
 }
 
+#pragma mark - Separate Light/Dark Appearance Mode
+
+NSString * const kLGAppearanceModeLightSuffix = @".Light";
+NSString * const kLGAppearanceModeDarkSuffix = @".Dark";
+
+BOOL LGIsSeparateAppearanceModeEnabled(void) {
+    return LG_prefBool(@"Appearance.SeparateModes", NO);
+}
+
+UIUserInterfaceStyle LGCurrentSystemAppearance(void) {
+    // Check main screen's trait collection first
+    UIScreen *mainScreen = [UIScreen mainScreen];
+    if ([mainScreen respondsToSelector:@selector(traitCollection)]) {
+        UITraitCollection *tc = mainScreen.traitCollection;
+        if (tc.userInterfaceStyle != UIUserInterfaceStyleUnspecified) {
+            return tc.userInterfaceStyle;
+        }
+    }
+    // Fallback: check key window
+    UIWindow *keyWindow = nil;
+    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            keyWindow = scene.windows.firstObject;
+            break;
+        }
+    }
+    if (!keyWindow) {
+        keyWindow = [UIApplication sharedApplication].keyWindow;
+    }
+    if (keyWindow && keyWindow.traitCollection.userInterfaceStyle != UIUserInterfaceStyleUnspecified) {
+        return keyWindow.traitCollection.userInterfaceStyle;
+    }
+    return UIUserInterfaceStyleLight;
+}
+
+NSString *LGPrefKeyForAppearance(NSString *baseKey, UIUserInterfaceStyle style) {
+    if (!baseKey.length) return baseKey;
+    if (style == UIUserInterfaceStyleDark) {
+        return [baseKey stringByAppendingString:kLGAppearanceModeDarkSuffix];
+    } else if (style == UIUserInterfaceStyleLight) {
+        return [baseKey stringByAppendingString:kLGAppearanceModeLightSuffix];
+    }
+    return baseKey;
+}
+
+NSString *LGEffectivePrefKey(NSString *baseKey) {
+    if (!LGIsSeparateAppearanceModeEnabled()) return baseKey;
+    UIUserInterfaceStyle style = LGCurrentSystemAppearance();
+    NSString *modeKey = LGPrefKeyForAppearance(baseKey, style);
+    // Check if the mode-specific key exists; if not, fall back to base key
+    if (LGHasExplicitPreferenceValue(modeKey)) {
+        return modeKey;
+    }
+    return baseKey;
+}
+
 void LGLog(NSString *format, ...) {
 #if LIQUIDASS_DEBUG
     va_list args;

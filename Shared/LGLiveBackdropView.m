@@ -24,12 +24,66 @@ static NSString *LGGlassPreferencesPath(void) {
     return path;
 }
 
+static UIUserInterfaceStyle sLGGlassAppearanceMode = UIUserInterfaceStyleUnspecified;
+
+void LGSetGlassAppearanceMode(UIUserInterfaceStyle mode) {
+    sLGGlassAppearanceMode = mode;
+}
+
+UIUserInterfaceStyle LGGetGlassAppearanceMode(void) {
+    return sLGGlassAppearanceMode;
+}
+
+static NSString *LGAppearanceModeSuffix(void) {
+    if (sLGGlassAppearanceMode == UIUserInterfaceStyleDark) return @".Dark";
+    if (sLGGlassAppearanceMode == UIUserInterfaceStyleLight) return @".Light";
+    return nil;
+}
+
+static BOOL LGKeySupportsAppearanceMode(NSString *key) {
+    if (!key.length) return NO;
+    // Skip tint colors - they are already mode-specific by nature
+    if ([key hasSuffix:@"LightTintColor"] || [key hasSuffix:@"DarkTintColor"]) return NO;
+    // Skip the separate modes toggle itself
+    if ([key hasPrefix:@"Appearance."]) return NO;
+    // Skip global/system settings that shouldn't be mode-specific
+    if ([key hasPrefix:@"Global."]) return NO;
+    if ([key hasPrefix:@"Specular.Motion."]) return NO;
+    if ([key hasPrefix:@"MemorySaving."]) return NO;
+    if ([key hasPrefix:@"DynamicQuality."]) return NO;
+    if ([key hasPrefix:@"AdaptiveBlur."]) return NO;
+    if ([key hasPrefix:@"WallpaperTint."]) return NO;
+    if ([key hasPrefix:@"LowPower."]) return NO;
+    if ([key hasPrefix:@"FocusMode."]) return NO;
+    if ([key hasPrefix:@"Banner."]) return NO;
+    if ([key hasPrefix:@"LandscapeVolumeGlass."]) return NO;
+    if ([key hasPrefix:@"VolumeHUDGlass."]) return NO;
+    if ([key hasPrefix:@"Renderer."]) return NO;
+    if ([key hasPrefix:@"QuickToggle."]) return NO;
+    if ([key hasPrefix:@"SurfaceSort."]) return NO;
+    if ([key hasPrefix:@"SettingsControls."]) return NO;
+    // All per-surface parameters support appearance mode
+    return YES;
+}
+
 id LGGlassPreferenceValue(NSString *key) {
     if (!key.length) return nil;
     @synchronized([LGLiveBackdropView class]) {
         if (!sLGGlassPreferences) {
             sLGGlassPreferences =
                 [NSDictionary dictionaryWithContentsOfFile:LGGlassPreferencesPath()] ?: @{};
+        }
+        // Check separate mode first (only for per-surface parameters)
+        id separateFlag = sLGGlassPreferences[@"Appearance.SeparateModes"];
+        if ([separateFlag isKindOfClass:[NSNumber class]] && [separateFlag boolValue]) {
+            NSString *suffix = LGAppearanceModeSuffix();
+            if (suffix.length && LGKeySupportsAppearanceMode(key)) {
+                NSString *modeKey = [key stringByAppendingString:suffix];
+                id modeValue = sLGGlassPreferences[modeKey];
+                if (modeValue != nil) {
+                    return modeValue;
+                }
+            }
         }
         return sLGGlassPreferences[key];
     }

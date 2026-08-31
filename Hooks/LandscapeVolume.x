@@ -6,6 +6,7 @@
 #import "../Shared/LGSharedSupport.h"
 
 static const void *kLGLandscapeVolumeGlassKey = &kLGLandscapeVolumeGlassKey;
+static const void *kLGVolumeHUDGlassKey = &kLGVolumeHUDGlassKey;
 
 static BOOL LGLandscapeVolumeGlassEnabled(void) {
     return LG_prefBool(@"LandscapeVolumeGlass.Enabled", NO);
@@ -17,6 +18,18 @@ static CGFloat LGLandscapeVolumeGlassCornerRadius(void) {
 
 static CGFloat LGLandscapeVolumeGlassBlur(void) {
     return LG_prefFloat(@"LandscapeVolumeGlass.Blur", 20.0);
+}
+
+static BOOL LGVolumeHUDGlassEnabled(void) {
+    return LG_prefBool(@"VolumeHUDGlass.Enabled", NO);
+}
+
+static CGFloat LGVolumeHUDGlassCornerRadius(void) {
+    return LG_prefFloat(@"VolumeHUDGlass.CornerRadius", 20.0);
+}
+
+static CGFloat LGVolumeHUDGlassBlur(void) {
+    return LG_prefFloat(@"VolumeHUDGlass.Blur", 15.0);
 }
 
 static void LGLandscapeVolumeApplyGlassToView(UIView *view) {
@@ -48,6 +61,35 @@ static void LGLandscapeVolumeRemoveGlassFromView(UIView *view) {
     }
 }
 
+static void LGVolumeHUDApplyGlassToView(UIView *view) {
+    if (!LGVolumeHUDGlassEnabled()) return;
+    if (!view) return;
+
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(view, kLGVolumeHUDGlassKey);
+    if (!glassView) {
+        glassView = LGCreateRegisteredGlass(view.bounds, nil, @"VolumeHUD");
+        objc_setAssociatedObject(view, kLGVolumeHUDGlassKey, glassView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [view insertSubview:glassView atIndex:0];
+        glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    }
+
+    CGFloat radius = LGVolumeHUDGlassCornerRadius();
+    glassView.layer.cornerRadius = radius;
+    glassView.clipsToBounds = YES;
+    glassView.frame = view.bounds;
+
+    // Apply custom blur
+    [glassView setValue:@(LGVolumeHUDGlassBlur()) forKey:@"blurRadius"];
+}
+
+static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(view, kLGVolumeHUDGlassKey);
+    if (glassView) {
+        [glassView removeFromSuperview];
+        objc_setAssociatedObject(view, kLGVolumeHUDGlassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
 // SpringBoard landscape volume press band
 %hook SBVolumePressBand
 
@@ -72,13 +114,26 @@ static void LGLandscapeVolumeRemoveGlassFromView(UIView *view) {
 
 %end
 
-// Also handle the volume HUD view
+// Portrait volume HUD view
 %hook SBVolumeHUDView
 
 - (void)layoutSubviews {
     %orig;
-    // The volume HUD is different from landscape press bands,
-    // but we can add glass to its background if desired
+    if (LGVolumeHUDGlassEnabled()) {
+        LGVolumeHUDApplyGlassToView((UIView *)self);
+    } else {
+        LGVolumeHUDRemoveGlassFromView((UIView *)self);
+    }
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    UIView *selfView = (UIView *)self;
+    if (selfView.window && LGVolumeHUDGlassEnabled()) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LGVolumeHUDApplyGlassToView(selfView);
+        });
+    }
 }
 
 %end

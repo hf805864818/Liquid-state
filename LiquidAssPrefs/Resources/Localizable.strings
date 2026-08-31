@@ -168,6 +168,14 @@
 "prefs.subtitle.landscape_volume_radius" = "Corner radius of the volume button glass.";
 "prefs.control.landscape_volume_blur" = "Blur Amount";
 "prefs.subtitle.landscape_volume_blur" = "Blur intensity for the volume button glass.";
+"prefs.section.volume_hud.title" = "Portrait Volume HUD";
+"prefs.section.volume_hud.subtitle" = "Glass effect for the volume HUD in portrait mode.";
+"prefs.control.volume_hud_glass" = "Volume HUD Glass";
+"prefs.subtitle.volume_hud_glass" = "Apply glass effect to the portrait volume HUD indicator.";
+"prefs.control.volume_hud_radius" = "Corner Radius";
+"prefs.subtitle.volume_hud_radius" = "Corner radius of the volume HUD glass.";
+"prefs.control.volume_hud_blur" = "Blur Amount";
+"prefs.subtitle.volume_hud_blur" = "Blur intensity for the volume HUD glass.";
 "prefs.control.reset_module" = "Reset This Module";
 "prefs.subtitle.reset_dock" = "Restore all Dock glass settings to default.";
 "prefs.subtitle.reset_dock_confirm" = "Are you sure you want to reset all Dock settings to default?";
@@ -227,6 +235,12 @@
 "prefs.subtitle.memory_saving_level" = "How aggressively to reduce memory usage.";
 "prefs.control.memory_pressure_boost" = "Pressure Boost";
 "prefs.subtitle.memory_pressure_boost" = "Automatically increase savings when system memory is low.";
+"prefs.section.appearance_mode.title" = "Appearance Mode";
+"prefs.section.appearance_mode.subtitle" = "Configure separate glass parameters for light and dark modes.";
+"prefs.control.separate_appearance_modes" = "Separate Light/Dark Parameters";
+"prefs.subtitle.separate_appearance_modes" = "When enabled, you can configure glass effect parameters separately for light and dark modes in each surface.";
+"prefs.appearance.light_mode" = "Light";
+"prefs.appearance.dark_mode" = "Dark";
 "prefs.section.app_exclusion.title" = "App Exclusion";
 "prefs.section.app_exclusion.subtitle" = "Disable glass effects in specific apps.";
 "prefs.control.app_exclusion_list" = "Exclusion List";

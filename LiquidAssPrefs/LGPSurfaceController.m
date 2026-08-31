@@ -49,6 +49,9 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     NSString *_screenIdentifier;
     UIColor *_accentColor;
     NSArray<NSDictionary *> *_items;
+    NSArray<NSDictionary *> *_baseItems;
+    UISegmentedControl *_appearanceSegment;
+    UIView *_appearanceSegmentContainer;
     UIScrollView *_scrollView;
     UIStackView *_contentStack;
     UIScrollView *_jumpScrollView;
@@ -138,9 +141,15 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
         _screenTitle = [LGPrefsSurfaceTitle(_screenIdentifier) copy];
         _screenSubtitle = [LGPrefsSurfaceSubtitle(_screenIdentifier) copy];
         _accentColor = LGPrefsSurfaceTintColor(_screenIdentifier);
-        _items = [LGPrefsSurfaceItems(_screenIdentifier) copy];
+        _baseItems = [LGPrefsSurfaceItems(_screenIdentifier) copy];
+        [self updateItemsForAppearanceMode];
     }
     self.title = _screenTitle;
+}
+
+- (void)updateItemsForAppearanceMode {
+    LGAppearanceEditMode mode = LGCurrentAppearanceEditMode();
+    _items = [LGItemsWithAppearanceMode(_baseItems, mode) copy];
 }
 
 - (instancetype)initWithTitle:(NSString *)title
@@ -154,7 +163,8 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     _screenSubtitle = [subtitle copy];
     _screenIdentifier = [identifier copy];
     _accentColor = tintColor ?: [UIColor systemBlueColor];
-    _items = [items copy];
+    _baseItems = [items copy];
+    [self updateItemsForAppearanceMode];
     self.title = title;
     return self;
 }
@@ -170,6 +180,10 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     [self applyNavigationBarStyle];
     LGInstallScrollableStack(self, 23.25, 12.0, &_scrollView, &_contentStack);
     _scrollView.delegate = self;
+    
+    // Add appearance mode segment if separate modes are enabled
+    [self configureAppearanceSegment];
+    
     LGInstallBottomRespringBar(self, &_respringBar);
     _scrollTopButton = [self makeScrollTopButton];
     [self.view addSubview:_scrollTopButton];
@@ -189,6 +203,84 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
                                              selector:@selector(handleLanguageChanged:)
                                                  name:kLGPrefsLanguageChangedNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAppearancePrefsChanged:)
+                                                 name:kLGPrefsUIRefreshNotification
+                                               object:nil];
+}
+
+#pragma mark - Appearance Mode Segment
+
+- (void)configureAppearanceSegment {
+    if (!LGIsSeparateAppearanceModeEnabled() || !_screenIdentifier.length) {
+        if (_appearanceSegmentContainer) {
+            [_appearanceSegmentContainer removeFromSuperview];
+            _appearanceSegmentContainer = nil;
+            _appearanceSegment = nil;
+        }
+        return;
+    }
+    
+    if (_appearanceSegmentContainer) return;
+    
+    _appearanceSegmentContainer = [[UIView alloc] init];
+    _appearanceSegmentContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    _appearanceSegmentContainer.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
+    _appearanceSegmentContainer.layer.cornerRadius = 12.0;
+    _appearanceSegmentContainer.layer.cornerCurve = kCACornerCurveContinuous;
+    _appearanceSegmentContainer.clipsToBounds = YES;
+    
+    _appearanceSegment = [[UISegmentedControl alloc] initWithItems:@[
+        LGLocalized(@"prefs.appearance.light_mode"),
+        LGLocalized(@"prefs.appearance.dark_mode"),
+    ]];
+    _appearanceSegment.translatesAutoresizingMaskIntoConstraints = NO;
+    _appearanceSegment.selectedSegmentIndex = (LGCurrentAppearanceEditMode() == LGAppearanceEditModeDark) ? 1 : 0;
+    [_appearanceSegment addTarget:self
+                           action:@selector(appearanceSegmentChanged:)
+                 forControlEvents:UIControlEventValueChanged];
+    
+    [_appearanceSegmentContainer addSubview:_appearanceSegment];
+    [_scrollView addSubview:_appearanceSegmentContainer];
+    
+    [NSLayoutConstraint activateConstraints:@[
+        [_appearanceSegmentContainer.topAnchor constraintEqualToAnchor:_scrollView.contentLayoutGuide.topAnchor constant:0.0],
+        [_appearanceSegmentContainer.leadingAnchor constraintEqualToAnchor:_scrollView.frameLayoutGuide.leadingAnchor constant:16.0],
+        [_appearanceSegmentContainer.trailingAnchor constraintEqualToAnchor:_scrollView.frameLayoutGuide.trailingAnchor constant:-16.0],
+        
+        [_appearanceSegment.topAnchor constraintEqualToAnchor:_appearanceSegmentContainer.topAnchor constant:8.0],
+        [_appearanceSegment.bottomAnchor constraintEqualToAnchor:_appearanceSegmentContainer.bottomAnchor constant:-8.0],
+        [_appearanceSegment.leadingAnchor constraintEqualToAnchor:_appearanceSegmentContainer.leadingAnchor constant:12.0],
+        [_appearanceSegment.trailingAnchor constraintEqualToAnchor:_appearanceSegmentContainer.trailingAnchor constant:-12.0],
+    ]];
+    
+    // Adjust content stack top padding
+    for (NSLayoutConstraint *constraint in _scrollView.constraints) {
+        if (constraint.firstItem == _contentStack && constraint.firstAttribute == NSLayoutAttributeTop) {
+            constraint.constant = 56.0;
+            break;
+        }
+    }
+}
+
+- (void)appearanceSegmentChanged:(UISegmentedControl *)sender {
+    LGAppearanceEditMode newMode = (sender.selectedSegmentIndex == 1) ? LGAppearanceEditModeDark : LGAppearanceEditModeLight;
+    LGSetCurrentAppearanceEditMode(newMode);
+    [self updateItemsForAppearanceMode];
+    [self reloadVisibleSettings];
+    [self updateVisibleValueControlledItemsAnimated:YES];
+}
+
+- (void)handleAppearancePrefsChanged:(NSNotification *)note {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL wasSeparate = (_appearanceSegmentContainer != nil);
+        BOOL isSeparate = LGIsSeparateAppearanceModeEnabled();
+        if (wasSeparate != isSeparate) {
+            [self configureAppearanceSegment];
+            [self updateItemsForAppearanceMode];
+            [self reloadVisibleSettings];
+        }
+    });
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -277,6 +369,16 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 - (NSArray<NSString *> *)currentPreferenceKeys {
     NSMutableOrderedSet<NSString *> *keys = [NSMutableOrderedSet orderedSet];
     [self addPreferenceKeysFromItems:_items toOrderedSet:keys];
+    
+    // When separate appearance mode is enabled, also include keys for both modes
+    if (LGIsSeparateAppearanceModeEnabled() && _baseItems.count > 0) {
+        // Add both .Light and .Dark variants of all base keys
+        NSArray<NSDictionary *> *lightItems = LGItemsWithAppearanceMode(_baseItems, LGAppearanceEditModeLight);
+        NSArray<NSDictionary *> *darkItems = LGItemsWithAppearanceMode(_baseItems, LGAppearanceEditModeDark);
+        [self addPreferenceKeysFromItems:lightItems toOrderedSet:keys];
+        [self addPreferenceKeysFromItems:darkItems toOrderedSet:keys];
+    }
+    
     return keys.array;
 }
 

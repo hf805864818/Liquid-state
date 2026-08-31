@@ -3,6 +3,8 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+#import "Shared/LGSharedSupport.h"
+#import "Shared/LGLiveBackdropView.h"
 
 typedef NS_OPTIONS(NSUInteger, SBSRelaunchActionOptions) {
     SBSRelaunchActionOptionsNone                   = 0,
@@ -44,8 +46,49 @@ static void LG_respringRequested(CFNotificationCenterRef center, void *observer,
     dispatch_async(dispatch_get_main_queue(), ^{ LG_requestRespring(); });
 }
 
+static void LG_updateAppearanceMode(void) {
+    if (!LGIsSeparateAppearanceModeEnabled()) {
+        LGSetGlassAppearanceMode(UIUserInterfaceStyleUnspecified);
+        return;
+    }
+    UIUserInterfaceStyle style = LGCurrentSystemAppearance();
+    LGSetGlassAppearanceMode(style);
+}
+
+static void LG_appearanceChanged(NSNotification *note) {
+    LG_updateAppearanceMode();
+    LGInvalidateGlassPreferenceCache();
+    // Post Darwin notification to refresh all glass views with new parameters
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CFSTR("dylv.liquidglass/ParametersReloaded"),
+                                         NULL, NULL, true);
+}
+
 %ctor {
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                     LG_respringRequested, (__bridge CFStringRef)kLGRespringNote,
                                     NULL, CFNotificationSuspensionBehaviorCoalesce);
+    
+    if (LGIsSpringBoardProcess()) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LG_updateAppearanceMode();
+            // Observe system appearance changes
+            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                              object:nil
+                                                               queue:[NSOperationQueue mainQueue]
+                                                          usingBlock:^(NSNotification *note) {
+                LG_appearanceChanged(note);
+            }];
+            
+            // Observe trait collection changes on main screen
+            if (@available(iOS 13.0, *)) {
+                [[NSNotificationCenter defaultCenter] addObserverForName:@"_UIScreenTraitCollectionDidChangeNotification"
+                                                                  object:nil
+                                                                   queue:[NSOperationQueue mainQueue]
+                                                              usingBlock:^(NSNotification *note) {
+                    LG_appearanceChanged(note);
+                }];
+            }
+        });
+    }
 }

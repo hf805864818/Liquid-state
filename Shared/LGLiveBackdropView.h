@@ -15,6 +15,10 @@ id LGGlassPreferenceValue(NSString *key);
 void LGInvalidateGlassPreferenceCache(void);
 NSString *LGFilterTypeForHostPrefix(NSString *prefix);
 
+// Appearance mode support for separate light/dark parameters
+void LGSetGlassAppearanceMode(UIUserInterfaceStyle mode);
+UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
+
 @interface LGLiveBackdropView : UIView
 
 @property (nonatomic, copy) NSString *lgFilterType;

@@ -267,6 +267,34 @@ id LGReadPreferenceObject(NSString *key, id fallback) {
     CFPropertyListRef value = CFPreferencesCopyAppValue((__bridge CFStringRef)key,
                                                         (__bridge CFStringRef)LGPrefsDomain);
     id obj = CFBridgingRelease(value);
+    
+    // Appearance mode fallback: if mode-specific key doesn't exist, try base key
+    if (!obj && LGIsSeparateAppearanceModeEnabled()) {
+        if ([key hasSuffix:@".Light"]) {
+            NSString *baseKey = [key substringToIndex:key.length - @".Light".length];
+            if ([sLGPendingPreferences objectForKey:baseKey]) {
+                return sLGPendingPreferences[baseKey];
+            }
+            if (![sLGPendingPreferenceRemovals containsObject:baseKey]) {
+                CFPropertyListRef baseValue = CFPreferencesCopyAppValue((__bridge CFStringRef)baseKey,
+                                                                        (__bridge CFStringRef)LGPrefsDomain);
+                id baseObj = CFBridgingRelease(baseValue);
+                if (baseObj) return baseObj;
+            }
+        } else if ([key hasSuffix:@".Dark"]) {
+            NSString *baseKey = [key substringToIndex:key.length - @".Dark".length];
+            if ([sLGPendingPreferences objectForKey:baseKey]) {
+                return sLGPendingPreferences[baseKey];
+            }
+            if (![sLGPendingPreferenceRemovals containsObject:baseKey]) {
+                CFPropertyListRef baseValue = CFPreferencesCopyAppValue((__bridge CFStringRef)baseKey,
+                                                                        (__bridge CFStringRef)LGPrefsDomain);
+                id baseObj = CFBridgingRelease(baseValue);
+                if (baseObj) return baseObj;
+            }
+        }
+    }
+    
     return obj ?: fallback;
 }
 
@@ -615,6 +643,58 @@ static NSInteger LGSurfaceDefaultOrderForIdentifier(NSString *identifier) {
     });
     NSNumber *order = orderMap[identifier];
     return order ? order.integerValue : 500;
+}
+
+#pragma mark - Separate Light/Dark Appearance Mode
+
+BOOL LGIsSeparateAppearanceModeEnabled(void) {
+    return [LGReadPreference(@"Appearance.SeparateModes", @NO) boolValue];
+}
+
+static NSString * const kLGAppearanceEditModeKey = @"LGAppearanceEditMode";
+
+LGAppearanceEditMode LGCurrentAppearanceEditMode(void) {
+    if (!LGIsSeparateAppearanceModeEnabled()) {
+        return LGAppearanceEditModeUnified;
+    }
+    NSNumber *stored = [[NSUserDefaults standardUserDefaults] objectForKey:kLGAppearanceEditModeKey];
+    if (stored) {
+        LGAppearanceEditMode mode = stored.integerValue;
+        if (mode == LGAppearanceEditModeLight || mode == LGAppearanceEditModeDark) {
+            return mode;
+        }
+    }
+    return LGAppearanceEditModeLight;
+}
+
+void LGSetCurrentAppearanceEditMode(LGAppearanceEditMode mode) {
+    [[NSUserDefaults standardUserDefaults] setInteger:mode forKey:kLGAppearanceEditModeKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+NSArray<NSDictionary *> *LGItemsWithAppearanceMode(NSArray<NSDictionary *> *items, LGAppearanceEditMode mode) {
+    if (mode == LGAppearanceEditModeUnified || items.count == 0) {
+        return items;
+    }
+    NSString *suffix = (mode == LGAppearanceEditModeDark) ? @".Dark" : @".Light";
+    NSMutableArray<NSDictionary *> *result = [NSMutableArray arrayWithCapacity:items.count];
+    for (NSDictionary *item in items) {
+        NSMutableDictionary *mutableItem = [item mutableCopy];
+        NSString *key = mutableItem[@"key"];
+        // Skip tint colors - they are already mode-specific by their nature
+        if (key.length && ![key hasSuffix:suffix] &&
+            ![key hasSuffix:@"LightTintColor"] && ![key hasSuffix:@"DarkTintColor"]) {
+            mutableItem[@"key"] = [key stringByAppendingString:suffix];
+        }
+        // Also handle visible_key if present
+        NSString *visibleKey = mutableItem[@"visible_key"];
+        if (visibleKey.length && ![visibleKey hasSuffix:suffix] &&
+            ![visibleKey hasSuffix:@"LightTintColor"] && ![visibleKey hasSuffix:@"DarkTintColor"]) {
+            mutableItem[@"visible_key"] = [visibleKey stringByAppendingString:suffix];
+        }
+        [result addObject:[mutableItem copy]];
+    }
+    return result;
 }
 
 NSArray<NSDictionary *> *LGSortedItemsBySectionGroups(NSArray<NSDictionary *> *items) {
@@ -1062,9 +1142,15 @@ NSArray<NSDictionary *> *LGGlobalControlsItems(void) {
 }
 
 NSArray<NSDictionary *> *LGMoreOptionsItems(void) {
-    NSMutableArray<NSDictionary *> *items = [NSMutableArray arrayWithArray:@[
-        LGSectionSetting(LGLocalized(@"prefs.misc.options_section.title"),
-                         LGLocalized(@"prefs.misc.options_section.subtitle"))]];
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    [items addObject:LGSectionSetting(LGLocalized(@"prefs.section.appearance_mode.title"),
+                                      LGLocalized(@"prefs.section.appearance_mode.subtitle"))];
+    [items addObject:LGSwitchSetting(@"Appearance.SeparateModes",
+                                     LGLocalized(@"prefs.control.separate_appearance_modes"),
+                                     LGLocalized(@"prefs.subtitle.separate_appearance_modes"),
+                                     NO)];
+    [items addObject:LGSectionSetting(LGLocalized(@"prefs.misc.options_section.title"),
+                                      LGLocalized(@"prefs.misc.options_section.subtitle"))];
     [items addObject:LGSliderSetting(@"Renderer.FresnelGlareStrength",
                                      LGLocalized(@"prefs.control.fresnel_glare"),
                                      LGLocalized(@"prefs.subtitle.fresnel_glare"),
@@ -1143,6 +1229,24 @@ NSArray<NSDictionary *> *LGMoreOptionsItems(void) {
                         LGLocalized(@"prefs.subtitle.landscape_volume_blur"),
                         20.0, 0.0, 50.0, 1),
         @"LandscapeVolumeGlass.Enabled", @YES)];
+    [items addObject:LGSectionSetting(LGLocalized(@"prefs.section.volume_hud.title"),
+                                      LGLocalized(@"prefs.section.volume_hud.subtitle"))];
+    [items addObject:LGSwitchSetting(@"VolumeHUDGlass.Enabled",
+                                     LGLocalized(@"prefs.control.volume_hud_glass"),
+                                     LGLocalized(@"prefs.subtitle.volume_hud_glass"),
+                                     NO)];
+    [items addObject:LGSettingControlledByKey(
+        LGSliderSetting(@"VolumeHUDGlass.CornerRadius",
+                        LGLocalized(@"prefs.control.volume_hud_radius"),
+                        LGLocalized(@"prefs.subtitle.volume_hud_radius"),
+                        20.0, 0.0, 50.0, 1),
+        @"VolumeHUDGlass.Enabled", @YES)];
+    [items addObject:LGSettingControlledByKey(
+        LGSliderSetting(@"VolumeHUDGlass.Blur",
+                        LGLocalized(@"prefs.control.volume_hud_blur"),
+                        LGLocalized(@"prefs.subtitle.volume_hud_blur"),
+                        15.0, 0.0, 50.0, 1),
+        @"VolumeHUDGlass.Enabled", @YES)];
     [items addObject:LGSectionSetting(LGLocalized(@"prefs.section.banner_animation.title"),
                                       LGLocalized(@"prefs.section.banner_animation.subtitle"))];
     [items addObject:LGSwitchSetting(@"Banner.Animation.SmoothGlass",

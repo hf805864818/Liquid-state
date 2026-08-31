@@ -1,6 +1,7 @@
 #import "LGGlassKit.h"
 #import "LGLiveBackdropView.h"
 #import "LGHostRegistry.h"
+#import "LGSharedSupport.h"
 #import <objc/runtime.h>
 
 #pragma mark - class / ancestry helpers

@@ -234,6 +234,14 @@
 "prefs.subtitle.landscape_volume_radius" = "音量按键玻璃的圆角大小。";
 "prefs.control.landscape_volume_blur" = "模糊强度";
 "prefs.subtitle.landscape_volume_blur" = "音量按键玻璃的模糊程度。";
+"prefs.section.volume_hud.title" = "竖屏音量HUD";
+"prefs.section.volume_hud.subtitle" = "为竖屏状态下的音量HUD添加玻璃效果。";
+"prefs.control.volume_hud_glass" = "音量HUD玻璃";
+"prefs.subtitle.volume_hud_glass" = "在竖屏按音量键时显示的音量HUD上应用玻璃效果。";
+"prefs.control.volume_hud_radius" = "圆角半径";
+"prefs.subtitle.volume_hud_radius" = "音量HUD玻璃的圆角大小。";
+"prefs.control.volume_hud_blur" = "模糊强度";
+"prefs.subtitle.volume_hud_blur" = "玻璃效果的模糊程度。";
 "prefs.control.reset_module" = "重置此模块";
 "prefs.subtitle.reset_dock" = "将所有 Dock 玻璃设置恢复为默认值。";
 "prefs.subtitle.reset_dock_confirm" = "确定要将所有 Dock 设置恢复为默认值吗？";
@@ -293,6 +301,12 @@
 "prefs.subtitle.memory_saving_level" = "内存使用的减少程度。";
 "prefs.control.memory_pressure_boost" = "压力增强";
 "prefs.subtitle.memory_pressure_boost" = "系统内存不足时自动增加节省力度。";
+"prefs.section.appearance_mode.title" = "外观模式";
+"prefs.section.appearance_mode.subtitle" = "为浅色和深色模式分别设置独立的玻璃参数。";
+"prefs.control.separate_appearance_modes" = "独立深/浅色参数";
+"prefs.subtitle.separate_appearance_modes" = "开启后，可在各表面设置中分别配置浅色和深色模式下的玻璃效果参数。";
+"prefs.appearance.light_mode" = "浅色";
+"prefs.appearance.dark_mode" = "深色";
 "prefs.section.app_exclusion.title" = "应用排除";
 "prefs.section.app_exclusion.subtitle" = "在指定应用中禁用玻璃效果。";
 "prefs.control.app_exclusion_list" = "排除列表";

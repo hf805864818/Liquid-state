@@ -67,6 +67,14 @@ BOOL LG_currentAppIsExcluded(void);
 void LGReloadPreferences(void);
 void LGObservePreferenceChanges(dispatch_block_t block);
 
+// Appearance-aware preferences (separate light/dark parameters)
+BOOL LGIsSeparateAppearanceModeEnabled(void);
+UIUserInterfaceStyle LGCurrentSystemAppearance(void);
+NSString *LGEffectivePrefKey(NSString *baseKey);
+NSString *LGPrefKeyForAppearance(NSString *baseKey, UIUserInterfaceStyle style);
+NSString * const kLGAppearanceModeLightSuffix;
+NSString * const kLGAppearanceModeDarkSuffix;
+
 void LGLog(NSString *format, ...);
 
 CGColorSpaceRef LGSharedRGBColorSpace(void);
