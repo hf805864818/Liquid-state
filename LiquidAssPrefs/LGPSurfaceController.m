@@ -2032,4 +2032,178 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+#pragma mark - Custom Surface Sorting
+
+- (void)configureCustomSort {
+    // Build list of sortable surface identifiers from the current surfaces list
+    NSArray *surfaceItems = LGPrefsSurfaceItems(LGPrefsSurfaceSurfaces);
+    NSMutableArray<NSDictionary *> *sortableGroups = [NSMutableArray array];
+    NSMutableArray<NSDictionary *> *currentGroup = nil;
+
+    for (NSDictionary *item in surfaceItems) {
+        if ([item[@"type"] isEqualToString:@"section"]) {
+            NSString *title = item[@"title"];
+            NSString *subtitle = item[@"subtitle"];
+            if (!title.length && !subtitle.length) {
+                if (currentGroup) [currentGroup addObject:item];
+                continue;
+            }
+            if (currentGroup.count) [sortableGroups addObject:[currentGroup copy]];
+            currentGroup = [NSMutableArray arrayWithObject:item];
+            continue;
+        }
+        if ([item[@"type"] isEqualToString:@"nav"]) {
+            if (currentGroup) [currentGroup addObject:item];
+        }
+    }
+    if (currentGroup.count) [sortableGroups addObject:[currentGroup copy]];
+
+    // Collect all surface identifiers for the reorder list (flatten nav items)
+    NSMutableArray<NSDictionary *> *reorderItems = [NSMutableArray array];
+    for (NSArray *group in sortableGroups) {
+        for (NSDictionary *item in group) {
+            if ([item[@"type"] isEqualToString:@"nav"]) {
+                NSString *surfaceId = item[@"surface_identifier"];
+                NSString *title = item[@"title"];
+                if (surfaceId.length && title.length) {
+                    [reorderItems addObject:@{@"id": surfaceId, @"title": title}];
+                }
+            }
+        }
+    }
+
+    if (reorderItems.count == 0) {
+        LGPresentInfoSheet(self, @"Error", @"No sortable items found.");
+        return;
+    }
+
+    // Apply saved custom order
+    NSArray *savedOrder = LGReadPreferenceObject(@"SurfaceSort.CustomOrder", nil);
+    if ([savedOrder isKindOfClass:[NSArray class]] && savedOrder.count > 0) {
+        NSMutableDictionary *orderMap = [NSMutableDictionary dictionary];
+        for (NSUInteger i = 0; i < savedOrder.count; i++) {
+            orderMap[savedOrder[i]] = @(i);
+        }
+        [reorderItems sortUsingComparator:^NSComparisonResult(NSDictionary *lhs, NSDictionary *rhs) {
+            NSNumber *leftOrder = orderMap[lhs[@"id"]];
+            NSNumber *rightOrder = orderMap[rhs[@"id"]];
+            if (leftOrder && rightOrder) return [leftOrder compare:rightOrder];
+            if (leftOrder) return NSOrderedAscending;
+            if (rightOrder) return NSOrderedDescending;
+            return [lhs[@"title"] localizedCaseInsensitiveCompare:rhs[@"title"]];
+        }];
+    }
+
+    // Create a reorder view controller
+    LGCustomSortViewController *sortVC = [[LGCustomSortViewController alloc] initWithItems:reorderItems];
+    __weak typeof(self) weakSelf = self;
+    sortVC.completionHandler = ^(NSArray<NSString *> *newOrder) {
+        if (newOrder.count > 0) {
+            LGWritePreferenceObject(@"SurfaceSort.CustomOrder", newOrder);
+            [weakSelf reloadVisibleSettings];
+            [weakSelf updateRespringBarAnimated:YES];
+        }
+        [weakSelf dismissViewControllerAnimated:YES completion:nil];
+    };
+
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:sortVC];
+    nav.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+@end
+
+#pragma mark - LGCustomSortViewController
+
+@interface LGCustomSortViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *items;
+@property (nonatomic, copy) void (^completionHandler)(NSArray<NSString *> *newOrder);
+@end
+
+@implementation LGCustomSortViewController
+
+- (instancetype)initWithItems:(NSArray<NSDictionary *> *)items {
+    self = [super init];
+    if (self) {
+        _items = [items mutableCopy];
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    self.title = LGLocalized(@"prefs.custom_sort.title");
+    self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
+
+    // Navigation bar buttons
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
+                             target:self
+                             action:@selector(cancelTapped)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                             target:self
+                             action:@selector(doneTapped)];
+
+    // Table view
+    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
+    self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.dataSource = self;
+    self.tableView.delegate = self;
+    self.tableView.editing = YES;
+    self.tableView.allowsSelectionDuringEditing = YES;
+    [self.view addSubview:self.tableView];
+}
+
+- (void)cancelTapped {
+    if (self.completionHandler) self.completionHandler(nil);
+}
+
+- (void)doneTapped {
+    NSMutableArray<NSString *> *order = [NSMutableArray array];
+    for (NSDictionary *item in self.items) {
+        [order addObject:item[@"id"]];
+    }
+    if (self.completionHandler) self.completionHandler(order);
+}
+
+#pragma mark - UITableViewDataSource
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.items.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cellId = @"SortCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellId];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:cellId];
+    }
+    NSDictionary *item = self.items[indexPath.row];
+    cell.textLabel.text = item[@"title"];
+    cell.showsReorderControl = YES;
+    cell.shouldIndentWhileEditing = NO;
+    return cell;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
+    return YES;
+}
+
+- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)sourceIndexPath toIndexPath:(NSIndexPath *)destinationIndexPath {
+    NSDictionary *item = self.items[sourceIndexPath.row];
+    [self.items removeObjectAtIndex:sourceIndexPath.row];
+    [self.items insertObject:item atIndex:destinationIndexPath.row];
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return UITableViewCellEditingStyleNone;
+}
+
+- (BOOL)tableView:(UITableView *)tableView shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    return NO;
+}
+
 @end

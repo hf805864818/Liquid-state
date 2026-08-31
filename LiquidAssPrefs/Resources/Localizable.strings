@@ -207,8 +207,10 @@
 "prefs.section.focus_mode.subtitle" = "Automatically adjust glass quality when a Focus is active.";
 "prefs.control.focus_mode" = "Focus Optimization";
 "prefs.subtitle.focus_mode" = "Reduce glass rendering quality when Focus Mode is active.";
-"prefs.control.focus_quality_reduction" = "Quality Reduction";
-"prefs.subtitle.focus_quality_reduction" = "How much to reduce glass quality during Focus Mode.";
+"prefs.control.focus_blur_reduction" = "Blur Reduction";
+"prefs.subtitle.focus_blur_reduction" = "How much to reduce blur intensity during Focus Mode.";
+"prefs.control.focus_thickness_reduction" = "Thickness Reduction";
+"prefs.subtitle.focus_thickness_reduction" = "How much to reduce glass thickness during Focus Mode.";
 "prefs.control.focus_disable_dispersion" = "Disable Dispersion";
 "prefs.subtitle.focus_disable_dispersion" = "Turn off chromatic dispersion during Focus Mode.";
 "prefs.section.dynamic_quality.title" = "Dynamic Quality";
@@ -235,6 +237,10 @@
 "prefs.subtitle.surface_sort_mode" = "Choose the order of surfaces in the settings list.";
 "prefs.surface_sort.default" = "Default";
 "prefs.surface_sort.alphabetical" = "Alphabetical";
+"prefs.surface_sort.custom" = "Custom";
+"prefs.control.custom_sort_order" = "Custom Order";
+"prefs.subtitle.custom_sort_order" = "Drag to reorder surfaces in the settings list.";
+"prefs.custom_sort.title" = "Custom Order";
 "prefs.section.preset_themes.title" = "Preset Themes";
 "prefs.section.preset_themes.subtitle" = "Quickly apply curated glass effect styles.";
 "prefs.control.browse_themes" = "Browse Themes";

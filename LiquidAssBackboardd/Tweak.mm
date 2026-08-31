@@ -1048,35 +1048,50 @@ static void lgReloadHostPrefs(void) {
         if ([focusEnabled isKindOfClass:[NSNumber class]] && focusEnabled.boolValue &&
             [focusActive isKindOfClass:[NSNumber class]] && focusActive.boolValue) {
 
-            NSNumber *qualityReduction = prefs[@"FocusMode.QualityReduction"];
+            NSNumber *blurReduction = prefs[@"FocusMode.BlurReduction"];
+            NSNumber *thicknessReduction = prefs[@"FocusMode.ThicknessReduction"];
             NSNumber *disableDispersion = prefs[@"FocusMode.DisableDispersion"];
 
-            CGFloat qualityReduceAmount = [qualityReduction isKindOfClass:[NSNumber class]] ? qualityReduction.floatValue : 0.3f;
+            // Fallback to old QualityReduction key for backwards compatibility
+            if (![blurReduction isKindOfClass:[NSNumber class]]) {
+                NSNumber *qualityReduction = prefs[@"FocusMode.QualityReduction"];
+                if ([qualityReduction isKindOfClass:[NSNumber class]]) {
+                    blurReduction = qualityReduction;
+                }
+            }
+
+            CGFloat blurReduceAmount = [blurReduction isKindOfClass:[NSNumber class]] ? blurReduction.floatValue : 0.3f;
+            CGFloat thickReduceAmount = [thicknessReduction isKindOfClass:[NSNumber class]] ? thicknessReduction.floatValue : 0.2f;
             BOOL disableDisp = [disableDispersion isKindOfClass:[NSNumber class]] ? disableDispersion.boolValue : NO;
 
-            qualityReduceAmount = fminf(1.0f, fmaxf(0.0f, qualityReduceAmount));
+            blurReduceAmount = fminf(1.0f, fmaxf(0.0f, blurReduceAmount));
+            thickReduceAmount = fminf(1.0f, fmaxf(0.0f, thickReduceAmount));
 
             int focusOverrides = 0;
             for (int i = 1; i < kHostCount; i++) {
                 // Reduce blur
                 CGFloat baseBlur = g_hostParams[i].blur;
-                g_hostParams[i].blur = baseBlur * (1.0f - qualityReduceAmount);
+                g_hostParams[i].blur = baseBlur * (1.0f - blurReduceAmount);
 
-                // Reduce refraction slightly
-                g_hostParams[i].refractionScale *= (1.0f - qualityReduceAmount * 0.5f);
+                // Reduce glass thickness
+                g_hostParams[i].glassThickness *= (1.0f - thickReduceAmount);
+
+                // Reduce refraction slightly (proportional to blur reduction)
+                g_hostParams[i].refractionScale *= (1.0f - blurReduceAmount * 0.5f);
 
                 // Reduce dispersion
                 if (disableDisp) {
                     g_hostParams[i].dispersionStrength = 0.0f;
                 } else {
-                    g_hostParams[i].dispersionStrength *= (1.0f - qualityReduceAmount * 0.5f);
+                    g_hostParams[i].dispersionStrength *= (1.0f - blurReduceAmount * 0.3f);
                 }
 
                 focusOverrides++;
             }
 
-            lglog("focus mode active: quality reduced by %.0f%%, dispersion=%s, hosts=%d",
-                  qualityReduceAmount * 100.0f,
+            lglog("focus mode active: blur reduced by %.0f%%, thickness reduced by %.0f%%, dispersion=%s, hosts=%d",
+                  blurReduceAmount * 100.0f,
+                  thickReduceAmount * 100.0f,
                   disableDisp ? "off" : "reduced",
                   focusOverrides);
         }

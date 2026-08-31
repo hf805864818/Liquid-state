@@ -131,24 +131,46 @@ static NSString * const kLGQuickToggleNotification = @"dylv.liquidass/QuickToggl
 }
 
 - (void)refreshState {
-    // Read current state from preferences
+    // Read CC toggle enabled setting
+    CFBooleanRef ccEnabledRef = CFPreferencesCopyAppValue(CFSTR("QuickToggle.CCEnabled"),
+                                                          (__bridge CFStringRef)kLGPrefsDomain);
+    BOOL ccEnabled = (ccEnabledRef && CFBooleanGetValue(ccEnabledRef)) ? YES : YES; // default YES
+    if (ccEnabledRef) CFRelease(ccEnabledRef);
+
+    // Read current glass enabled state
     CFBooleanRef enabled = CFPreferencesCopyAppValue(CFSTR("Global.Enabled"),
                                                      (__bridge CFStringRef)kLGPrefsDomain);
     self.isGlassEnabled = (enabled && CFBooleanGetValue(enabled));
     if (enabled) CFRelease(enabled);
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.isGlassEnabled) {
-            self.view.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.2];
-            self.iconView.tintColor = [UIColor colorWithRed:0.4 green:0.7 blue:1.0 alpha:1.0];
+        self.toggleButton.enabled = ccEnabled;
+        if (ccEnabled) {
+            if (self.isGlassEnabled) {
+                self.view.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.2];
+                self.iconView.tintColor = [UIColor colorWithRed:0.4 green:0.7 blue:1.0 alpha:1.0];
+            } else {
+                self.view.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.3];
+                self.iconView.tintColor = [UIColor colorWithWhite:0.6 alpha:1.0];
+            }
+            self.iconView.alpha = 1.0;
         } else {
-            self.view.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.3];
-            self.iconView.tintColor = [UIColor colorWithWhite:0.6 alpha:1.0];
+            // Disabled state - greyed out
+            self.view.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.15];
+            self.iconView.tintColor = [UIColor colorWithWhite:0.4 alpha:1.0];
+            self.iconView.alpha = 0.5;
         }
     });
 }
 
 - (void)toggleTapped {
+    // Check if CC toggle is enabled in settings
+    CFBooleanRef ccEnabledRef = CFPreferencesCopyAppValue(CFSTR("QuickToggle.CCEnabled"),
+                                                          (__bridge CFStringRef)kLGPrefsDomain);
+    BOOL ccEnabled = (ccEnabledRef && CFBooleanGetValue(ccEnabledRef)) ? YES : YES;
+    if (ccEnabledRef) CFRelease(ccEnabledRef);
+    if (!ccEnabled) return;
+
     self.isGlassEnabled = !self.isGlassEnabled;
 
     // Write new state to preferences

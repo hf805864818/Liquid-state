@@ -264,8 +264,10 @@
 "prefs.section.focus_mode.subtitle" = "专注模式激活时自动调整玻璃质量。";
 "prefs.control.focus_mode" = "专注优化";
 "prefs.subtitle.focus_mode" = "专注模式下降低玻璃渲染质量。";
-"prefs.control.focus_quality_reduction" = "质量降低";
-"prefs.subtitle.focus_quality_reduction" = "专注模式下玻璃质量的降低比例。";
+"prefs.control.focus_blur_reduction" = "模糊降低";
+"prefs.subtitle.focus_blur_reduction" = "专注模式下模糊强度的降低比例。";
+"prefs.control.focus_thickness_reduction" = "厚度降低";
+"prefs.subtitle.focus_thickness_reduction" = "专注模式下玻璃厚度的降低比例。";
 "prefs.control.focus_disable_dispersion" = "禁色散";
 "prefs.subtitle.focus_disable_dispersion" = "专注模式下关闭色散效果。";
 "prefs.section.dynamic_quality.title" = "动态质量";
@@ -292,6 +294,10 @@
 "prefs.subtitle.surface_sort_mode" = "选择设置列表中表面的排列顺序。";
 "prefs.surface_sort.default" = "默认";
 "prefs.surface_sort.alphabetical" = "字母顺序";
+"prefs.surface_sort.custom" = "自定义";
+"prefs.control.custom_sort_order" = "自定义排序";
+"prefs.subtitle.custom_sort_order" = "拖动调整设置列表中表面的顺序。";
+"prefs.custom_sort.title" = "自定义排序";
 "prefs.section.preset_themes.title" = "预设主题";
 "prefs.section.preset_themes.subtitle" = "快速应用精选的玻璃效果风格。";
 "prefs.control.browse_themes" = "浏览主题";

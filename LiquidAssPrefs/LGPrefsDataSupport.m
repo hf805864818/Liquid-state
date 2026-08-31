@@ -277,6 +277,35 @@ void LGWritePreference(NSString *key, NSNumber *value) {
 void LGWritePreferenceObject(NSString *key, id value) {
     if (!key.length || !value) return;
     LGEnsurePendingPreferencesInitialized();
+
+    // If user modifies any setting that isn't part of the theme system itself,
+    // clear the current preset theme marker (since they've customized away from the preset)
+    static NSString * const kPresetThemeKey = @"PresetTheme.Current";
+    if (![key isEqualToString:kPresetThemeKey] &&
+        ![key hasPrefix:@"SurfaceSort."] &&
+        ![key hasPrefix:@"SettingsControls."] &&
+        ![key isEqualToString:@"Global.Enabled"] &&
+        ![key hasPrefix:@"LowPower.Active"] &&
+        ![key hasPrefix:@"FocusMode.Active"] &&
+        ![key hasPrefix:@"DynamicQuality.HighLoadActive"] &&
+        ![key hasPrefix:@"MemorySaving.ActivePressure"] &&
+        ![key hasPrefix:@"WallpaperTint.LightColor"] &&
+        ![key hasPrefix:@"WallpaperTint.DarkColor"] &&
+        ![key hasPrefix:@"AdaptiveBlur.CurrentBrightness"]) {
+        NSString *currentTheme = sLGPendingPreferences[kPresetThemeKey];
+        if (!currentTheme) {
+            CFTypeRef existing = CFPreferencesCopyAppValue((__bridge CFStringRef)kPresetThemeKey,
+                                                           (__bridge CFStringRef)LGPrefsDomain);
+            if (existing) {
+                currentTheme = (__bridge_transfer NSString *)existing;
+            }
+        }
+        if ([currentTheme isKindOfClass:[NSString class]] && currentTheme.length > 0) {
+            sLGPendingPreferences[kPresetThemeKey] = @"";
+            LGLog(@"[prefs-pending] cleared preset theme marker due to user modification of %@", key);
+        }
+    }
+
     sLGPendingPreferences[key] = value;
     [sLGPendingPreferenceRemovals removeObject:key];
     LGLog(@"[prefs-pending] staged %@=%@", key, value);
@@ -540,32 +569,55 @@ static NSString *LGSurfaceGroupIdentifier(NSArray<NSDictionary *> *items) {
             return [key substringToIndex:key.length - 8]; // strip .Enabled
         }
     }
+    // For nav-type items, use the surface_identifier
+    for (NSDictionary *item in items) {
+        NSString *surfaceId = item[@"surface_identifier"];
+        if (surfaceId.length) return surfaceId;
+    }
     return LGSurfaceGroupSortTitle(items);
 }
 
 static NSInteger LGSurfaceDefaultOrderForIdentifier(NSString *identifier) {
-    // Default ordering for homescreen surfaces
+    // Default ordering for surfaces
     static NSDictionary *orderMap = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         orderMap = @{
+            // Home group
             @"Dock": @(10),
+            @"FolderIcons": @(20),
             @"FolderIcon": @(20),
             @"AppIcons": @(30),
-            @"ContextMenu": @(40),
-            @"Alerts": @(50),
+            @"OpenFolder": @(40),
+            @"ContextMenu": @(50),
             @"Banner": @(60),
-            @"ControlCenter": @(70),
-            @"SearchPill": @(80),
-            @"Spotlight": @(90),
-            @"Widgets": @(100),
+            @"Alerts": @(70),
+            @"ControlCenter": @(80),
+            @"SearchPill": @(90),
+            @"Spotlight": @(100),
+            @"Widgets": @(110),
+            // Lock group
+            @"Notifications": @(200),
+            @"NotificationCenter": @(210),
+            @"DynamicIsland": @(220),
+            @"QuickActions": @(230),
+            @"Passcode": @(240),
+            @"Clock": @(250),
+            @"CoverSheet": @(260),
+            // Library group
+            @"AppLibraryPods": @(300),
+            @"AppLibrarySearch": @(310),
+            // System group
+            @"GlobalControls": @(400),
+            @"Keyboard": @(410),
+            @"TabBar": @(420),
         };
     });
     NSNumber *order = orderMap[identifier];
     return order ? order.integerValue : 500;
 }
 
-static NSArray<NSDictionary *> *LGSurfaceItemsBySortingSectionGroups(NSArray<NSDictionary *> *items) {
+NSArray<NSDictionary *> *LGSortedItemsBySectionGroups(NSArray<NSDictionary *> *items) {
     NSMutableArray<NSDictionary *> *leadingItems = [NSMutableArray array];
     NSMutableArray<NSArray<NSDictionary *> *> *groups = [NSMutableArray array];
     NSMutableArray<NSDictionary *> *currentGroup = nil;
@@ -964,7 +1016,7 @@ NSArray<NSDictionary *> *LGHomescreenItems(void) {
     [rendererItems addObjectsFromArray:LGRendererItemsForHostPrefix(@"Spotlight")];
     [rendererItems addObject:LGSectionSetting(LGLocalized(@"prefs.section.widgets.title"), nil)];
     [rendererItems addObjectsFromArray:LGWidgetItems()];
-    return LGSurfaceItemsBySortingSectionGroups(rendererItems);
+    return LGSortedItemsBySectionGroups(rendererItems);
 }
 
 NSArray<NSDictionary *> *LGAllSurfaceItems(void) {
@@ -1134,10 +1186,16 @@ NSArray<NSDictionary *> *LGMoreOptionsItems(void) {
                                      LGLocalized(@"prefs.subtitle.focus_mode"),
                                      NO)];
     [items addObject:LGSettingControlledByKey(
-        LGSliderSetting(@"FocusMode.QualityReduction",
-                        LGLocalized(@"prefs.control.focus_quality_reduction"),
-                        LGLocalized(@"prefs.subtitle.focus_quality_reduction"),
+        LGSliderSetting(@"FocusMode.BlurReduction",
+                        LGLocalized(@"prefs.control.focus_blur_reduction"),
+                        LGLocalized(@"prefs.subtitle.focus_blur_reduction"),
                         0.3, 0.0, 1.0, 2),
+        @"FocusMode.Enabled", @YES)];
+    [items addObject:LGSettingControlledByKey(
+        LGSliderSetting(@"FocusMode.ThicknessReduction",
+                        LGLocalized(@"prefs.control.focus_thickness_reduction"),
+                        LGLocalized(@"prefs.subtitle.focus_thickness_reduction"),
+                        0.2, 0.0, 1.0, 2),
         @"FocusMode.Enabled", @YES)];
     [items addObject:LGSettingControlledByKey(
         LGSwitchSetting(@"FocusMode.DisableDispersion",
@@ -1190,7 +1248,13 @@ NSArray<NSDictionary *> *LGMoreOptionsItems(void) {
                                    @[
         @{@"value": @"default", @"title": LGLocalized(@"prefs.surface_sort.default")},
         @{@"value": @"alphabetical", @"title": LGLocalized(@"prefs.surface_sort.alphabetical")},
+        @{@"value": @"custom", @"title": LGLocalized(@"prefs.surface_sort.custom")},
     ])];
+    [items addObject:LGSettingControlledByKey(
+        LGNavSetting(LGLocalized(@"prefs.control.custom_sort_order"),
+                     LGLocalized(@"prefs.subtitle.custom_sort_order"),
+                     @"configureCustomSort"),
+        @"SurfaceSort.Mode", @"custom")];
     [items addObject:LGSectionSetting(LGLocalized(@"prefs.section.preset_themes.title"),
                                       LGLocalized(@"prefs.section.preset_themes.subtitle"))];
     [items addObject:LGNavSetting(LGLocalized(@"prefs.control.browse_themes"),

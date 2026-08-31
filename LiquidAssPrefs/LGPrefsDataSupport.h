@@ -78,3 +78,6 @@ NSArray<NSString *> *LGKeysFromItems(NSArray<NSDictionary *> *items);
 NSArray<NSDictionary *> *LGPresetThemes(void);
 NSString *LGCurrentPresetTheme(void);
 void LGApplyPresetTheme(NSString *themeId);
+
+// Surface sorting
+NSArray<NSDictionary *> *LGSortedItemsBySectionGroups(NSArray<NSDictionary *> *items);
