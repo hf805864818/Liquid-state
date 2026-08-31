@@ -25,7 +25,7 @@ static void LGLandscapeVolumeApplyGlassToView(UIView *view) {
 
     LGLiveBackdropView *glassView = objc_getAssociatedObject(view, kLGLandscapeVolumeGlassKey);
     if (!glassView) {
-        glassView = LGCreateRegisteredGlass(@"LandscapeVolume", view.bounds);
+        glassView = LGCreateRegisteredGlass(view.bounds, nil, @"LandscapeVolume");
         objc_setAssociatedObject(view, kLGLandscapeVolumeGlassKey, glassView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [view insertSubview:glassView atIndex:0];
         glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -62,9 +62,10 @@ static void LGLandscapeVolumeRemoveGlassFromView(UIView *view) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (self.window && LGLandscapeVolumeGlassEnabled()) {
+    UIView *selfView = (UIView *)self;
+    if (selfView.window && LGLandscapeVolumeGlassEnabled()) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            LGLandscapeVolumeApplyGlassToView((UIView *)self);
+            LGLandscapeVolumeApplyGlassToView(selfView);
         });
     }
 }

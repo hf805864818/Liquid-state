@@ -6,6 +6,16 @@
 
 static const void *kLGNotificationCenterGlassKey = &kLGNotificationCenterGlassKey;
 
+static BOOL LGHasMaterialAncestorBefore(UIView *material, NSString *stopClassName) {
+    Class stopCls = NSClassFromString(stopClassName);
+    Class materialClass = NSClassFromString(@"MTMaterialView");
+    for (UIView *v = material.superview; v; v = v.superview) {
+        if (stopCls && [v isKindOfClass:stopCls]) return NO;
+        if (materialClass && [v isKindOfClass:materialClass]) return YES;
+    }
+    return NO;
+}
+
 static BOOL LGNotificationCenterEnabled(void) {
     return lgHostEnabled(@"NotificationCenter");
 }
