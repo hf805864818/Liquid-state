@@ -784,24 +784,26 @@ static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
     if (sliderW <= 0 || sliderH <= 0) return 0.5;
     BOOL isVertical = sliderH >= sliderW;
 
-    // 递归搜索子视图中的填充视图 (非满尺寸的子视图即为填充指示器)
-    __block CGFloat bestRatio = -1.0;
-    __block void (^searchSubview)(UIView *);
-    searchSubview = ^(UIView *sub) {
-        if (bestRatio >= 0) return; // 已找到
+    // 迭代搜索子视图中的填充视图 (非满尺寸的子视图即为填充指示器)
+    // 使用栈迭代代替递归, 避免 block 循环引用问题
+    NSMutableArray *stack = [NSMutableArray array];
+    for (UIView *child in slider.subviews) [stack addObject:child];
+    CGFloat bestRatio = -1.0;
+    while (stack.count > 0 && bestRatio < 0) {
+        UIView *sub = stack.lastObject;
+        [stack removeLastObject];
         CGRect frame = [sub.superview convertRect:sub.frame toView:slider];
         CGFloat fw = CGRectGetWidth(frame), fh = CGRectGetHeight(frame);
         if (isVertical && fh > 0 && fh < sliderH * 0.99) {
             bestRatio = MIN(1.0, MAX(0.0, fh / sliderH));
-            return;
+            break;
         }
         if (!isVertical && fw > 0 && fw < sliderW * 0.99) {
             bestRatio = MIN(1.0, MAX(0.0, fw / sliderW));
-            return;
+            break;
         }
-        for (UIView *child in sub.subviews) searchSubview(child);
-    };
-    for (UIView *child in slider.subviews) searchSubview(child);
+        for (UIView *child in sub.subviews) [stack addObject:child];
+    }
     if (bestRatio >= 0) return bestRatio;
 
     return 0.5;
