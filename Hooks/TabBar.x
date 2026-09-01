@@ -256,6 +256,11 @@ static BOOL LGTabBarUsesCustomLayout(UITabBar *bar) {
     return NO;
 }
 
+// Forward declarations for shadow view helpers (defined below)
+static BOOL LGIsInjectedTabBarView(UIView *view, UITabBar *bar);
+static void LGHideTabBarShadowViews(UITabBar *bar);
+static void LGUnhideTabBarShadowViews(UITabBar *bar);
+
 static void LGRemoveTabBarInjection(UITabBar *bar) {
     if (!bar) return;
     BOOL injected =
