@@ -1486,15 +1486,17 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
     markdownStack.translatesAutoresizingMaskIntoConstraints = NO;
     [changelogScrollView addSubview:markdownStack];
 
-    // Initial load from bundled changelog
-    NSString *initialMarkdown = LGAboutChangelogMarkdownText(bundle, packageVersion);
-    LGUpdateAboutMarkdownStack(markdownStack, initialMarkdown, packageVersion);
+    // Loading indicator
+    [markdownStack addArrangedSubview:LGMakeAboutMarkdownLabel(@"正在获取版本信息…", [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular], UIColor.secondaryLabelColor)];
 
-    // Async fetch from GitHub
+    // Async fetch from GitHub only (no local fallback)
     LGFetchGitHubChangelog(packageVersion, ^(NSString * _Nullable markdownText) {
-        if (!markdownText.length) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            LGUpdateAboutMarkdownStack(markdownStack, markdownText, packageVersion);
+            if (markdownText.length) {
+                LGUpdateAboutMarkdownStack(markdownStack, markdownText, packageVersion);
+            } else {
+                LGUpdateAboutMarkdownStack(markdownStack, @"", packageVersion);
+            }
         });
     });
 
