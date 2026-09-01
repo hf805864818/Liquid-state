@@ -1202,20 +1202,117 @@ UILabel *LGMakeAboutMarkdownLabel(NSString *text, UIFont *font, UIColor *color) 
     return label;
 }
 
+// Parse a version string like "0.1.12b", "8.alpha", "7.2.alpha" into comparable components
+// Returns an array of NSNumber/NSString components for sorting
+static NSArray *LGVersionComponents(NSString *version) {
+    if (!version.length) return @[@0];
+    
+    NSMutableArray *components = [NSMutableArray array];
+    // Split by "."
+    NSArray *parts = [version componentsSeparatedByString:@"."];
+    
+    for (NSString *part in parts) {
+        if (!part.length) continue;
+        
+        // Try to extract leading numeric part
+        NSUInteger numEnd = 0;
+        while (numEnd < part.length && [part characterAtIndex:numEnd] >= '0' && [part characterAtIndex:numEnd] <= '9') {
+            numEnd++;
+        }
+        
+        if (numEnd > 0) {
+            NSInteger num = [[part substringToIndex:numEnd] integerValue];
+            [components addObject:@(num)];
+        }
+        
+        // Remaining suffix (e.g., "b", "alpha", "beta")
+        if (numEnd < part.length) {
+            NSString *suffix = [part substringFromIndex:numEnd];
+            // Assign sort order: numeric-only parts should come before suffixed parts
+            // alpha < beta < b < release (no suffix)
+            // Use a numeric rank for suffixes
+            NSInteger suffixRank = 0;
+            NSString *lowerSuffix = [suffix lowercaseString];
+            if ([lowerSuffix containsString:@"alpha"]) suffixRank = 1;
+            else if ([lowerSuffix containsString:@"beta"]) suffixRank = 2;
+            else if ([lowerSuffix isEqualToString:@"b"]) suffixRank = 3;
+            else if ([lowerSuffix isEqualToString:@"a"]) suffixRank = 1;
+            else suffixRank = 4; // unknown suffix
+            
+            if (numEnd > 0) {
+                // If we had a number before the suffix, add the suffix rank
+                [components addObject:@(suffixRank)];
+            } else {
+                // Pure text part (like "alpha"), add as string for comparison
+                [components addObject:lowerSuffix];
+            }
+        }
+    }
+    
+    return [components copy];
+}
+
+static NSComparisonResult LGCompareVersionStrings(NSString *first, NSString *second) {
+    NSArray *compA = LGVersionComponents(first);
+    NSArray *compB = LGVersionComponents(second);
+    
+    NSUInteger count = MAX(compA.count, compB.count);
+    for (NSUInteger i = 0; i < count; i++) {
+        id a = i < compA.count ? compA[i] : @0;
+        id b = i < compB.count ? compB[i] : @0;
+        
+        // Both NSNumber
+        if ([a isKindOfClass:[NSNumber class]] && [b isKindOfClass:[NSNumber class]]) {
+            NSComparisonResult r = [a compare:b];
+            if (r != NSOrderedSame) return r;
+            continue;
+        }
+        // One is NSNumber, other is NSString - NSNumber sorts before NSString
+        if ([a isKindOfClass:[NSNumber class]]) return NSOrderedAscending;
+        if ([b isKindOfClass:[NSNumber class]]) return NSOrderedDescending;
+        // Both NSString
+        NSComparisonResult r = [a compare:b options:0];
+        if (r != NSOrderedSame) return r;
+    }
+    return NSOrderedSame;
+}
+
 static NSString *LGLatestBundledChangelogPath(NSBundle *bundle) {
     NSString *directoryPath = [bundle pathForResource:@"changelogs" ofType:nil];
     if (!directoryPath.length) return nil;
 
     NSArray<NSString *> *filenames = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directoryPath error:nil];
-    NSMutableArray<NSString *> *markdownFilenames = [NSMutableArray array];
+    if (!filenames.count) return nil;
+
+    // Use file modification time to find the most recently updated changelog
+    // This is more reliable than version string comparison across different versioning schemes
+    NSString *latestPath = nil;
+    NSTimeInterval latestModTime = 0;
+    NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *filename in filenames) {
-        if ([filename.pathExtension isEqualToString:@"md"]) [markdownFilenames addObject:filename];
+        if (![filename.pathExtension isEqualToString:@"md"]) continue;
+        NSString *fullPath = [directoryPath stringByAppendingPathComponent:filename];
+        NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+        NSTimeInterval modTime = [attrs.fileModificationDate timeIntervalSince1970];
+        if (modTime > latestModTime) {
+            latestModTime = modTime;
+            latestPath = fullPath;
+        }
     }
-    if (!markdownFilenames.count) return nil;
-    [markdownFilenames sortUsingComparator:^NSComparisonResult(NSString *first, NSString *second) {
-        return [[first stringByDeletingPathExtension] localizedStandardCompare:[second stringByDeletingPathExtension]];
-    }];
-    return [directoryPath stringByAppendingPathComponent:markdownFilenames.lastObject];
+    // Fallback: if modification time failed, use version string sort
+    if (!latestPath) {
+        NSMutableArray<NSString *> *markdownFilenames = [NSMutableArray array];
+        for (NSString *filename in filenames) {
+            if ([filename.pathExtension isEqualToString:@"md"]) [markdownFilenames addObject:filename];
+        }
+        if (!markdownFilenames.count) return nil;
+        [markdownFilenames sortUsingComparator:^NSComparisonResult(NSString *first, NSString *second) {
+            return LGCompareVersionStrings([first stringByDeletingPathExtension],
+                                           [second stringByDeletingPathExtension]);
+        }];
+        latestPath = [directoryPath stringByAppendingPathComponent:markdownFilenames.lastObject];
+    }
+    return latestPath;
 }
 
 NSString *LGAboutChangelogMarkdownText(NSBundle *bundle, NSString *version) {
