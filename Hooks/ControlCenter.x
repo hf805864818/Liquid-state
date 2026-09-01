@@ -697,62 +697,55 @@ static UIImpactFeedbackGenerator *ccSliderHapticGenerator(UIView *slider) {
 // 动态属性缓存: 避免每次调用都枚举所有属性
 static NSMutableDictionary<NSString *, NSString *> *sSliderValuePropertyCache = nil;
 
-static NSString *ccSliderFindValueProperty(Class cls) {
+static NSString *ccSliderFindValueProperty(UIView *slider) {
+    Class cls = [slider class];
     if (!sSliderValuePropertyCache) {
         sSliderValuePropertyCache = [NSMutableDictionary dictionary];
     }
     NSString *className = NSStringFromClass(cls);
     NSString *cached = sSliderValuePropertyCache[className];
     if (cached) return cached.length > 0 ? cached : nil;
-    
-    // 动态枚举所有属性，找到返回 0-1 范围 float 的属性
-    unsigned int outCount = 0;
-    objc_property_t *props = class_copyPropertyList(cls, &outCount);
+
     NSString *foundKey = nil;
-    
-    // 优先尝试常见的值属性名
+
+    // 方法1: 在现有实例上用 KVC 安全探测常见属性名
+    // 避免创建私有类新实例(可能导致崩溃或副作用)
     NSArray *commonKeys = @[@"value", @"_value", @"normalizedValue", @"_normalizedValue",
                             @"sliderValue", @"_sliderValue", @"continuousValue",
                             @"_continuousValue", @"rawValue", @"_rawValue",
-                            @"representedValue", @"_representedValue"];
-    
+                            @"representedValue", @"_representedValue",
+                            @"fractionalValue", @"_fractionalValue",
+                            @"progress", @"_progress"];
+
     for (NSString *key in commonKeys) {
-        BOOL found = NO;
-        for (unsigned int i = 0; i < outCount; i++) {
-            const char *propName = property_getName(props[i]);
-            if (strcmp(propName, key.UTF8String) == 0) {
-                found = YES;
-                break;
-            }
-        }
-        if (found) {
-            // 验证该属性确实返回有效值
-            @try {
-                #pragma clang diagnostic push
-                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                id val = [[cls alloc] performSelector:NSSelectorFromString(key)];
-                #pragma clang diagnostic pop
-                if ([val isKindOfClass:[NSNumber class]]) {
-                    CGFloat v = [val floatValue];
-                    if (v >= 0.0 && v <= 1.0) {
-                        foundKey = key;
-                        break;
-                    }
+        @try {
+            id val = [slider valueForKey:key];
+            if ([val isKindOfClass:[NSNumber class]]) {
+                CGFloat v = [val floatValue];
+                if (v >= 0.0 && v <= 1.0) {
+                    foundKey = key;
+                    break;
                 }
-            } @catch (__unused NSException *e) {}
-        }
+                // 0-100 范围也接受
+                if (v > 1.0 && v <= 100.0) {
+                    foundKey = key;
+                    break;
+                }
+            }
+        } @catch (__unused NSException *e) {}
     }
-    
-    // 如果常见属性没找到，枚举所有属性
+
+    // 方法2: 如果常见属性没找到, 枚举 class_copyPropertyList 并用 KVC 在实例上验证
     if (!foundKey) {
+        unsigned int outCount = 0;
+        objc_property_t *props = class_copyPropertyList(cls, &outCount);
         for (unsigned int i = 0; i < outCount; i++) {
             const char *propName = property_getName(props[i]);
             NSString *key = [NSString stringWithUTF8String:propName];
+            // 跳过已在 commonKeys 中检查过的
+            if ([commonKeys containsObject:key]) continue;
             @try {
-                #pragma clang diagnostic push
-                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                id val = [[cls alloc] performSelector:NSSelectorFromString(key)];
-                #pragma clang diagnostic pop
+                id val = [slider valueForKey:key];
                 if ([val isKindOfClass:[NSNumber class]]) {
                     CGFloat v = [val floatValue];
                     if (v >= 0.0 && v <= 1.0) {
@@ -762,9 +755,9 @@ static NSString *ccSliderFindValueProperty(Class cls) {
                 }
             } @catch (__unused NSException *e) {}
         }
+        free(props);
     }
-    
-    free(props);
+
     sSliderValuePropertyCache[className] = foundKey ?: @"";
     return foundKey;
 }
@@ -772,8 +765,8 @@ static NSString *ccSliderFindValueProperty(Class cls) {
 static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
     if (!slider) return 0.5;
 
-    // Method 1: 动态属性枚举 + 缓存
-    NSString *valueKey = ccSliderFindValueProperty([slider class]);
+    // Method 1: KVC 属性探测 + 缓存 (在现有实例上安全读取)
+    NSString *valueKey = ccSliderFindValueProperty(slider);
     if (valueKey) {
         @try {
             id val = [slider valueForKey:valueKey];
@@ -785,80 +778,31 @@ static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
         } @catch (__unused NSException *e) {}
     }
 
-    // Method 2: Find MTMaterialView fill view (the actual visible fill)
+    // Method 2: 视觉回退 - 遍历子视图层级, 查找填充视图的尺寸比例
     CGFloat sliderW = CGRectGetWidth(slider.bounds);
     CGFloat sliderH = CGRectGetHeight(slider.bounds);
     if (sliderW <= 0 || sliderH <= 0) return 0.5;
     BOOL isVertical = sliderH >= sliderW;
 
-    // Look for MTMaterialView in the slider's subview hierarchy
-    // Structure: CCUIContinuousSliderView > UIView > MTMaterialView (fill)
-    for (UIView *child in slider.subviews) {
-        // Direct MTMaterialView
-        if (isExactClass(child, @"MTMaterialView")) {
-            CGRect frameInSlider = [child.superview convertRect:child.frame toView:slider];
-            CGFloat fw = CGRectGetWidth(frameInSlider);
-            CGFloat fh = CGRectGetHeight(frameInSlider);
-            if (isVertical && fh > 0 && fh <= sliderH) {
-                return MIN(1.0, MAX(0.0, fh / sliderH));
-            }
-            if (!isVertical && fw > 0 && fw <= sliderW) {
-                return MIN(1.0, MAX(0.0, fw / sliderW));
-            }
+    // 递归搜索子视图中的填充视图 (非满尺寸的子视图即为填充指示器)
+    __block CGFloat bestRatio = -1.0;
+    void (^searchSubview)(UIView *) = ^(UIView *sub) {
+        if (bestRatio >= 0) return; // 已找到
+        CGRect frame = [sub.superview convertRect:sub.frame toView:slider];
+        CGFloat fw = CGRectGetWidth(frame), fh = CGRectGetHeight(frame);
+        if (isVertical && fh > 0 && fh < sliderH * 0.99) {
+            bestRatio = MIN(1.0, MAX(0.0, fh / sliderH));
+            return;
         }
-        // Nested: UIView > MTMaterialView
-        for (UIView *gc in child.subviews) {
-            if (isExactClass(gc, @"MTMaterialView")) {
-                CGRect gcFrame = [gc.superview convertRect:gc.frame toView:slider];
-                CGFloat gfw = CGRectGetWidth(gcFrame);
-                CGFloat gfh = CGRectGetHeight(gcFrame);
-                if (isVertical && gfh > 0) {
-                    return MIN(1.0, MAX(0.0, gfh / sliderH));
-                }
-                if (!isVertical && gfw > 0) {
-                    return MIN(1.0, MAX(0.0, gfw / sliderW));
-                }
-            }
-            // Check one more level deep
-            for (UIView *ggc in gc.subviews) {
-                if (isExactClass(ggc, @"MTMaterialView")) {
-                    CGRect ggcFrame = [ggc.superview convertRect:ggc.frame toView:slider];
-                    CGFloat ggfw = CGRectGetWidth(ggcFrame);
-                    CGFloat ggfh = CGRectGetHeight(ggcFrame);
-                    if (isVertical && ggfh > 0) {
-                        return MIN(1.0, MAX(0.0, ggfh / sliderH));
-                    }
-                    if (!isVertical && ggfw > 0) {
-                        return MIN(1.0, MAX(0.0, ggfw / sliderW));
-                    }
-                }
-            }
+        if (!isVertical && fw > 0 && fw < sliderW * 0.99) {
+            bestRatio = MIN(1.0, MAX(0.0, fw / sliderW));
+            return;
         }
-    }
+        for (UIView *child in sub.subviews) searchSubview(child);
+    };
+    for (UIView *child in slider.subviews) searchSubview(child);
+    if (bestRatio >= 0) return bestRatio;
 
-    // Method 3: Fallback - find any subview with fractional dimension
-    for (UIView *subview in slider.subviews) {
-        CGRect frameInSlider = [subview.superview convertRect:subview.frame toView:slider];
-        CGFloat fw = CGRectGetWidth(frameInSlider);
-        CGFloat fh = CGRectGetHeight(frameInSlider);
-        if (isVertical && fh > 0 && fh <= sliderH * 0.99) {
-            return MIN(1.0, MAX(0.0, fh / sliderH));
-        }
-        if (!isVertical && fw > 0 && fw <= sliderW * 0.99) {
-            return MIN(1.0, MAX(0.0, fw / sliderW));
-        }
-        for (UIView *gc in subview.subviews) {
-            CGRect gcFrame = [gc.superview convertRect:gc.frame toView:slider];
-            CGFloat gfw = CGRectGetWidth(gcFrame);
-            CGFloat gfh = CGRectGetHeight(gcFrame);
-            if (isVertical && gfh > 0 && gfh <= sliderH * 0.99) {
-                return MIN(1.0, MAX(0.0, gfh / sliderH));
-            }
-            if (!isVertical && gfw > 0 && gfw <= sliderW * 0.99) {
-                return MIN(1.0, MAX(0.0, gfw / sliderW));
-            }
-        }
-    }
     return 0.5;
 }
 
