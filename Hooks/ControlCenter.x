@@ -728,7 +728,10 @@ static NSString *ccSliderFindValueProperty(Class cls) {
         if (found) {
             // 验证该属性确实返回有效值
             @try {
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
                 id val = [[cls alloc] performSelector:NSSelectorFromString(key)];
+                #pragma clang diagnostic pop
                 if ([val isKindOfClass:[NSNumber class]]) {
                     CGFloat v = [val floatValue];
                     if (v >= 0.0 && v <= 1.0) {
@@ -746,7 +749,10 @@ static NSString *ccSliderFindValueProperty(Class cls) {
             const char *propName = property_getName(props[i]);
             NSString *key = [NSString stringWithUTF8String:propName];
             @try {
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
                 id val = [[cls alloc] performSelector:NSSelectorFromString(key)];
+                #pragma clang diagnostic pop
                 if ([val isKindOfClass:[NSNumber class]]) {
                     CGFloat v = [val floatValue];
                     if (v >= 0.0 && v <= 1.0) {
