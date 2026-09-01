@@ -777,7 +777,53 @@ static NSString *LGClockDateFormatString(void) {
     return format.length ? format : @"EEE MMM d";
 }
 
+static NSString *LGLunarDayString(NSInteger day) {
+    static NSString *digits[] = {@"〇", @"一", @"二", @"三", @"四", @"五", @"六", @"七", @"八", @"九"};
+    if (day == 10) return @"初十";
+    if (day == 20) return @"二十";
+    if (day == 30) return @"三十";
+    if (day < 1 || day > 30) return [NSString stringWithFormat:@"%ld", (long)day];
+    if (day < 10) return [NSString stringWithFormat:@"初%@", digits[day]];
+    if (day < 20) return [NSString stringWithFormat:@"十%@", digits[day - 10]];
+    return [NSString stringWithFormat:@"廿%@", digits[day - 20]];
+}
+
+static NSString *LGLunarDateString(void) {
+    NSCalendar *chinese = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierChinese];
+    if (!chinese) return @"";
+
+    NSDateComponents *comps = [chinese components:(NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay)
+                                         fromDate:[NSDate date]];
+    if (!comps) return @"";
+
+    NSInteger cycleYear = comps.year;
+    NSInteger month = comps.month;
+    NSInteger day = comps.day;
+
+    static NSString *stems[] = {@"甲", @"乙", @"丙", @"丁", @"戊", @"己", @"庚", @"辛", @"壬", @"癸"};
+    static NSString *branches[] = {@"子", @"丑", @"寅", @"卯", @"辰", @"巳", @"午", @"未", @"申", @"酉", @"戌", @"亥"};
+
+    NSInteger stemIdx = (cycleYear - 1) % 10;
+    NSInteger branchIdx = (cycleYear - 1) % 12;
+    if (stemIdx < 0) stemIdx = 0;
+    if (branchIdx < 0) branchIdx = 0;
+
+    NSString *yearStr = [NSString stringWithFormat:@"%@%@年", stems[stemIdx], branches[branchIdx]];
+    NSString *monthStr = comps.leapMonth
+        ? [NSString stringWithFormat:@"闰%ld月", (long)month]
+        : [NSString stringWithFormat:@"%ld月", (long)month];
+    NSString *dayStr = LGLunarDayString(day);
+
+    return [NSString stringWithFormat:@"%@%@%@", yearStr, monthStr, dayStr];
+}
+
 static NSString *LGClockCustomDateString(void) {
+    NSString *format = LGClockDateFormatString();
+    BOOL hasLunar = [format containsString:@"{lunar}"];
+    NSString *solarFormat = hasLunar
+        ? [format stringByReplacingOccurrencesOfString:@"{lunar}" withString:@""]
+        : format;
+
     static NSDateFormatter *formatter;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -786,9 +832,19 @@ static NSString *LGClockCustomDateString(void) {
 
     formatter.locale = [NSLocale autoupdatingCurrentLocale];
     formatter.timeZone = [NSTimeZone localTimeZone];
-    formatter.dateFormat = LGClockDateFormatString();
+    formatter.dateFormat = solarFormat.length ? solarFormat : @"EEE MMM d";
 
     NSString *text = [formatter stringFromDate:[NSDate date]];
+
+    if (hasLunar) {
+        NSString *lunar = LGLunarDateString();
+        if (lunar.length) {
+            text = text.length
+                ? [NSString stringWithFormat:@"%@ %@", text, lunar]
+                : lunar;
+        }
+    }
+
     if (text.length == 0) return text;
 
     text = [text stringByReplacingOccurrencesOfString:@"," withString:@""];
@@ -804,13 +860,20 @@ static void LGApplyAbbreviatedDateTextToLabel(UILabel *label) {
 
     if ([objc_getAssociatedObject(label, kLGClockApplyingDateTextKey) boolValue]) return;
 
-    if (!LGClockDateFormatEnabled()) {
-        NSString *originalText = objc_getAssociatedObject(label, kLGClockOriginalDateTextKey);
-        if (originalText.length && ![label.text isEqualToString:originalText]) {
-            objc_setAssociatedObject(label, kLGClockApplyingDateTextKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            label.text = originalText;
-            objc_setAssociatedObject(label, kLGClockApplyingDateTextKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    BOOL dateFormatEnabled = LGClockEnabled() && LGClockDateFormatEnabled();
+
+    if (!dateFormatEnabled) {
+        NSString *lastCustomText = objc_getAssociatedObject(label, kLGClockLastCustomDateTextKey);
+        if (lastCustomText.length && [label.text isEqualToString:lastCustomText]) {
+            NSString *originalText = objc_getAssociatedObject(label, kLGClockOriginalDateTextKey);
+            if (originalText.length) {
+                objc_setAssociatedObject(label, kLGClockApplyingDateTextKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                label.text = originalText;
+                objc_setAssociatedObject(label, kLGClockApplyingDateTextKey, nil, OBJC_ASSOCIATION_ASSIGN);
+            }
         }
+        objc_setAssociatedObject(label, kLGClockLastCustomDateTextKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(label, kLGClockOriginalDateTextKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
         return;
     }
 

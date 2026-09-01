@@ -635,9 +635,12 @@ static UILabel *ccSliderGetOrCreatePercentLabel(UIView *slider) {
         label.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
         label.textColor = [UIColor whiteColor];
         label.textAlignment = NSTextAlignmentCenter;
-        label.backgroundColor = [UIColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5];
-        label.layer.cornerRadius = 10.0;
-        label.layer.masksToBounds = YES;
+        label.backgroundColor = [UIColor clearColor];
+        // Subtle shadow for readability on any background
+        label.layer.shadowColor = [UIColor blackColor].CGColor;
+        label.layer.shadowOffset = CGSizeMake(0, 1);
+        label.layer.shadowRadius = 2.0;
+        label.layer.shadowOpacity = 0.6;
         label.translatesAutoresizingMaskIntoConstraints = NO;
         label.hidden = YES;
         [slider addSubview:label];
@@ -658,12 +661,25 @@ static void ccSliderUpdatePercentLabel(UIView *slider) {
     label.text = [NSString stringWithFormat:@"%ld%%", (long)percent];
     label.hidden = NO;
 
+    // Size to fit text
+    [label sizeToFit];
+    CGFloat labelWidth = CGRectGetWidth(label.bounds) + 4;
+    CGFloat labelHeight = CGRectGetHeight(label.bounds) + 2;
     CGFloat sliderWidth = CGRectGetWidth(slider.bounds);
-    CGFloat thumbX = value * sliderWidth;
-    CGFloat labelWidth = 44.0;
-    CGFloat labelHeight = 22.0;
-    CGFloat labelX = MAX(labelWidth/2, MIN(sliderWidth - labelWidth/2, thumbX));
-    label.frame = CGRectMake(labelX - labelWidth/2, -labelHeight - 4.0, labelWidth, labelHeight);
+    CGFloat sliderHeight = CGRectGetHeight(slider.bounds);
+
+    // Center horizontally inside the slider
+    CGFloat labelX = (sliderWidth - labelWidth) / 2;
+
+    // For vertical CC sliders, fill goes from bottom to top.
+    // Position the text just above the fill boundary (inside the unfilled area).
+    CGFloat fillBoundaryY = (1.0 - value) * sliderHeight;
+    CGFloat labelY = fillBoundaryY - labelHeight - 4;
+    // Clamp to stay inside the slider bounds
+    if (labelY < 2) labelY = 2;
+    if (labelY > sliderHeight - labelHeight - 2) labelY = sliderHeight - labelHeight - 2;
+
+    label.frame = CGRectMake(labelX, labelY, labelWidth, labelHeight);
 }
 
 #pragma mark - Slider Haptic Feedback
@@ -722,7 +738,6 @@ static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
 
 static void ccSliderTriggerHaptic(UIView *slider, BOOL isEdge) {
     if (!ccSliderHapticsEnabled()) return;
-    if (ccHasSBElasticHierarchy(slider)) return;
 
     UIImpactFeedbackGenerator *gen = ccSliderHapticGenerator(slider);
     CGFloat intensity = ccSliderHapticIntensity();

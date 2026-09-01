@@ -27,6 +27,8 @@ static void *kLGPanelItemKey = &kLGPanelItemKey;
 static void *kLGControlledByEnabledDefaultsKey =
     &kLGControlledByEnabledDefaultsKey;
 static void *kLGScrollTopGlassViewKey = &kLGScrollTopGlassViewKey;
+static void *kLGMenuItemKey = &kLGMenuItemKey;
+static void *kLGMenuTitleUpdateBlockKey = &kLGMenuTitleUpdateBlockKey;
 static const CGFloat kLGGoToTopCornerRadiusRatio = 0.5;
 
 static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
@@ -461,11 +463,17 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     LGPresentAppExclusionEditor(self);
 }
 
+// CCBg prefs domain constants (must match CustomCCBg/Tweak.x)
+static NSString * const kLGCCBgPrefsDomain = @"dylv.Deepliquid.ccbg";
+static NSString * const kLGCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadPrefs";
+static NSString * const kLGCCBgMediaDirectory = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media";
+static NSString * const kLGCCBgImageFileName = @"background.jpg";
+static NSString * const kLGCCBgVideoFileName = @"background.mp4";
+
 - (void)openCustomCCBgSettings {
     // Try to load the CustomCCBgPrefs bundle and push its controller
     Class controllerClass = NSClassFromString(@"CCBGRootListController");
     if (!controllerClass) {
-        // Try loading from multiple possible paths
         NSArray *searchPaths = @[
             @"/var/jb/Library/PreferenceBundles/CustomCCBgPrefs.bundle",
             @"/Library/PreferenceBundles/CustomCCBgPrefs.bundle",
@@ -483,10 +491,211 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
         UIViewController *vc = [[controllerClass alloc] init];
         [self.navigationController pushViewController:vc animated:YES];
     } else {
-        LGPresentInfoSheet(self,
-                           LGLocalized(@"prefs.control_center_custom_bg.title"),
-                           LGLocalized(@"prefs.control_center_custom_bg.not_available"));
+        // Fallback: present inline settings directly (no external bundle needed)
+        [self presentInlineCCBgSettings];
     }
+}
+
+- (void)presentInlineCCBgSettings {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kLGCCBgPrefsDomain];
+    BOOL enabled = [defaults boolForKey:@"Enabled"];
+    CGFloat blurAlpha = [defaults floatForKey:@"BlurAlpha"];
+    if (blurAlpha <= 0) blurAlpha = 0.3;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *imagePath = [kLGCCBgMediaDirectory stringByAppendingPathComponent:kLGCCBgImageFileName];
+    NSString *videoPath = [kLGCCBgMediaDirectory stringByAppendingPathComponent:kLGCCBgVideoFileName];
+    BOOL hasImage = [fm fileExistsAtPath:imagePath];
+    BOOL hasVideo = [fm fileExistsAtPath:videoPath];
+
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:LGLocalized(@"prefs.control_center_custom_bg.title")
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+
+    // Enable / Disable
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:enabled ? @"关闭自定义背景" : @"开启自定义背景"
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+        [defaults setBool:!enabled forKey:@"Enabled"];
+        [defaults synchronize];
+        [[NSNotificationCenter defaultCenter] postNotificationName:kLGCCBgReloadNotification object:nil];
+    }]];
+
+    // Choose image
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:@"选择背景图片"
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+        [self presentCCBgImagePickerForType:UIImagePickerControllerSourceTypePhotoLibrary
+                                 mediaType:@"public.image"];
+    }]];
+
+    // Choose video
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:@"选择背景视频"
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+        [self presentCCBgImagePickerForType:UIImagePickerControllerSourceTypePhotoLibrary
+                                 mediaType:@"public.movie"];
+    }]];
+
+    // Clear background
+    if (hasImage || hasVideo) {
+        [sheet addAction:[UIAlertAction
+            actionWithTitle:@"清除背景"
+                      style:UIAlertActionStyleDestructive
+                    handler:^(__unused UIAlertAction *action) {
+            [self clearCCBgMedia];
+        }]];
+    }
+
+    // Blur intensity
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:[NSString stringWithFormat:@"毛玻璃强度: %.0f%%", blurAlpha * 100]
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+        [self presentCCBgBlurAdjustment:blurAlpha];
+    }]];
+
+    // Status info
+    NSString *statusText = nil;
+    if (!enabled) {
+        statusText = @"当前: 已关闭";
+    } else if (hasVideo) {
+        statusText = @"当前: 视频";
+    } else if (hasImage) {
+        statusText = @"当前: 图片";
+    } else {
+        statusText = @"当前: 无背景";
+    }
+    sheet.message = statusText;
+
+    // Cancel
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                  style:UIAlertActionStyleCancel
+                handler:nil]];
+
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2.0,
+                                                               self.view.bounds.size.height / 2.0,
+                                                               1.0, 1.0);
+    sheet.popoverPresentationController.permittedArrowDirections = 0;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentCCBgImagePickerForType:(UIImagePickerControllerSourceType)type
+                            mediaType:(NSString *)mediaType {
+    UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+    picker.sourceType = type;
+    picker.mediaTypes = @[mediaType];
+    picker.delegate = self;
+    picker.allowsEditing = NO;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)clearCCBgMedia {
+    LGPresentConfirmationSheet(self,
+                               @"清除背景",
+                               @"确定要清除当前设置的控制中心背景吗？",
+                               LGLocalized(@"prefs.button.cancel"),
+                               @"确定",
+                               YES,
+                               ^{
+        NSFileManager *fm = [NSFileManager defaultManager];
+        for (NSString *fname in @[kLGCCBgImageFileName, kLGCCBgVideoFileName]) {
+            NSString *path = [kLGCCBgMediaDirectory stringByAppendingPathComponent:fname];
+            if ([fm fileExistsAtPath:path]) {
+                [fm removeItemAtPath:path error:nil];
+            }
+        }
+        [[NSNotificationCenter defaultCenter] postNotificationName:kLGCCBgReloadNotification object:nil];
+        LGPresentInfoSheet(self, @"清除背景", @"背景已清除。");
+    });
+}
+
+- (void)presentCCBgBlurAdjustment:(CGFloat)currentValue {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"毛玻璃强度"
+                         message:@"输入 0 到 100 之间的数值"
+                  preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.text = [NSString stringWithFormat:@"%.0f", currentValue * 100];
+        textField.placeholder = @"30";
+        textField.keyboardType = UIKeyboardTypeNumberPad;
+    }];
+
+    [alert addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                  style:UIAlertActionStyleCancel
+                handler:nil]];
+
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.save")
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+        NSString *text = alert.textFields.firstObject.text;
+        CGFloat percent = text.doubleValue;
+        percent = MAX(0.0, MIN(100.0, percent));
+        CGFloat alpha = percent / 100.0;
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kLGCCBgPrefsDomain];
+        [defaults setFloat:alpha forKey:@"BlurAlpha"];
+        [defaults synchronize];
+        [[NSNotificationCenter defaultCenter] postNotificationName:kLGCCBgReloadNotification object:nil];
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf) {
+            LGPresentInfoSheet(strongSelf, @"毛玻璃强度",
+                              [NSString stringWithFormat:@"已设置为 %.0f%%", percent]);
+        }
+    }]];
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - UIImagePickerControllerDelegate
+
+- (void)imagePickerController:(UIImagePickerController *)picker
+  didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+
+    NSString *mediaType = info[UIImagePickerControllerMediaType];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSError *error = nil;
+
+    [fm createDirectoryAtPath:kLGCCBgMediaDirectory
+   withIntermediateDirectories:YES
+                   attributes:nil
+                        error:&error];
+
+    if ([mediaType isEqualToString:@"public.image"]) {
+        UIImage *image = info[UIImagePickerControllerOriginalImage];
+        NSData *imageData = UIImageJPEGRepresentation(image, 0.85);
+        NSString *destPath = [kLGCCBgMediaDirectory stringByAppendingPathComponent:kLGCCBgImageFileName];
+        [fm removeItemAtPath:[kLGCCBgMediaDirectory stringByAppendingPathComponent:kLGCCBgVideoFileName] error:nil];
+        [imageData writeToFile:destPath atomically:YES];
+    } else if ([mediaType isEqualToString:@"public.movie"]) {
+        NSURL *videoURL = info[UIImagePickerControllerMediaURL];
+        NSString *destPath = [kLGCCBgMediaDirectory stringByAppendingPathComponent:kLGCCBgVideoFileName];
+        [fm removeItemAtPath:[kLGCCBgMediaDirectory stringByAppendingPathComponent:kLGCCBgImageFileName] error:nil];
+        [fm copyItemAtPath:videoURL.path toPath:destPath error:&error];
+    }
+
+    // Auto-enable
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kLGCCBgPrefsDomain];
+    [defaults setBool:YES forKey:@"Enabled"];
+    [defaults synchronize];
+    [[NSNotificationCenter defaultCenter] postNotificationName:kLGCCBgReloadNotification object:nil];
+
+    LGPresentInfoSheet(self, LGLocalized(@"prefs.control_center_custom_bg.title"),
+                       @"背景已设置。");
+}
+
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
+    [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
 #pragma mark - Clock Font Helpers
@@ -531,12 +740,12 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     NSString *currentFormat = LGReadPreferenceObject(@"Clock.DateFormat.Format", @"EEE MMM d");
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:LGLocalized(@"prefs.control.date_format")
-                         message:LGLocalized(@"prefs.subtitle.date_format")
+                         message:@"Unicode 日期格式。使用 {lunar} 插入农历日期。\n例如: M月d日EEE {lunar}\n输出: 9月1日周二 丙午年七月二十"
                   preferredStyle:UIAlertControllerStyleAlert];
 
     [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.text = currentFormat;
-        textField.placeholder = @"EEE MMM d";
+        textField.placeholder = @"M月d日EEE {lunar}";
         textField.autocorrectionType = UITextAutocorrectionTypeNo;
         textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
@@ -1608,9 +1817,6 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     menuButton.layer.cornerRadius = 0.0;
 
     NSString *selectedTitle = [self menuSelectionTitleForItem:item];
-    __block NSString *currentValue = [item[@"key"] isEqualToString:kLGPrefsLanguageKey]
-        ? LGCurrentPrefsLanguageCode()
-        : [[LGReadPreferenceObject(item[@"key"], item[@"default"]) description] copy];
     if (@available(iOS 15.0, *)) {
         UIButtonConfiguration *config = [UIButtonConfiguration plainButtonConfiguration];
         config.title = selectedTitle;
@@ -1621,12 +1827,10 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
         config.background.backgroundColor = UIColor.clearColor;
         config.contentInsets = NSDirectionalEdgeInsetsMake(4.0, 8.0, 4.0, 8.0);
         menuButton.configuration = config;
-        menuButton.showsMenuAsPrimaryAction = YES;
     } else {
         [menuButton setTitle:selectedTitle forState:UIControlStateNormal];
         [menuButton setImage:[UIImage systemImageNamed:@"chevron.down"] forState:UIControlStateNormal];
         menuButton.semanticContentAttribute = UISemanticContentAttributeForceRightToLeft;
-        menuButton.showsMenuAsPrimaryAction = YES;
     }
 
     __weak typeof(self) weakSelf = self;
@@ -1646,16 +1850,16 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
             updatedConfig.background.backgroundColor = UIColor.clearColor;
             updatedConfig.contentInsets = NSDirectionalEdgeInsetsMake(4.0, 8.0, 4.0, 8.0);
             strongMenuButton.configuration = updatedConfig;
-            strongMenuButton.showsMenuAsPrimaryAction = YES;
         } else {
             [strongMenuButton setTitle:newTitle forState:UIControlStateNormal];
         }
     };
 
-    menuButton.menu = [self menuForItem:item
-                           currentValue:currentValue
-                             menuButton:menuButton
-                            titleUpdate:applyMenuSelectionTitle];
+    // Use ActionSheet for reliable presentation across iOS versions
+    [menuButton addTarget:self action:@selector(handleMenuButtonTapped:)
+         forControlEvents:UIControlEventTouchUpInside];
+    objc_setAssociatedObject(menuButton, kLGMenuItemKey, item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(menuButton, kLGMenuTitleUpdateBlockKey, applyMenuSelectionTitle, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
     UIView *headerRow = [self controlHeaderRowWithTitleLabel:titleLabel
                                               accessoryViews:@[menuButton]
@@ -1672,6 +1876,62 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
         [stack.bottomAnchor constraintEqualToAnchor:body.bottomAnchor constant:-13.0],
     ]];
     return body;
+}
+
+- (void)handleMenuButtonTapped:(UIButton *)sender {
+    NSDictionary *item = objc_getAssociatedObject(sender, kLGMenuItemKey);
+    void (^titleUpdate)(NSString *) = objc_getAssociatedObject(sender, kLGMenuTitleUpdateBlockKey);
+    if (!item || !item[@"choices"]) return;
+
+    NSString *key = item[@"key"];
+    NSString *currentValue = [key isEqualToString:kLGPrefsLanguageKey]
+        ? LGCurrentPrefsLanguageCode()
+        : [[LGReadPreferenceObject(key, item[@"default"]) description] copy];
+
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:item[@"title"]
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+
+    __weak typeof(self) weakSelf = self;
+    for (NSDictionary *choice in item[@"choices"]) {
+        NSString *value = choice[@"value"];
+        NSString *title = choice[@"title"];
+        if (!value.length || !title.length) continue;
+
+        NSString *displayTitle = [value isEqualToString:currentValue]
+            ? [NSString stringWithFormat:@"✓ %@", title]
+            : title;
+
+        [sheet addAction:[UIAlertAction
+            actionWithTitle:displayTitle
+                      style:UIAlertActionStyleDefault
+                    handler:^(__unused UIAlertAction *action) {
+            if ([key isEqualToString:kLGPrefsLanguageKey]) {
+                LGSetCurrentPrefsLanguageCode(value);
+            } else {
+                LGWritePreferenceObject(key, value);
+            }
+            if (titleUpdate) titleUpdate(title);
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (strongSelf) {
+                if ([item[@"reload_on_change"] boolValue]) {
+                    [strongSelf updateVisibleValueControlledItemsAnimated:YES];
+                }
+                [strongSelf updateRespringBarAnimated:YES];
+            }
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                  style:UIAlertActionStyleCancel
+                handler:nil]];
+
+    sheet.popoverPresentationController.sourceView = sender;
+    sheet.popoverPresentationController.sourceRect = sender.bounds;
+    sheet.popoverPresentationController.permittedArrowDirections = UIPopoverArrowDirectionAny;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (UIView *)switchControlBodyForItem:(NSDictionary *)item titleLabel:(UILabel *)titleLabel {
