@@ -636,6 +636,25 @@ static UILabel *ccSliderGetOrCreatePercentLabel(UIView *slider) {
     return label;
 }
 
+// 用 KVC 获取滑块百分比值 (给百分比标签用)
+static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
+    if (!slider) return 0.5;
+    for (NSString *key in @[@"value", @"_value", @"normalizedValue", @"_normalizedValue",
+                            @"sliderValue", @"_sliderValue", @"continuousValue",
+                            @"_continuousValue", @"rawValue", @"_rawValue",
+                            @"representedValue", @"_representedValue"]) {
+        @try {
+            id val = [slider valueForKey:key];
+            if ([val isKindOfClass:[NSNumber class]]) {
+                CGFloat v = [val floatValue];
+                if (v >= 0.0 && v <= 1.0) return v;
+                if (v > 1.0 && v <= 100.0) return v / 100.0;
+            }
+        } @catch (__unused NSException *e) {}
+    }
+    return 0.5;
+}
+
 static void ccSliderUpdatePercentLabel(UIView *slider) {
     if (!ccSliderPercentEnabled()) {
         UILabel *label = objc_getAssociatedObject(slider, kCCSliderPercentLabelKey);
