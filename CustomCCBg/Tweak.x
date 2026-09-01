@@ -1,11 +1,10 @@
 // CustomCCBg - 自定义控制中心背景
-// clean-room implementation
 // 支持:图片背景 / 循环视频背景 / 毛玻璃强度调节
-// 注入点:SpringBoard 的 CC 背景视图(类名需真机确认)
 
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
+#import "../Shared/LGSharedSupport.h"
 
 // MARK: - 常量
 
@@ -16,7 +15,7 @@ static NSString * const kCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadP
 static NSString * const kCCBgMediaDirectory = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media";
 static NSString * const kCCBgImageFileName = @"background.jpg";
 static NSString * const kCCBgVideoFileName = @"background.mp4";
-static NSString * const kCCBgMediaTypeKey = @"MediaType"; // "image" / "video" / "none"
+static NSString * const kCCBgMediaTypeKey = @"MediaType";
 
 // MARK: - 自定义视频背景 View
 
@@ -49,13 +48,13 @@ static NSString * const kCCBgMediaTypeKey = @"MediaType"; // "image" / "video" /
     [self.looper disableLooping];
     self.looper = nil;
     self.player = nil;
-    
+
     AVPlayerItem *item = [AVPlayerItem playerItemWithURL:url];
     self.player = [AVQueuePlayer queuePlayerWithItems:@[item]];
     self.playerLayer.player = self.player;
     self.player.muted = YES;
     self.player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
-    
+
     self.looper = [AVPlayerLooper playerLooperWithPlayer:self.player templateItem:item];
 }
 
@@ -77,15 +76,17 @@ static NSString * const kCCBgMediaTypeKey = @"MediaType"; // "image" / "video" /
 // MARK: - 背景管理器
 
 @interface CustomCCBgManager : NSObject
-@property (nonatomic, strong) UIView *backgroundContainerView;
+@property (nonatomic, strong) UIView *hostView;
+@property (nonatomic, strong) UIView *bgContainerView;
 @property (nonatomic, strong) UIImageView *imageView;
 @property (nonatomic, strong) CustomCCBgVideoView *videoView;
-@property (nonatomic, strong) UIView *blurOverlayView;
+@property (nonatomic, strong) UIVisualEffectView *blurOverlayView;
 @property (nonatomic, assign) BOOL isEnabled;
 @property (nonatomic, assign) CGFloat blurAlpha;
+@property (nonatomic, copy) NSString *mediaType;
 + (instancetype)sharedInstance;
 - (void)reloadPreferences;
-- (void)attachToContainerView:(UIView *)view;
+- (void)attachToHostView:(UIView *)view;
 - (void)detach;
 @end
 
@@ -120,110 +121,141 @@ static NSString * const kCCBgMediaTypeKey = @"MediaType"; // "image" / "video" /
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kCCBgPreferencesDomain];
     self.isEnabled = [defaults boolForKey:kCCBgEnabledKey];
     self.blurAlpha = [defaults floatForKey:kCCBgBlurAlphaKey];
-    if (self.blurAlpha <= 0) self.blurAlpha = 0.3; // 默认值
-    
-    if (self.backgroundContainerView) {
+    if (self.blurAlpha <= 0) self.blurAlpha = 0.3;
+
+    if (self.bgContainerView) {
         [self updateBackgroundView];
     }
 }
 
-- (void)attachToContainerView:(UIView *)view {
-    if (self.backgroundContainerView == view) return;
+- (void)attachToHostView:(UIView *)view {
+    if (self.hostView == view && self.bgContainerView.superview == view) {
+        [self updateBackgroundView];
+        return;
+    }
     [self detach];
-    self.backgroundContainerView = view;
+    self.hostView = view;
+
+    // 创建背景容器,插入到 hostView 的最底层
+    self.bgContainerView = [[UIView alloc] initWithFrame:view.bounds];
+    self.bgContainerView.userInteractionEnabled = NO;
+    [view insertSubview:self.bgContainerView atIndex:0];
+
     [self updateBackgroundView];
 }
 
 - (void)detach {
-    if (self.imageView) {
-        [self.imageView removeFromSuperview];
-        self.imageView = nil;
-    }
     if (self.videoView) {
         [self.videoView pause];
         [self.videoView removeFromSuperview];
         self.videoView = nil;
     }
+    if (self.imageView) {
+        [self.imageView removeFromSuperview];
+        self.imageView = nil;
+    }
     if (self.blurOverlayView) {
         [self.blurOverlayView removeFromSuperview];
         self.blurOverlayView = nil;
     }
-    self.backgroundContainerView = nil;
+    if (self.bgContainerView) {
+        [self.bgContainerView removeFromSuperview];
+        self.bgContainerView = nil;
+    }
+    self.hostView = nil;
 }
 
 - (void)updateBackgroundView {
-    if (!self.backgroundContainerView) return;
-    
+    if (!self.bgContainerView || !self.hostView) return;
+
+    self.bgContainerView.frame = self.hostView.bounds;
+
     if (!self.isEnabled) {
-        [self detach];
+        self.bgContainerView.hidden = YES;
+        [self detachMediaViews];
         return;
     }
-    
+    self.bgContainerView.hidden = NO;
+
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *mediaDir = kCCBgMediaDirectory;
     NSString *imagePath = [mediaDir stringByAppendingPathComponent:kCCBgImageFileName];
     NSString *videoPath = [mediaDir stringByAppendingPathComponent:kCCBgVideoFileName];
-    
+
     BOOL hasImage = [fm fileExistsAtPath:imagePath];
     BOOL hasVideo = [fm fileExistsAtPath:videoPath];
-    
-    // 优先视频,其次图片
+
     if (hasVideo) {
+        [self detachImageView];
         if (!self.videoView) {
-            self.videoView = [[CustomCCBgVideoView alloc] init];
-            [self.backgroundContainerView insertSubview:self.videoView atIndex:0];
+            self.videoView = [[CustomCCBgVideoView alloc] initWithFrame:self.bgContainerView.bounds];
+            [self.bgContainerView insertSubview:self.videoView atIndex:0];
         }
-        if (self.imageView) {
-            [self.imageView removeFromSuperview];
-            self.imageView = nil;
-        }
-        self.videoView.frame = self.backgroundContainerView.bounds;
+        self.videoView.frame = self.bgContainerView.bounds;
         [self.videoView loadVideoFromURL:[NSURL fileURLWithPath:videoPath]];
         [self.videoView play];
     } else if (hasImage) {
+        [self detachVideoView];
         if (!self.imageView) {
             self.imageView = [[UIImageView alloc] init];
             self.imageView.contentMode = UIViewContentModeScaleAspectFill;
             self.imageView.clipsToBounds = YES;
-            [self.backgroundContainerView insertSubview:self.imageView atIndex:0];
+            [self.bgContainerView insertSubview:self.imageView atIndex:0];
         }
-        if (self.videoView) {
-            [self.videoView pause];
-            [self.videoView removeFromSuperview];
-            self.videoView = nil;
-        }
-        self.imageView.frame = self.backgroundContainerView.bounds;
+        self.imageView.frame = self.bgContainerView.bounds;
         self.imageView.image = [UIImage imageWithContentsOfFile:imagePath];
     } else {
-        // 没有媒体文件,只显示模糊叠加层作为占位
-        if (self.imageView) { [self.imageView removeFromSuperview]; self.imageView = nil; }
-        if (self.videoView) { [self.videoView pause]; [self.videoView removeFromSuperview]; self.videoView = nil; }
+        [self detachMediaViews];
     }
-    
-    // 模糊叠加层
-    if (!self.blurOverlayView && self.isEnabled) {
-        self.blurOverlayView = [[UIView alloc] init];
-        self.blurOverlayView.backgroundColor = [UIColor blackColor];
-        [self.backgroundContainerView addSubview:self.blurOverlayView];
+
+    // 毛玻璃叠加层 - 放在背景图片/视频之上
+    if (!self.blurOverlayView) {
+        UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark];
+        self.blurOverlayView = [[UIVisualEffectView alloc] initWithEffect:blur];
+        self.blurOverlayView.userInteractionEnabled = NO;
+        [self.bgContainerView addSubview:self.blurOverlayView];
     }
-    self.blurOverlayView.frame = self.backgroundContainerView.bounds;
+    self.blurOverlayView.frame = self.bgContainerView.bounds;
     self.blurOverlayView.alpha = self.blurAlpha;
-    // 把 blur 叠在最上层,但在 CC 内容之下
-    // 注意:实际层级关系需要根据注入的具体 view 调整
+}
+
+- (void)detachMediaViews {
+    [self detachVideoView];
+    [self detachImageView];
+}
+
+- (void)detachVideoView {
+    if (self.videoView) {
+        [self.videoView pause];
+        [self.videoView removeFromSuperview];
+        self.videoView = nil;
+    }
+}
+
+- (void)detachImageView {
+    if (self.imageView) {
+        [self.imageView removeFromSuperview];
+        self.imageView = nil;
+    }
 }
 
 @end
 
-// MARK: - Hook
-// 注意:以下类名是候选,需真机调试确认准确类名
-// iOS 16+: CCUIModularControlCenterContainerView 或 CCUILayoutView
-// iOS 15-: CCUIBackdropView
+// MARK: - Hooks
 
-%hook CCUIModularControlCenterContainerView
+// 主 hook: 控制中心 overlay controller
+%hook CCUIModularControlCenterOverlayViewController
 
-- (void)layoutSubviews {
+- (void)viewDidAppear:(BOOL)animated {
     %orig;
-    [[CustomCCBgManager sharedInstance] attachToContainerView:(UIView *)self];
+    UIView *root = ((UIViewController *)self).view;
+    [[CustomCCBgManager sharedInstance] attachToHostView:root];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    UIView *root = ((UIViewController *)self).view;
+    [[CustomCCBgManager sharedInstance] attachToHostView:root];
 }
 
 - (void)dealloc {
@@ -233,16 +265,15 @@ static NSString * const kCCBgMediaTypeKey = @"MediaType"; // "image" / "video" /
 
 %end
 
-// 备用 hook:如果 CCUIModularControlCenterContainerView 不对,试这个
-// %hook CCUIBackdropView
-// - (void)didMoveToWindow {
-//     %orig;
-//     if (self.window) {
-//         [[CustomCCBgManager sharedInstance] attachToContainerView:self];
-//     }
-// }
-// - (void)dealloc {
-//     [[CustomCCBgManager sharedInstance] detach];
-//     %orig;
-// }
-// %end
+// 备用 hook: CC 容器视图
+%hook CCUIModularControlCenterContainerView
+
+- (void)layoutSubviews {
+    %orig;
+    UIView *host = self.superview;
+    if (host) {
+        [[CustomCCBgManager sharedInstance] attachToHostView:host];
+    }
+}
+
+%end

@@ -3,8 +3,8 @@ Name: Ai液态玻璃
 Version: 0.1.10b
 Architecture: iphoneos-arm
 Description: 深度优化的液态玻璃效果，智能帧率控制 + 全局数量预算，告别发烫
-Maintainer: dylv
-Author: dylv
+Maintainer: Ai
+Author: Ai
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 14.0), firmware (<< 26.0), preferenceloader
 Icon: https://winaviation.github.io/repo/depictions/dylv.Deepliquid/icon.png

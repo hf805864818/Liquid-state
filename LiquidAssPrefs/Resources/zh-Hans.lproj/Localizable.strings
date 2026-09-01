@@ -97,8 +97,8 @@
 "prefs.value_prompt.title" = "设定数值";
 "prefs.value_prompt.message" = "请输入一个值。";
 
-"prefs.hero.eyebrow" = "没有比这更烂的了……";
-"prefs.hero.subtitle" = "有史以来最\"烂\"的插件。";
+"prefs.hero.eyebrow" = "欢迎使用Ai定制优化………";
+"prefs.hero.subtitle" = "此插件由Ai修改完成的插件。";
 "prefs.surface.homescreen.title" = "主屏幕";
 "prefs.surface.homescreen.subtitle" = "与主屏幕表面相关的玻璃控制项。";
 "prefs.surface.lockscreen.title" = "锁屏";

@@ -50,7 +50,6 @@ static CGFloat ccPillRadius(UIView *v) {
 }
 
 static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
-    if (ccHasSBElasticHierarchy(mat)) return -1.0;
     if (!isExactClass(mat, @"MTMaterialView")) return -1.0;
     if (!hasAncestorOfClassName(mat, @"CCUIContentModuleContainerView")) return -1.0;
 
@@ -566,7 +565,7 @@ static void ccRestoreAllRoundedViews(void) {
 
 static void lgRound(UIView *v, CGFloat r) {
     if (!v) return;
-    if (!lgHostEnabled(@"ControlCenter") || ccHasSBElasticHierarchy(v)) {
+    if (!lgHostEnabled(@"ControlCenter")) {
         ccRestoreRoundState(v);
         return;
     }
@@ -582,7 +581,7 @@ static void lgRound(UIView *v, CGFloat r) {
 }
 
 static void ccApplyOrRestoreRound(UIView *view, CGFloat radius, BOOL eligible) {
-    if (!eligible || !lgHostEnabled(@"ControlCenter") || ccHasSBElasticHierarchy(view)) {
+    if (!eligible || !lgHostEnabled(@"ControlCenter")) {
         ccRestoreRoundState(view);
         return;
     }
@@ -590,7 +589,7 @@ static void ccApplyOrRestoreRound(UIView *view, CGFloat radius, BOOL eligible) {
 }
 
 static void roundContinuousSliderFill(UIView *slider) {
-    BOOL eligible = !ccHasSBElasticHierarchy(slider);
+    BOOL eligible = YES;
     CGFloat customRadius = LG_prefFloat(@"ControlCenter.SliderCornerRadius", -1.0);
     for (UIView *child in slider.subviews) {
         if (!isExactClass(child, @"UIView")) continue;
@@ -604,7 +603,7 @@ static void roundContinuousSliderFill(UIView *slider) {
 }
 
 static void roundMRUSliderFill(UIView *slider) {
-    BOOL eligible = !ccHasSBElasticHierarchy(slider);
+    BOOL eligible = YES;
     CGFloat customRadius = LG_prefFloat(@"ControlCenter.SliderCornerRadius", -1.0);
     for (UIView *child in slider.subviews) {
         if (!isExactClass(child, @"UIView")) continue;
@@ -668,18 +667,29 @@ static void ccSliderUpdatePercentLabel(UIView *slider) {
     CGFloat sliderWidth = CGRectGetWidth(slider.bounds);
     CGFloat sliderHeight = CGRectGetHeight(slider.bounds);
 
-    // Center horizontally inside the slider
-    CGFloat labelX = (sliderWidth - labelWidth) / 2;
+    BOOL isHorizontal = sliderWidth > sliderHeight;
 
-    // For vertical CC sliders, fill goes from bottom to top.
-    // Position the text just above the fill boundary (inside the unfilled area).
-    CGFloat fillBoundaryY = (1.0 - value) * sliderHeight;
-    CGFloat labelY = fillBoundaryY - labelHeight - 4;
-    // Clamp to stay inside the slider bounds
-    if (labelY < 2) labelY = 2;
-    if (labelY > sliderHeight - labelHeight - 2) labelY = sliderHeight - labelHeight - 2;
+    if (isHorizontal) {
+        // Horizontal slider (landscape volume HUD)
+        // Center vertically inside the slider
+        CGFloat labelX = (sliderWidth - labelWidth) / 2;
+        CGFloat labelY = (sliderHeight - labelHeight) / 2;
+        label.frame = CGRectMake(labelX, labelY, labelWidth, labelHeight);
+    } else {
+        // Vertical slider (Control Center brightness/volume)
+        // Center horizontally inside the slider
+        CGFloat labelX = (sliderWidth - labelWidth) / 2;
 
-    label.frame = CGRectMake(labelX, labelY, labelWidth, labelHeight);
+        // For vertical CC sliders, fill goes from bottom to top.
+        // Position the text just above the fill boundary (inside the unfilled area).
+        CGFloat fillBoundaryY = (1.0 - value) * sliderHeight;
+        CGFloat labelY = fillBoundaryY - labelHeight - 4;
+        // Clamp to stay inside the slider bounds
+        if (labelY < 2) labelY = 2;
+        if (labelY > sliderHeight - labelHeight - 2) labelY = sliderHeight - labelHeight - 2;
+
+        label.frame = CGRectMake(labelX, labelY, labelWidth, labelHeight);
+    }
 }
 
 #pragma mark - Slider Haptic Feedback
@@ -691,7 +701,7 @@ static const void *kCCSliderHapticLastHapticTimeKey = &kCCSliderHapticLastHaptic
 static const void *kCCSliderHapticFeedbackKey = &kCCSliderHapticFeedbackKey;
 
 static BOOL ccSliderHapticsEnabled(void) {
-    return LG_prefBool(@"ControlCenter.SliderHaptics.Enabled", NO);
+    return LG_prefBool(@"ControlCenter.SliderHaptics.Enabled", YES);
 }
 
 static CGFloat ccSliderHapticIntensity(void) {
@@ -708,6 +718,7 @@ static UIImpactFeedbackGenerator *ccSliderHapticGenerator(UIView *slider) {
         gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
         objc_setAssociatedObject(slider, kCCSliderHapticFeedbackKey, gen, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    [gen prepare];
     return gen;
 }
 
@@ -758,7 +769,6 @@ static void ccSliderTriggerHaptic(UIView *slider, BOOL isEdge) {
 
 static void ccSliderUpdateHapticState(UIView *slider) {
     if (!ccSliderHapticsEnabled()) return;
-    if (ccHasSBElasticHierarchy(slider)) return;
 
     CGFloat currentValue = ccSliderGetNormalizedValue(slider);
     NSNumber *lastValueNum = objc_getAssociatedObject(slider, kCCSliderHapticLastValueKey);
@@ -792,9 +802,7 @@ static void ccSliderUpdateHapticState(UIView *slider) {
 
 static void roundToggleFills(UIView *buttonModule) {
     UIView *module = ccModuleAncestor(buttonModule);
-    BOOL eligible = module && ccIsModuleCandidate(module) &&
-                    !ccHasSBElasticHierarchy(buttonModule) &&
-                    !ccHasSBElasticHierarchy(module);
+    BOOL eligible = module && ccIsModuleCandidate(module);
     CGFloat r = eligible ? ccModuleCornerRadius(module) : 0.0;
     for (UIView *child in buttonModule.subviews)
         if (isExactClass(child, @"UIView")) ccApplyOrRestoreRound(child, r, eligible);
@@ -802,7 +810,7 @@ static void roundToggleFills(UIView *buttonModule) {
 
 static void roundModuleContainer(UIView *module) {
     if (!isExactClass(module, @"CCUIContentModuleContainerView")) return;
-    BOOL eligible = ccIsModuleCandidate(module) && !ccHasSBElasticHierarchy(module);
+    BOOL eligible = ccIsModuleCandidate(module);
     CGFloat r = eligible ? ccModuleCornerRadius(module) : 0.0;
     ccApplyOrRestoreRound(module, r, eligible);
     for (UIView *sub in module.subviews)

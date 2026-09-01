@@ -901,7 +901,7 @@ static NSArray<NSDictionary *> *LGControlCenterSliderHapticItems(void) {
         LGSwitchSetting(@"ControlCenter.SliderHaptics.Enabled",
                         LGLocalized(@"prefs.control.slider_haptics"),
                         LGLocalized(@"prefs.subtitle.slider_haptics"),
-                        NO),
+                        YES),
         LGSettingControlledByKey(
             LGSliderSetting(@"ControlCenter.SliderHaptics.Intensity",
                             LGLocalized(@"prefs.control.slider_haptics_intensity"),
@@ -960,9 +960,9 @@ static NSArray<NSDictionary *> *LGClockVariableFontItems(void) {
                                                 LGLocalized(@"prefs.subtitle.variable_font_name"),
                                                 @"adaptive",
                                                 @[
-            @{ @"key": @"soft", @"title": LGLocalized(@"prefs.clock_font.soft_adaptive") },
-            @{ @"key": @"adaptive", @"title": LGLocalized(@"prefs.clock_font.adaptive") },
-            @{ @"key": @"newyork", @"title": LGLocalized(@"prefs.clock_font.newyork_adaptive") },
+            @{ @"value": @"soft", @"title": LGLocalized(@"prefs.clock_font.soft_adaptive") },
+            @{ @"value": @"adaptive", @"title": LGLocalized(@"prefs.clock_font.adaptive") },
+            @{ @"value": @"newyork", @"title": LGLocalized(@"prefs.clock_font.newyork_adaptive") },
         ]), @"Clock.VariableFont.Enabled", @YES),
         LGSettingControlledByKey(LGNavSetting(LGLocalized(@"prefs.control.variable_font_weight_preset"),
                                                 LGLocalized(@"prefs.subtitle.variable_font_weight_preset"),
