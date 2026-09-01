@@ -641,7 +641,7 @@ typedef NS_ENUM(NSInteger, CCBgMode) {
 - (void)didMoveToWindow {
     %orig;
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if (mgr.backgroundMode == kCCBgModePerModule && self.window) {
+    if (mgr.backgroundMode == kCCBgModePerModule && [(UIView *)self window]) {
         [mgr attachToModuleView:(UIView *)self];
     }
 }
