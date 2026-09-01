@@ -35,16 +35,6 @@ static BOOL ccIsInsideSlider(UIView *mat) {
            hasAncestorOfClassName(mat, @"MRUContinuousSliderView");
 }
 
-static BOOL ccHasSBElasticHierarchy(UIView *view) {
-    // volume hud reuses cc views so leave its elastic hierarchy alone
-    UIView *candidate = view;
-    for (NSInteger level = 0; candidate && level < 3; level++, candidate = candidate.superview) {
-        NSString *className = NSStringFromClass(candidate.class);
-        if ([className hasPrefix:@"SBElastic"]) return YES;
-    }
-    return NO;
-}
-
 static CGFloat ccPillRadius(UIView *v) {
     return fmin(CGRectGetWidth(v.bounds), CGRectGetHeight(v.bounds)) * 0.5;
 }
