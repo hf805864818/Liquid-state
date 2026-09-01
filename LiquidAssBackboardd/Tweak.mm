@@ -1,6 +1,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <QuartzCore/QuartzCore.h>
 #import "../Shared/LGHostRegistry.h"
 #import "LGSymbolResolver.h"
 #import "../Shared/LGCoverSheetState.h"
@@ -1205,9 +1206,8 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     CFTimeInterval now = CACurrentMediaTime();
     if (now - sLastRenderTime < 0.033) {
         // 跳过此帧,调用原始渲染函数
-        if (g_origRender13) {
-            ((void(*)(void*, void*, void*, void*, float, void*, float, bool, void*, void*, float*))g_origRender13)(
-                self, filter, layer, ctx, opacity, surface, scale, flag, cm, shape, out);
+        if (g_origGaussR13) {
+            g_origGaussR13(self, filter, layer, ctx, opacity, surface, scale, flag, cm, shape, out);
         }
         return;
     }
