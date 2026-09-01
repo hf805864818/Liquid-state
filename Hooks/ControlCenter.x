@@ -812,58 +812,48 @@ static void ccSliderTriggerHaptic(UIView *slider, BOOL isEdge) {
     CGFloat intensity = ccSliderHapticIntensity();
 
     if (isEdge && ccSliderEdgeFeedbackEnabled()) {
-        // Edge feedback: strong haptic + system sound
         UIImpactFeedbackGenerator *gen = ccSliderHapticGenerator(slider);
         [gen impactOccurredWithIntensity:MIN(1.0, intensity * 2.0)];
-        // Fallback: also play system sound
         AudioServicesPlaySystemSound(1519); // strong tick
     } else if (!isEdge) {
-        // Throttle continuous haptics - 15ms allows ~60Hz max for smooth feedback
-        NSNumber *lastTimeNum = objc_getAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey);
-        NSTimeInterval lastTime = lastTimeNum ? lastTimeNum.doubleValue : 0;
-        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        if (now - lastTime < 0.015) return;
-        objc_setAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-        // Use full intensity instead of 0.6x for noticeable feedback
         UIImpactFeedbackGenerator *gen = ccSliderHapticGenerator(slider);
         [gen impactOccurredWithIntensity:MAX(0.2, intensity)];
-        // Fallback: also play system sound for guaranteed feedback
         AudioServicesPlaySystemSound(1520); // weak tick
     }
 }
 
+// 追踪百分比标签文本变化 - 文本每变一次就震一次
+// 滑得快→变化快→震动密; 滑得慢→变化慢→震动疏; 按键→每按一次震一次
+static const void *kCCSliderLastPercentTextKey = &kCCSliderLastPercentTextKey;
+
 static void ccSliderUpdateHapticState(UIView *slider) {
     if (!ccSliderHapticsEnabled()) return;
 
-    CGFloat currentValue = ccSliderGetNormalizedValue(slider);
-    NSNumber *lastValueNum = objc_getAssociatedObject(slider, kCCSliderHapticLastValueKey);
-    CGFloat lastValue = lastValueNum ? lastValueNum.doubleValue : currentValue;
+    // 读取百分比标签的当前文本
+    UILabel *label = objc_getAssociatedObject(slider, kCCSliderPercentLabelKey);
+    NSString *currentText = label.text ?: @"";
 
-    if (fabs(currentValue - lastValue) < 0.001) return;
+    // 获取上次记录的百分比文本
+    NSString *lastText = objc_getAssociatedObject(slider, kCCSliderLastPercentTextKey);
 
-    BOOL wasAtMin = [objc_getAssociatedObject(slider, kCCSliderHapticAtMinKey) boolValue];
-    BOOL wasAtMax = [objc_getAssociatedObject(slider, kCCSliderHapticAtMaxKey) boolValue];
+    // 文本变化了 → 触发震动
+    if (lastText && ![currentText isEqualToString:lastText]) {
+        // 判断是否到达边缘
+        NSInteger percent = 0;
+        NSScanner *scanner = [NSScanner scannerWithString:currentText];
+        [scanner scanInteger:&percent];
 
-    BOOL isAtMin = currentValue <= 0.01;
-    BOOL isAtMax = currentValue >= 0.99;
-
-    // Edge feedback
-    if (isAtMin && !wasAtMin) {
-        ccSliderTriggerHaptic(slider, YES);
-    } else if (isAtMax && !wasAtMax) {
-        ccSliderTriggerHaptic(slider, YES);
-    } else if (!isAtMin && !isAtMax) {
-        // Continuous haptic: trigger on small value changes (0.3% threshold)
-        CGFloat step = fabs(currentValue - lastValue);
-        if (step > 0.003) {
+        if (percent <= 1 || percent >= 99) {
+            // 边缘: 强震动
+            ccSliderTriggerHaptic(slider, YES);
+        } else {
+            // 中间: 普通震动, 每次百分比变化都震
             ccSliderTriggerHaptic(slider, NO);
         }
     }
 
-    objc_setAssociatedObject(slider, kCCSliderHapticLastValueKey, @(currentValue), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(slider, kCCSliderHapticAtMinKey, @(isAtMin), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(slider, kCCSliderHapticAtMaxKey, @(isAtMax), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // 记录当前百分比文本
+    objc_setAssociatedObject(slider, kCCSliderLastPercentTextKey, currentText, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void roundToggleFills(UIView *buttonModule) {
@@ -883,37 +873,6 @@ static void roundModuleContainer(UIView *module) {
         if (isExactClass(sub, @"CCUIContentModuleContentContainer") ||
             isExactClass(sub, @"CCUIContentModuleContentContainerView"))
             ccApplyOrRestoreRound(sub, r, eligible);
-}
-
-// 基于触摸位置的震动反馈 - 不依赖值检测,最可靠的后备方案
-static const void *kCCSliderLastTouchFractionKey = &kCCSliderLastTouchFractionKey;
-
-static void ccSliderTouchHaptic(UIView *slider, NSSet<UITouch *> *touches) {
-    if (!ccSliderHapticsEnabled()) return;
-    UITouch *touch = touches.anyObject;
-    if (!touch) return;
-
-    CGPoint loc = [touch locationInView:slider];
-    CGFloat w = CGRectGetWidth(slider.bounds), h = CGRectGetHeight(slider.bounds);
-    if (w <= 0 || h <= 0) return;
-
-    // 根据滑块方向计算触摸位置比例 (0~1)
-    CGFloat fraction;
-    if (h >= w) {
-        fraction = 1.0 - (loc.y / h); // 垂直滑块(如亮度/音量): 上=1, 下=0
-    } else {
-        fraction = loc.x / w; // 水平滑块: 右=1, 左=0
-    }
-    fraction = MAX(0.0, MIN(1.0, fraction));
-
-    NSNumber *lastNum = objc_getAssociatedObject(slider, kCCSliderLastTouchFractionKey);
-    CGFloat lastFraction = lastNum ? lastNum.doubleValue : -1.0;
-
-    // 每变化 ~2% 触发一次震动
-    if (lastFraction >= 0 && fabs(fraction - lastFraction) >= 0.02) {
-        ccSliderTriggerHaptic(slider, NO);
-    }
-    objc_setAssociatedObject(slider, kCCSliderLastTouchFractionKey, @(fraction), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 #pragma mark - hooks
@@ -1014,11 +973,9 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     %orig;
     ccSliderStartDisplayLink((UIView *)self);
     ccSliderUpdateAll((UIView *)self);
-    ccSliderTouchHaptic((UIView *)self, touches); // 初始化触摸位置追踪
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     %orig;
-    ccSliderTouchHaptic((UIView *)self, touches); // 基于触摸位置的可靠震动后备
     ccSliderUpdateAll((UIView *)self);
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -1061,11 +1018,9 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     %orig;
     ccSliderStartDisplayLink((UIView *)self);
     ccSliderUpdateAll((UIView *)self);
-    ccSliderTouchHaptic((UIView *)self, touches);
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     %orig;
-    ccSliderTouchHaptic((UIView *)self, touches);
     ccSliderUpdateAll((UIView *)self);
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
