@@ -454,7 +454,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 #pragma mark - 可见性控制
 
 // 优化 H: 控制中心关闭后延迟释放视频的时间（秒）
-static const NSTimeInterval kCCBgDeferredReleaseDelay = 30.0;
+static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)cancelDeferredRelease {
     if (self.deferredReleaseTimer) {
