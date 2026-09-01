@@ -818,11 +818,11 @@ static void ccSliderTriggerHaptic(UIView *slider, BOOL isEdge) {
         // Fallback: also play system sound
         AudioServicesPlaySystemSound(1519); // strong tick
     } else if (!isEdge) {
-        // Throttle continuous haptics (reduced from 0.08 to 0.04 for better responsiveness)
+        // Throttle continuous haptics - 15ms allows ~60Hz max for smooth feedback
         NSNumber *lastTimeNum = objc_getAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey);
         NSTimeInterval lastTime = lastTimeNum ? lastTimeNum.doubleValue : 0;
         NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        if (now - lastTime < 0.04) return; // ~25Hz max
+        if (now - lastTime < 0.015) return;
         objc_setAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
         // Use full intensity instead of 0.6x for noticeable feedback
@@ -854,9 +854,9 @@ static void ccSliderUpdateHapticState(UIView *slider) {
     } else if (isAtMax && !wasAtMax) {
         ccSliderTriggerHaptic(slider, YES);
     } else if (!isAtMin && !isAtMax) {
-        // Continuous haptic based on step size (lowered threshold from 0.02 to 0.008)
+        // Continuous haptic: trigger on small value changes (0.3% threshold)
         CGFloat step = fabs(currentValue - lastValue);
-        if (step > 0.008) {
+        if (step > 0.003) {
             ccSliderTriggerHaptic(slider, NO);
         }
     }
@@ -883,6 +883,37 @@ static void roundModuleContainer(UIView *module) {
         if (isExactClass(sub, @"CCUIContentModuleContentContainer") ||
             isExactClass(sub, @"CCUIContentModuleContentContainerView"))
             ccApplyOrRestoreRound(sub, r, eligible);
+}
+
+// 基于触摸位置的震动反馈 - 不依赖值检测,最可靠的后备方案
+static const void *kCCSliderLastTouchFractionKey = &kCCSliderLastTouchFractionKey;
+
+static void ccSliderTouchHaptic(UIView *slider, NSSet<UITouch *> *touches) {
+    if (!ccSliderHapticsEnabled()) return;
+    UITouch *touch = touches.anyObject;
+    if (!touch) return;
+
+    CGPoint loc = [touch locationInView:slider];
+    CGFloat w = CGRectGetWidth(slider.bounds), h = CGRectGetHeight(slider.bounds);
+    if (w <= 0 || h <= 0) return;
+
+    // 根据滑块方向计算触摸位置比例 (0~1)
+    CGFloat fraction;
+    if (h >= w) {
+        fraction = 1.0 - (loc.y / h); // 垂直滑块(如亮度/音量): 上=1, 下=0
+    } else {
+        fraction = loc.x / w; // 水平滑块: 右=1, 左=0
+    }
+    fraction = MAX(0.0, MIN(1.0, fraction));
+
+    NSNumber *lastNum = objc_getAssociatedObject(slider, kCCSliderLastTouchFractionKey);
+    CGFloat lastFraction = lastNum ? lastNum.doubleValue : -1.0;
+
+    // 每变化 ~2% 触发一次震动
+    if (lastFraction >= 0 && fabs(fraction - lastFraction) >= 0.02) {
+        ccSliderTriggerHaptic(slider, NO);
+    }
+    objc_setAssociatedObject(slider, kCCSliderLastTouchFractionKey, @(fraction), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 #pragma mark - hooks
@@ -946,7 +977,7 @@ static void ccSliderStartDisplayLink(UIView *slider) {
                                                       selector:@selector(tick:)];
     objc_setAssociatedObject(link, kCCSliderDisplayLinkKey, slider, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(slider, kCCSliderDisplayLinkKey, link, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    link.preferredFramesPerSecond = 30; // 30fps polling to save battery
+    link.preferredFramesPerSecond = 60; // 60fps for responsive haptic feedback
     [link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 }
 
@@ -973,7 +1004,9 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     %orig;
     roundContinuousSliderFill((UIView *)self);
     ccSliderUpdatePercentLabel((UIView *)self);
-    if (![(UIView *)self window]) {
+    if ([(UIView *)self window]) {
+        ccSliderStartDisplayLink((UIView *)self); // 滑块可见时持续运行,捕获按键驱动的值变化
+    } else {
         ccSliderStopDisplayLink((UIView *)self);
     }
 }
@@ -981,23 +1014,21 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     %orig;
     ccSliderStartDisplayLink((UIView *)self);
     ccSliderUpdateAll((UIView *)self);
+    ccSliderTouchHaptic((UIView *)self, touches); // 初始化触摸位置追踪
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     %orig;
+    ccSliderTouchHaptic((UIView *)self, touches); // 基于触摸位置的可靠震动后备
     ccSliderUpdateAll((UIView *)self);
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     %orig;
     ccSliderUpdateAll((UIView *)self);
-    // Keep the display link running briefly for any final animation, then stop
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        ccSliderStopDisplayLink((UIView *)self);
-    });
+    // Display link 由 didMoveToWindow 管理生命周期, 不在这里停止
 }
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     %orig;
     ccSliderUpdateAll((UIView *)self);
-    ccSliderStopDisplayLink((UIView *)self);
 }
 - (void)dealloc {
     ccSliderStopDisplayLink((UIView *)self);
@@ -1030,9 +1061,11 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     %orig;
     ccSliderStartDisplayLink((UIView *)self);
     ccSliderUpdateAll((UIView *)self);
+    ccSliderTouchHaptic((UIView *)self, touches);
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     %orig;
+    ccSliderTouchHaptic((UIView *)self, touches);
     ccSliderUpdateAll((UIView *)self);
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
