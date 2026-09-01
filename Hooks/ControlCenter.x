@@ -938,12 +938,28 @@ static void roundModuleContainer(UIView *module) {
 #pragma mark - hooks
 
 %hook CCUIContentModuleContainerView
-- (void)layoutSubviews { %orig; roundModuleContainer((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    // 优化5: layoutSubviews 节流到 30fps
+    static CFTimeInterval sLastLayoutTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - sLastLayoutTime < 0.033) return;
+    sLastLayoutTime = now;
+    roundModuleContainer((UIView *)self);
+}
 - (void)didMoveToWindow { %orig; roundModuleContainer((UIView *)self); }
 %end
 
 %hook CCUIButtonModuleView
-- (void)layoutSubviews { %orig; roundToggleFills((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    // 优化5: layoutSubviews 节流到 30fps
+    static CFTimeInterval sLastLayoutTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - sLastLayoutTime < 0.033) return;
+    sLastLayoutTime = now;
+    roundToggleFills((UIView *)self);
+}
 - (void)didMoveToWindow { %orig; roundToggleFills((UIView *)self); }
 %end
 
@@ -993,7 +1009,16 @@ static void ccSliderStopDisplayLink(UIView *slider) {
 }
 
 %hook CCUIContinuousSliderView
-- (void)layoutSubviews { %orig; roundContinuousSliderFill((UIView *)self); ccSliderUpdateAll((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    // 优化5: layoutSubviews 节流到 30fps
+    static CFTimeInterval sLastLayoutTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - sLastLayoutTime < 0.033) return;
+    sLastLayoutTime = now;
+    roundContinuousSliderFill((UIView *)self);
+    ccSliderUpdateAll((UIView *)self);
+}
 - (void)didMoveToWindow {
     %orig;
     roundContinuousSliderFill((UIView *)self);
@@ -1031,7 +1056,16 @@ static void ccSliderStopDisplayLink(UIView *slider) {
 %end
 
 %hook MRUContinuousSliderView
-- (void)layoutSubviews { %orig; roundMRUSliderFill((UIView *)self); ccSliderUpdateAll((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    // 优化5: layoutSubviews 节流到 30fps
+    static CFTimeInterval sLastLayoutTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - sLastLayoutTime < 0.033) return;
+    sLastLayoutTime = now;
+    roundMRUSliderFill((UIView *)self);
+    ccSliderUpdateAll((UIView *)self);
+}
 - (void)didMoveToWindow {
     %orig;
     roundMRUSliderFill((UIView *)self);

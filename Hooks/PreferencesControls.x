@@ -1302,7 +1302,15 @@ static void LGSettingsSuppressModernSwitchElementIfNeeded(UIView *element) {
     if (!self.window) LGStopSettingsSegmentDisplayLink((UISegmentedControl *)self);
     LGProfiledInstallSettingsSegmentGlass((UISegmentedControl *)self);
 }
-- (void)layoutSubviews { %orig; LGProfiledInstallSettingsSegmentGlass((UISegmentedControl *)self); }
+- (void)layoutSubviews {
+    %orig;
+    // 优化5: layoutSubviews 节流到 30fps
+    static CFTimeInterval sLastLayoutTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - sLastLayoutTime < 0.033) return;
+    sLastLayoutTime = now;
+    LGProfiledInstallSettingsSegmentGlass((UISegmentedControl *)self);
+}
 - (void)setSelectedSegmentIndex:(NSInteger)index {
     %orig;
     LGProfiledInstallSettingsSegmentGlass((UISegmentedControl *)self);

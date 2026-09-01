@@ -248,7 +248,15 @@ __attribute__((constructor)) static void lgGlassInitEnableObserver(void) {
     lgRouteMaterialHost((UIView *)self);
 }
 
-- (void)layoutSubviews { %orig; lgRouteMaterialHost((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    // 优化5: layoutSubviews 节流到 30fps,降低 CPU 负载
+    static CFTimeInterval sLastRouteTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - sLastRouteTime < 0.033) return;
+    sLastRouteTime = now;
+    lgRouteMaterialHost((UIView *)self);
+}
 
 - (void)setHidden:(BOOL)hidden {
     if (LGMaterialHasGlass((UIView *)self, kGlassKey)) hidden = YES;

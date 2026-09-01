@@ -361,7 +361,8 @@ static void LGRefreshMotionHighlights(void) {
         ? CMAttitudeReferenceFrameXMagneticNorthZVertical
         : CMAttitudeReferenceFrameXArbitraryCorrectedZVertical;
 
-    sLGMotionManager.deviceMotionUpdateInterval = 1.0 / 10.0;
+    // 优化2: CoreMotion 降级到 5Hz,降低传感器功耗,视觉差异几乎不可感知
+    sLGMotionManager.deviceMotionUpdateInterval = 1.0 / 5.0;
     sLGMotionRunning = YES;
     [sLGMotionManager startDeviceMotionUpdatesUsingReferenceFrame:frame
                                                             toQueue:NSOperationQueue.mainQueue

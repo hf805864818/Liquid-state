@@ -375,7 +375,15 @@ static void restorePasscodeForDisable(void) {
 
 %hook CSPasscodeBackgroundView
 - (void)didMoveToWindow { %orig; updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self)); }
-- (void)layoutSubviews  { %orig; updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self)); }
+- (void)layoutSubviews {
+    %orig;
+    // 优化5: layoutSubviews 节流到 30fps
+    static CFTimeInterval sLastLayoutTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - sLastLayoutTime < 0.033) return;
+    sLastLayoutTime = now;
+    updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self));
+}
 - (void)setHidden:(BOOL)hidden { %orig; updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self)); }
 %end
 
