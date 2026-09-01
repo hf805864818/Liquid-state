@@ -1,7 +1,11 @@
 #import <UIKit/UIKit.h>
 #import <Preferences/Preferences.h>
 #import <Photos/Photos.h>
-#import <MobileCoreServices/MobileCoreServices.h>
+
+// PSSpecifier private method declarations
+@interface PSSpecifier (Private)
++ (PSSpecifier *)groupSpecifierWithProperties:(NSDictionary *)properties;
+@end
 
 static NSString * const kCCBgPrefsDomain = @"dylv.Deepliquid.ccbg";
 static NSString * const kCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadPrefs";
@@ -83,13 +87,13 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
     [alert addAction:[UIAlertAction actionWithTitle:@"从相册选择图片"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
-        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:(__bridge NSString *)kUTTypeImage];
+        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:@"public.image"];
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"从相册选择视频"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
-        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:(__bridge NSString *)kUTTypeMovie];
+        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:@"public.movie"];
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"取消"
@@ -172,14 +176,14 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
     // 确保目录存在
     [fm createDirectoryAtPath:mediaDir withIntermediateDirectories:YES attributes:nil error:&error];
 
-    if ([mediaType isEqualToString:(__bridge NSString *)kUTTypeImage]) {
+    if ([mediaType isEqualToString:@"public.image"]) {
         UIImage *image = info[UIImagePickerControllerOriginalImage];
         NSData *imageData = UIImageJPEGRepresentation(image, 0.85);
         NSString *destPath = [mediaDir stringByAppendingPathComponent:kCCBgImageFileName];
         // 先清除旧视频
         [fm removeItemAtPath:[mediaDir stringByAppendingPathComponent:kCCBgVideoFileName] error:nil];
         [imageData writeToFile:destPath atomically:YES];
-    } else if ([mediaType isEqualToString:(__bridge NSString *)kUTTypeMovie]) {
+    } else if ([mediaType isEqualToString:@"public.movie"]) {
         NSURL *videoURL = info[UIImagePickerControllerMediaURL];
         NSString *destPath = [mediaDir stringByAppendingPathComponent:kCCBgVideoFileName];
         // 先清除旧图片
