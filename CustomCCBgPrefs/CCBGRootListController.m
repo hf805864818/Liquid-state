@@ -1,5 +1,5 @@
 #import <UIKit/UIKit.h>
-#import <Preferences/PSListController.h>
+#import <Preferences/Preferences.h>
 #import <Photos/Photos.h>
 #import <MobileCoreServices/MobileCoreServices.h>
 
@@ -10,6 +10,12 @@ static NSString * const kCCBgImageFileName = @"background.jpg";
 static NSString * const kCCBgVideoFileName = @"background.mp4";
 
 @interface CCBGRootListController : PSListController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+- (PSSpecifier *)groupSpecifierWithName:(NSString *)name footerText:(NSString *)footer;
+- (PSSpecifier *)switchSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue;
+- (PSSpecifier *)sliderSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue min:(id)min max:(id)max;
+- (PSSpecifier *)buttonSpecifierWithTitle:(NSString *)title action:(SEL)action;
+- (id)readPreferenceValue:(PSSpecifier *)specifier;
+- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier;
 @end
 
 @implementation CCBGRootListController
@@ -17,20 +23,20 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSMutableArray *specs = [NSMutableArray array];
-        
+
         // 全局开关组
-        [specs addObject:[self groupSpecifierWithName:@"全局开关"]];
+        [specs addObject:[self groupSpecifierWithName:@"全局开关" footerText:nil]];
         [specs addObject:[self switchSpecifierWithKey:@"Enabled"
                                                   title:@"开启自定义控制中心背景"
                                                defaultValue:@(NO)]];
-        
+
         // 背景设置组
-        [specs addObject:[self groupSpecifierWithName:@"背景设置"]];
+        [specs addObject:[self groupSpecifierWithName:@"背景设置" footerText:nil]];
         [specs addObject:[self buttonSpecifierWithTitle:@"选择控制中心背景 (图片/视频)"
                                                    action:@selector(chooseMedia:)]];
         [specs addObject:[self buttonSpecifierWithTitle:@"清除背景"
                                                    action:@selector(clearMedia:)]];
-        
+
         // 模糊度组
         [specs addObject:[self groupSpecifierWithName:@"背景模糊度调节" footerText:@"调整控制中心背景的毛玻璃强度"]];
         [specs addObject:[self sliderSpecifierWithKey:@"BlurAlpha"
@@ -38,12 +44,12 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
                                               defaultValue:@(0.3)
                                                      min:@(0.0)
                                                      max:@(1.0)]];
-        
+
         // 高级选项
-        [specs addObject:[self groupSpecifierWithName:@"高级选项"]];
+        [specs addObject:[self groupSpecifierWithName:@"高级选项" footerText:nil]];
         [specs addObject:[self buttonSpecifierWithTitle:@"跳转 Filza 路径"
                                                    action:@selector(openFilzaPath:)]];
-        
+
         _specifiers = specs;
     }
     return _specifiers;
@@ -52,13 +58,18 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
     if (!key) return nil;
-    return [[NSUserDefaults standardUserDefaults] objectForKey:key inDomain:kCCBgPrefsDomain];
+    CFPropertyListRef value = CFPreferencesCopyAppValue((__bridge CFStringRef)key,
+                                                        (__bridge CFStringRef)kCCBgPrefsDomain);
+    return CFBridgingRelease(value);
 }
 
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
     if (!key) return;
-    [[NSUserDefaults standardUserDefaults] setObject:value forKey:key inDomain:kCCBgPrefsDomain];
+    CFPreferencesSetAppValue((__bridge CFStringRef)key,
+                             (__bridge CFPropertyListRef)value,
+                             (__bridge CFStringRef)kCCBgPrefsDomain);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
     [[NSNotificationCenter defaultCenter] postNotificationName:(id)kCCBgReloadNotification object:nil];
 }
 
@@ -68,27 +79,27 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"选择背景"
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    
+
     [alert addAction:[UIAlertAction actionWithTitle:@"从相册选择图片"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
-        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:(NSString *)kUTTypeImage];
+        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:(__bridge NSString *)kUTTypeImage];
     }]];
-    
+
     [alert addAction:[UIAlertAction actionWithTitle:@"从相册选择视频"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
-        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:(NSString *)kUTTypeMovie];
+        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:(__bridge NSString *)kUTTypeMovie];
     }]];
-    
+
     [alert addAction:[UIAlertAction actionWithTitle:@"取消"
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
-    
+
     // iPad 适配
     alert.popoverPresentationController.sourceView = self.view;
     alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
-    
+
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -103,7 +114,7 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
                 [self presentViewController:alert animated:YES completion:nil];
                 return;
             }
-            
+
             UIImagePickerController *picker = [[UIImagePickerController alloc] init];
             picker.sourceType = type;
             picker.mediaTypes = @[mediaType];
@@ -152,34 +163,35 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
 
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary *)info {
     [picker dismissViewControllerAnimated:YES completion:nil];
-    
+
     NSString *mediaType = info[UIImagePickerControllerMediaType];
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *mediaDir = kCCBgMediaDirectory;
     NSError *error = nil;
-    
+
     // 确保目录存在
     [fm createDirectoryAtPath:mediaDir withIntermediateDirectories:YES attributes:nil error:&error];
-    
-    if ([mediaType isEqualToString:(NSString *)kUTTypeImage]) {
+
+    if ([mediaType isEqualToString:(__bridge NSString *)kUTTypeImage]) {
         UIImage *image = info[UIImagePickerControllerOriginalImage];
         NSData *imageData = UIImageJPEGRepresentation(image, 0.85);
         NSString *destPath = [mediaDir stringByAppendingPathComponent:kCCBgImageFileName];
         // 先清除旧视频
         [fm removeItemAtPath:[mediaDir stringByAppendingPathComponent:kCCBgVideoFileName] error:nil];
         [imageData writeToFile:destPath atomically:YES];
-    } else if ([mediaType isEqualToString:(NSString *)kUTTypeMovie]) {
+    } else if ([mediaType isEqualToString:(__bridge NSString *)kUTTypeMovie]) {
         NSURL *videoURL = info[UIImagePickerControllerMediaURL];
         NSString *destPath = [mediaDir stringByAppendingPathComponent:kCCBgVideoFileName];
         // 先清除旧图片
         [fm removeItemAtPath:[mediaDir stringByAppendingPathComponent:kCCBgImageFileName] error:nil];
         [fm copyItemAtPath:videoURL.path toPath:destPath error:&error];
     }
-    
+
     // 自动开启
-    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"Enabled" inDomain:kCCBgPrefsDomain];
+    CFPreferencesSetAppValue(CFSTR("Enabled"), kCFBooleanTrue, (__bridge CFStringRef)kCCBgPrefsDomain);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
     [self reloadSpecifiers];
-    
+
     [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
 }
 
@@ -189,10 +201,12 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
 
 #pragma mark - Helper
 
-- (PSSpecifier *)groupSpecifierWithName:(NSString *)name {
-    return [PSSpecifier groupSpecifierWithProperties:@{
-        @"name": name ?: @"",
-    }];
+- (PSSpecifier *)groupSpecifierWithName:(NSString *)name footerText:(NSString *)footer {
+    NSMutableDictionary *props = [NSMutableDictionary dictionaryWithObject:(name ?: @"") forKey:@"name"];
+    if (footer.length) {
+        props[@"footerText"] = footer;
+    }
+    return [PSSpecifier groupSpecifierWithProperties:props];
 }
 
 - (PSSpecifier *)switchSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue {
