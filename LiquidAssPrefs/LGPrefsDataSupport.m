@@ -650,9 +650,7 @@ static NSInteger LGSurfaceDefaultOrderForIdentifier(NSString *identifier) {
 
 #pragma mark - Separate Light/Dark Appearance Mode
 
-BOOL LGIsSeparateAppearanceModeEnabled(void) {
-    return [LGReadPreference(@"Appearance.SeparateModes", @NO) boolValue];
-}
+// LGIsSeparateAppearanceModeEnabled is implemented in LGSharedSupport.m
 
 static NSString * const kLGAppearanceEditModeKey = @"LGAppearanceEditMode";
 

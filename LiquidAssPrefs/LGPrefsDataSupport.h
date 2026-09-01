@@ -90,7 +90,7 @@ typedef NS_ENUM(NSInteger, LGAppearanceEditMode) {
     LGAppearanceEditModeDark = 2,
 };
 
-BOOL LGIsSeparateAppearanceModeEnabled(void);
+// LGIsSeparateAppearanceModeEnabled is declared in LGSharedSupport.h
 LGAppearanceEditMode LGCurrentAppearanceEditMode(void);
 void LGSetCurrentAppearanceEditMode(LGAppearanceEditMode mode);
 NSArray<NSDictionary *> *LGItemsWithAppearanceMode(NSArray<NSDictionary *> *items, LGAppearanceEditMode mode);
