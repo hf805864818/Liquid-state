@@ -501,6 +501,7 @@ static NSString * const kLGCCBgVideoFileName = @"background.mp4";
     BOOL enabled = [defaults boolForKey:@"Enabled"];
     CGFloat blurAlpha = [defaults floatForKey:@"BlurAlpha"];
     if (blurAlpha <= 0) blurAlpha = 0.3;
+    NSInteger bgMode = [defaults integerForKey:@"BackgroundMode"];
 
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *imagePath = [kLGCCBgMediaDirectory stringByAppendingPathComponent:kLGCCBgImageFileName];
@@ -521,6 +522,15 @@ static NSString * const kLGCCBgVideoFileName = @"background.mp4";
         [defaults setBool:!enabled forKey:@"Enabled"];
         [defaults synchronize];
         [[NSNotificationCenter defaultCenter] postNotificationName:kLGCCBgReloadNotification object:nil];
+    }]];
+
+    // Background mode selection
+    NSString *modeText = (bgMode == 1) ? @"模块级背景" : @"全屏背景";
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:[NSString stringWithFormat:@"背景模式: %@", modeText]
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+        [self presentCCBgModeSelection:bgMode];
     }]];
 
     // Choose image
@@ -563,12 +573,15 @@ static NSString * const kLGCCBgVideoFileName = @"background.mp4";
     NSString *statusText = nil;
     if (!enabled) {
         statusText = @"当前: 已关闭";
-    } else if (hasVideo) {
-        statusText = @"当前: 视频";
-    } else if (hasImage) {
-        statusText = @"当前: 图片";
     } else {
-        statusText = @"当前: 无背景";
+        NSString *modeName = (bgMode == 1) ? @"模块级" : @"全屏";
+        if (hasVideo) {
+            statusText = [NSString stringWithFormat:@"当前: %@模式 / 视频", modeName];
+        } else if (hasImage) {
+            statusText = [NSString stringWithFormat:@"当前: %@模式 / 图片", modeName];
+        } else {
+            statusText = [NSString stringWithFormat:@"当前: %@模式 / 无背景", modeName];
+        }
     }
     sheet.message = statusText;
 
@@ -654,6 +667,50 @@ static NSString * const kLGCCBgVideoFileName = @"background.mp4";
     }]];
 
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentCCBgModeSelection:(NSInteger)currentMode {
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"背景模式"
+                         message:@"选择背景的显示方式"
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+
+    // 全屏背景
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:[NSString stringWithFormat:@"全屏背景%@", currentMode == 0 ? @" ✓" : @""]
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kLGCCBgPrefsDomain];
+        [defaults setInteger:0 forKey:@"BackgroundMode"];
+        [defaults synchronize];
+        [[NSNotificationCenter defaultCenter] postNotificationName:kLGCCBgReloadNotification object:nil];
+        LGPresentInfoSheet(self, @"背景模式", @"已切换为全屏背景模式");
+    }]];
+
+    // 模块级背景
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:[NSString stringWithFormat:@"模块级背景%@", currentMode == 1 ? @" ✓" : @""]
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kLGCCBgPrefsDomain];
+        [defaults setInteger:1 forKey:@"BackgroundMode"];
+        [defaults synchronize];
+        [[NSNotificationCenter defaultCenter] postNotificationName:kLGCCBgReloadNotification object:nil];
+        LGPresentInfoSheet(self, @"背景模式", @"已切换为模块级背景模式");
+    }]];
+
+    // 取消
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:LGLocalized(@"prefs.button.cancel")
+                  style:UIAlertActionStyleCancel
+                handler:nil]];
+
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2.0,
+                                                               self.view.bounds.size.height / 2.0,
+                                                               1.0, 1.0);
+    sheet.popoverPresentationController.permittedArrowDirections = 0;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 #pragma mark - UIImagePickerControllerDelegate

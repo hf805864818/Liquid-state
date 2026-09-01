@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <AudioToolbox/AudioToolbox.h>
 #import "../Shared/LGLiveBackdropView.h"
 #import "../Shared/LGGlassKit.h"
 #import "../Shared/LGSharedSupport.h"
@@ -657,29 +658,10 @@ static void ccSliderUpdatePercentLabel(UIView *slider) {
     CGFloat sliderWidth = CGRectGetWidth(slider.bounds);
     CGFloat sliderHeight = CGRectGetHeight(slider.bounds);
 
-    BOOL isHorizontal = sliderWidth > sliderHeight;
-
-    if (isHorizontal) {
-        // Horizontal slider (landscape volume HUD)
-        // Center vertically inside the slider
-        CGFloat labelX = (sliderWidth - labelWidth) / 2;
-        CGFloat labelY = (sliderHeight - labelHeight) / 2;
-        label.frame = CGRectMake(labelX, labelY, labelWidth, labelHeight);
-    } else {
-        // Vertical slider (Control Center brightness/volume)
-        // Center horizontally inside the slider
-        CGFloat labelX = (sliderWidth - labelWidth) / 2;
-
-        // For vertical CC sliders, fill goes from bottom to top.
-        // Position the text just above the fill boundary (inside the unfilled area).
-        CGFloat fillBoundaryY = (1.0 - value) * sliderHeight;
-        CGFloat labelY = fillBoundaryY - labelHeight - 4;
-        // Clamp to stay inside the slider bounds
-        if (labelY < 2) labelY = 2;
-        if (labelY > sliderHeight - labelHeight - 2) labelY = sliderHeight - labelHeight - 2;
-
-        label.frame = CGRectMake(labelX, labelY, labelWidth, labelHeight);
-    }
+    // Always center the label both horizontally and vertically
+    CGFloat labelX = (sliderWidth - labelWidth) / 2.0;
+    CGFloat labelY = (sliderHeight - labelHeight) / 2.0;
+    label.frame = CGRectMake(labelX, labelY, labelWidth, labelHeight);
 }
 
 #pragma mark - Slider Haptic Feedback
@@ -705,7 +687,7 @@ static BOOL ccSliderEdgeFeedbackEnabled(void) {
 static UIImpactFeedbackGenerator *ccSliderHapticGenerator(UIView *slider) {
     UIImpactFeedbackGenerator *gen = objc_getAssociatedObject(slider, kCCSliderHapticFeedbackKey);
     if (!gen) {
-        gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
         objc_setAssociatedObject(slider, kCCSliderHapticFeedbackKey, gen, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     [gen prepare];
@@ -716,7 +698,10 @@ static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
     if (!slider) return 0.5;
 
     // Method 1: Try KVC on common value property names
-    for (NSString *key in @[@"value", @"_value", @"normalizedValue", @"_normalizedValue"]) {
+    for (NSString *key in @[@"value", @"_value", @"normalizedValue", @"_normalizedValue",
+                            @"sliderValue", @"_sliderValue", @"continuousValue",
+                            @"_continuousValue", @"rawValue", @"_rawValue",
+                            @"representedValue", @"_representedValue"]) {
         @try {
             id val = [slider valueForKey:key];
             if ([val isKindOfClass:[NSNumber class]]) {
@@ -727,15 +712,59 @@ static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
         } @catch (__unused NSException *e) {}
     }
 
-    // Method 2: Find fill view by checking subview frames
+    // Method 2: Find MTMaterialView fill view (the actual visible fill)
     CGFloat sliderW = CGRectGetWidth(slider.bounds);
     CGFloat sliderH = CGRectGetHeight(slider.bounds);
     if (sliderW <= 0 || sliderH <= 0) return 0.5;
     BOOL isVertical = sliderH >= sliderW;
 
-    // Search all subviews (direct and nested) for a fill view
+    // Look for MTMaterialView in the slider's subview hierarchy
+    // Structure: CCUIContinuousSliderView > UIView > MTMaterialView (fill)
+    for (UIView *child in slider.subviews) {
+        // Direct MTMaterialView
+        if (isExactClass(child, @"MTMaterialView")) {
+            CGRect frameInSlider = [child.superview convertRect:child.frame toView:slider];
+            CGFloat fw = CGRectGetWidth(frameInSlider);
+            CGFloat fh = CGRectGetHeight(frameInSlider);
+            if (isVertical && fh > 0 && fh <= sliderH) {
+                return MIN(1.0, MAX(0.0, fh / sliderH));
+            }
+            if (!isVertical && fw > 0 && fw <= sliderW) {
+                return MIN(1.0, MAX(0.0, fw / sliderW));
+            }
+        }
+        // Nested: UIView > MTMaterialView
+        for (UIView *gc in child.subviews) {
+            if (isExactClass(gc, @"MTMaterialView")) {
+                CGRect gcFrame = [gc.superview convertRect:gc.frame toView:slider];
+                CGFloat gfw = CGRectGetWidth(gcFrame);
+                CGFloat gfh = CGRectGetHeight(gcFrame);
+                if (isVertical && gfh > 0) {
+                    return MIN(1.0, MAX(0.0, gfh / sliderH));
+                }
+                if (!isVertical && gfw > 0) {
+                    return MIN(1.0, MAX(0.0, gfw / sliderW));
+                }
+            }
+            // Check one more level deep
+            for (UIView *ggc in gc.subviews) {
+                if (isExactClass(ggc, @"MTMaterialView")) {
+                    CGRect ggcFrame = [ggc.superview convertRect:ggc.frame toView:slider];
+                    CGFloat ggfw = CGRectGetWidth(ggcFrame);
+                    CGFloat ggfh = CGRectGetHeight(ggcFrame);
+                    if (isVertical && ggfh > 0) {
+                        return MIN(1.0, MAX(0.0, ggfh / sliderH));
+                    }
+                    if (!isVertical && ggfw > 0) {
+                        return MIN(1.0, MAX(0.0, ggfw / sliderW));
+                    }
+                }
+            }
+        }
+    }
+
+    // Method 3: Fallback - find any subview with fractional dimension
     for (UIView *subview in slider.subviews) {
-        // Check direct subviews - look for a view whose dimension is a fraction
         CGRect frameInSlider = [subview.superview convertRect:subview.frame toView:slider];
         CGFloat fw = CGRectGetWidth(frameInSlider);
         CGFloat fh = CGRectGetHeight(frameInSlider);
@@ -745,7 +774,6 @@ static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
         if (!isVertical && fw > 0 && fw <= sliderW * 0.99) {
             return MIN(1.0, MAX(0.0, fw / sliderW));
         }
-        // Check nested subviews
         for (UIView *gc in subview.subviews) {
             CGRect gcFrame = [gc.superview convertRect:gc.frame toView:slider];
             CGFloat gfw = CGRectGetWidth(gcFrame);
@@ -764,20 +792,27 @@ static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
 static void ccSliderTriggerHaptic(UIView *slider, BOOL isEdge) {
     if (!ccSliderHapticsEnabled()) return;
 
-    UIImpactFeedbackGenerator *gen = ccSliderHapticGenerator(slider);
     CGFloat intensity = ccSliderHapticIntensity();
 
     if (isEdge && ccSliderEdgeFeedbackEnabled()) {
-        [gen impactOccurredWithIntensity:MIN(1.0, intensity * 1.5)];
+        // Edge feedback: strong haptic + system sound
+        UIImpactFeedbackGenerator *gen = ccSliderHapticGenerator(slider);
+        [gen impactOccurredWithIntensity:MIN(1.0, intensity * 2.0)];
+        // Fallback: also play system sound
+        AudioServicesPlaySystemSound(1519); // strong tick
     } else if (!isEdge) {
-        // Throttle continuous haptics
+        // Throttle continuous haptics (reduced from 0.08 to 0.04 for better responsiveness)
         NSNumber *lastTimeNum = objc_getAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey);
         NSTimeInterval lastTime = lastTimeNum ? lastTimeNum.doubleValue : 0;
         NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        if (now - lastTime < 0.08) return; // ~12Hz max
+        if (now - lastTime < 0.04) return; // ~25Hz max
         objc_setAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        [gen impactOccurredWithIntensity:MAX(0.1, intensity * 0.6)];
+        // Use full intensity instead of 0.6x for noticeable feedback
+        UIImpactFeedbackGenerator *gen = ccSliderHapticGenerator(slider);
+        [gen impactOccurredWithIntensity:MAX(0.2, intensity)];
+        // Fallback: also play system sound for guaranteed feedback
+        AudioServicesPlaySystemSound(1520); // weak tick
     }
 }
 
@@ -802,9 +837,9 @@ static void ccSliderUpdateHapticState(UIView *slider) {
     } else if (isAtMax && !wasAtMax) {
         ccSliderTriggerHaptic(slider, YES);
     } else if (!isAtMin && !isAtMax) {
-        // Continuous haptic based on step size
+        // Continuous haptic based on step size (lowered threshold from 0.02 to 0.008)
         CGFloat step = fabs(currentValue - lastValue);
-        if (step > 0.02) {
+        if (step > 0.008) {
             ccSliderTriggerHaptic(slider, NO);
         }
     }
@@ -845,14 +880,131 @@ static void roundModuleContainer(UIView *module) {
 - (void)didMoveToWindow { %orig; roundToggleFills((UIView *)self); }
 %end
 
+// Display link for real-time slider value polling (catches changes not triggered by layout)
+static const void *kCCSliderDisplayLinkKey = &kCCSliderDisplayLinkKey;
+
+@interface ControlCenterDisplayLinkTarget : NSObject
++ (void)tick:(CADisplayLink *)link;
+@end
+
+@implementation ControlCenterDisplayLinkTarget
++ (void)tick:(CADisplayLink *)link {
+    UIView *slider = objc_getAssociatedObject(link, kCCSliderDisplayLinkKey);
+    if (!slider || !slider.window) {
+        [link invalidate];
+        return;
+    }
+    ccSliderUpdateHapticState(slider);
+    ccSliderUpdatePercentLabel(slider);
+}
+@end
+
+static void ccSliderUpdateAll(UIView *slider) {
+    ccSliderUpdateHapticState(slider);
+    ccSliderUpdatePercentLabel(slider);
+}
+
+static void ccSliderStartDisplayLink(UIView *slider) {
+    CADisplayLink *existing = objc_getAssociatedObject(slider, kCCSliderDisplayLinkKey);
+    if (existing && !existing.isPaused) return;
+    [existing invalidate];
+
+    CADisplayLink *link = [CADisplayLink displayLinkWithTarget:[ControlCenterDisplayLinkTarget class]
+                                                      selector:@selector(tick:)];
+    objc_setAssociatedObject(link, kCCSliderDisplayLinkKey, slider, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(slider, kCCSliderDisplayLinkKey, link, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    link.preferredFramesPerSecond = 30; // 30fps polling to save battery
+    [link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+static void ccSliderStopDisplayLink(UIView *slider) {
+    CADisplayLink *link = objc_getAssociatedObject(slider, kCCSliderDisplayLinkKey);
+    if (link) {
+        [link invalidate];
+        objc_setAssociatedObject(slider, kCCSliderDisplayLinkKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
 %hook CCUIContinuousSliderView
-- (void)layoutSubviews { %orig; roundContinuousSliderFill((UIView *)self); ccSliderUpdateHapticState((UIView *)self); ccSliderUpdatePercentLabel((UIView *)self); }
-- (void)didMoveToWindow { %orig; roundContinuousSliderFill((UIView *)self); ccSliderUpdatePercentLabel((UIView *)self); }
+- (void)layoutSubviews { %orig; roundContinuousSliderFill((UIView *)self); ccSliderUpdateAll((UIView *)self); }
+- (void)didMoveToWindow {
+    %orig;
+    roundContinuousSliderFill((UIView *)self);
+    ccSliderUpdatePercentLabel((UIView *)self);
+    if (!self.window) {
+        ccSliderStopDisplayLink((UIView *)self);
+    }
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    ccSliderStartDisplayLink((UIView *)self);
+    ccSliderUpdateAll((UIView *)self);
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    ccSliderUpdateAll((UIView *)self);
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    ccSliderUpdateAll((UIView *)self);
+    // Keep the display link running briefly for any final animation, then stop
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ccSliderStopDisplayLink((UIView *)self);
+    });
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    ccSliderUpdateAll((UIView *)self);
+    ccSliderStopDisplayLink((UIView *)self);
+}
+- (void)dealloc {
+    ccSliderStopDisplayLink((UIView *)self);
+    %orig;
+}
 %end
 
 %hook MRUContinuousSliderView
-- (void)layoutSubviews { %orig; roundMRUSliderFill((UIView *)self); ccSliderUpdateHapticState((UIView *)self); ccSliderUpdatePercentLabel((UIView *)self); }
-- (void)didMoveToWindow { %orig; roundMRUSliderFill((UIView *)self); ccSliderUpdatePercentLabel((UIView *)self); }
+- (void)layoutSubviews { %orig; roundMRUSliderFill((UIView *)self); ccSliderUpdateAll((UIView *)self); }
+- (void)didMoveToWindow {
+    %orig;
+    roundMRUSliderFill((UIView *)self);
+    ccSliderUpdatePercentLabel((UIView *)self);
+    if (self.window) {
+        ccSliderStartDisplayLink((UIView *)self);
+    } else {
+        ccSliderStopDisplayLink((UIView *)self);
+    }
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    ccSliderStartDisplayLink((UIView *)self);
+    ccSliderUpdateAll((UIView *)self);
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    ccSliderUpdateAll((UIView *)self);
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    ccSliderUpdateAll((UIView *)self);
+    // For volume HUD: keep the display link running as long as the HUD is visible
+    // (volume buttons can still change the value after touch ends)
+    if (!self.window) {
+        ccSliderStopDisplayLink((UIView *)self);
+    }
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    ccSliderUpdateAll((UIView *)self);
+    // Only stop if the HUD is no longer visible
+    if (!self.window) {
+        ccSliderStopDisplayLink((UIView *)self);
+    }
+}
+- (void)dealloc {
+    ccSliderStopDisplayLink((UIView *)self);
+    %orig;
+}
 %end
 
 %hook CCUIModularControlCenterOverlayViewController

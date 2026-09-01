@@ -130,7 +130,7 @@
 "prefs.control_center.fullscreen_backdrop_dim_color.title" = "全屏变暗";
 "prefs.control_center.fullscreen_backdrop_dim_color.subtitle" = "叠加在全屏模糊上的颜色。Alpha 通道控制变暗强度。";
 "prefs.control_center_custom_bg.title" = "控制中心自定义背景";
-"prefs.control_center_custom_bg.subtitle" = "选择图片或视频作为控制中心背景。";
+"prefs.control_center_custom_bg.subtitle" = "选择图片或视频作为控制中心背景，支持全屏和模块级两种模式。";
 "prefs.control_center_custom_bg.not_available" = "自定义背景插件未找到，请确保已正确安装。";
 "prefs.section.slider_haptics.title" = "滑块振动反馈";
 "prefs.section.slider_haptics.subtitle" = "调节音量和亮度滑块时添加触觉反馈。";

@@ -34,6 +34,12 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
                                                   title:@"开启自定义控制中心背景"
                                                defaultValue:@(NO)]];
 
+        // 背景模式组
+        [specs addObject:[self groupSpecifierWithName:@"背景模式"
+                                            footerText:@"全屏背景: 背景图/视频铺满整个控制中心\n模块级背景: 背景图/视频显示在每个独立模块内部"]];
+        [specs addObject:[self buttonSpecifierWithTitle:@"选择背景模式"
+                                                   action:@selector(chooseBackgroundMode:)]];
+
         // 背景设置组
         [specs addObject:[self groupSpecifierWithName:@"背景设置" footerText:nil]];
         [specs addObject:[self buttonSpecifierWithTitle:@"选择控制中心背景 (图片/视频)"
@@ -101,6 +107,49 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
                                             handler:nil]];
 
     // iPad 适配
+    alert.popoverPresentationController.sourceView = self.view;
+    alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)chooseBackgroundMode:(PSSpecifier *)specifier {
+    NSInteger currentMode = 0;
+    CFPropertyListRef val = CFPreferencesCopyAppValue(CFSTR("BackgroundMode"),
+                                                      (__bridge CFStringRef)kCCBgPrefsDomain);
+    if (val) {
+        currentMode = [(__bridge NSNumber *)val integerValue];
+        CFRelease(val);
+    }
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"背景模式"
+                                                                   message:@"选择背景的显示方式"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"全屏背景%@", currentMode == 0 ? @" ✓" : @""]
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        CFPreferencesSetAppValue(CFSTR("BackgroundMode"), (__bridge CFPropertyListRef)@(0),
+                                (__bridge CFStringRef)kCCBgPrefsDomain);
+        CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
+        [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
+        [self reloadSpecifiers];
+    }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"模块级背景%@", currentMode == 1 ? @" ✓" : @""]
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        CFPreferencesSetAppValue(CFSTR("BackgroundMode"), (__bridge CFPropertyListRef)@(1),
+                                (__bridge CFStringRef)kCCBgPrefsDomain);
+        CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
+        [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
+        [self reloadSpecifiers];
+    }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+
     alert.popoverPresentationController.sourceView = self.view;
     alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
 
