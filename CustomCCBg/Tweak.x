@@ -167,16 +167,17 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 
 @end
 
-// MARK: - 模块级背景视图
+// MARK: - 模块级背景层（使用 CALayer 而非 UIView，避免成为模块的兄弟视图导致动画系统崩溃）
 
 @interface CCBgModuleBackground : NSObject
-@property (nonatomic, strong) UIView *containerView;
-@property (nonatomic, strong) UIImageView *imageView; // 预渲染后的模糊图 或 静态图
+@property (nonatomic, strong) CALayer *containerLayer;     // 替代 containerView
+@property (nonatomic, strong) CALayer *imageLayer;         // 替代 imageView（用 CALayer 显示 contents）
 @property (nonatomic, strong) AVPlayerLayer *playerLayer;
-// 移除 blurOverlay,改用预渲染模糊图替代实时模糊
 - (void)updateWithImage:(UIImage *)image blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius;
 - (void)updateWithPlayer:(AVQueuePlayer *)player blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius;
-- (void)setVideoLayerHidden:(BOOL)hidden; // 优化 C: 离屏模块隐藏视频层
+- (void)setVideoLayerHidden:(BOOL)hidden;
+- (void)setHidden:(BOOL)hidden;
+- (void)setAlpha:(CGFloat)alpha;
 - (void)cleanup;
 @end
 
@@ -185,18 +186,16 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _containerView = [[UIView alloc] init];
-        _containerView.userInteractionEnabled = NO;
-        _containerView.clipsToBounds = YES;
+        _containerLayer = [CALayer layer];
+        _containerLayer.masksToBounds = YES;
     }
     return self;
 }
 
-// 图片模式: 使用预渲染模糊图替代 UIVisualEffectView 实时模糊
+// 图片模式: 使用预渲染模糊图
 - (void)updateWithImage:(UIImage *)image blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius {
-    self.containerView.frame = frame;
-    self.containerView.layer.cornerRadius = radius;
-    self.containerView.layer.masksToBounds = YES;
+    _containerLayer.frame = frame;
+    _containerLayer.cornerRadius = radius;
 
     // 移除视频层
     if (_playerLayer) {
@@ -204,45 +203,42 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
         _playerLayer = nil;
     }
 
-    // 显示预渲染模糊图(或原图,如果 blurAlpha=0)
+    // 显示预渲染模糊图(或原图)
     UIImage *displayImage = blurredImage ?: image;
-    if (!_imageView) {
-        _imageView = [[UIImageView alloc] init];
-        _imageView.contentMode = UIViewContentModeScaleAspectFill;
-        _imageView.clipsToBounds = YES;
-        [_containerView insertSubview:_imageView atIndex:0];
+    if (!_imageLayer) {
+        _imageLayer = [CALayer layer];
+        _imageLayer.contentsGravity = kCAGravityResizeAspectFill;
+        [_containerLayer insertSublayer:_imageLayer atIndex:0];
     }
-    if (_imageView.image != displayImage) {
-        _imageView.image = displayImage;
+    if (_imageLayer.contents != (id)displayImage.CGImage) {
+        _imageLayer.contents = (id)displayImage.CGImage;
     }
-    _imageView.frame = _containerView.bounds;
+    _imageLayer.frame = _containerLayer.bounds;
 }
 
-// 视频模式: 视频层 + 底部一层静态模糊图(替代 UIVisualEffectView)
+// 视频模式: 视频层 + 底部一层静态模糊图
 - (void)updateWithPlayer:(AVQueuePlayer *)player blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius {
-    self.containerView.frame = frame;
-    self.containerView.layer.cornerRadius = radius;
-    self.containerView.layer.masksToBounds = YES;
+    _containerLayer.frame = frame;
+    _containerLayer.cornerRadius = radius;
 
-    // 优化 C: 确保有 imageView 作为底层(离屏隐藏视频层时也能显示静态模糊图)
-    if (!_imageView) {
-        _imageView = [[UIImageView alloc] init];
-        _imageView.contentMode = UIViewContentModeScaleAspectFill;
-        _imageView.clipsToBounds = YES;
-        [_containerView insertSubview:_imageView atIndex:0];
+    // 确保有 imageLayer 作为底层
+    if (!_imageLayer) {
+        _imageLayer = [CALayer layer];
+        _imageLayer.contentsGravity = kCAGravityResizeAspectFill;
+        [_containerLayer insertSublayer:_imageLayer atIndex:0];
     }
-    if (blurredImage && _imageView.image != blurredImage) {
-        _imageView.image = blurredImage;
+    if (blurredImage && _imageLayer.contents != (id)blurredImage.CGImage) {
+        _imageLayer.contents = (id)blurredImage.CGImage;
     }
-    _imageView.frame = _containerView.bounds;
+    _imageLayer.frame = _containerLayer.bounds;
 
     // 视频层
     if (!_playerLayer) {
         _playerLayer = [AVPlayerLayer layer];
         _playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-        [_containerView.layer addSublayer:_playerLayer];
+        [_containerLayer addSublayer:_playerLayer];
     }
-    _playerLayer.frame = _containerView.bounds;
+    _playerLayer.frame = _containerLayer.bounds;
     if (_playerLayer.player != player) {
         _playerLayer.player = player;
     }
@@ -250,21 +246,28 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 
 - (void)setVideoLayerHidden:(BOOL)hidden {
     _playerLayer.hidden = hidden;
-    // 隐藏视频层时 imageView 自动显示作为占位(已经在底下了)
+}
+
+- (void)setHidden:(BOOL)hidden {
+    _containerLayer.hidden = hidden;
+}
+
+- (void)setAlpha:(CGFloat)alpha {
+    _containerLayer.opacity = alpha;
 }
 
 - (void)cleanup {
-    if (_imageView) {
-        [_imageView removeFromSuperview];
-        _imageView = nil;
+    if (_imageLayer) {
+        [_imageLayer removeFromSuperlayer];
+        _imageLayer = nil;
     }
     if (_playerLayer) {
         [_playerLayer removeFromSuperlayer];
         _playerLayer = nil;
     }
-    if (_containerView) {
-        [_containerView removeFromSuperview];
-        _containerView = nil;
+    if (_containerLayer) {
+        [_containerLayer removeFromSuperlayer];
+        _containerLayer = nil;
     }
 }
 
@@ -665,15 +668,15 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
     if (!bg) {
         bg = [[CCBgModuleBackground alloc] init];
-        // 背景放到模块的父视图中，层级在模块下面
-        [superview insertSubview:bg.containerView belowSubview:moduleView];
+        // 背景用 CALayer 插到模块 layer 下面，避免成为兄弟 UIView 导致动画系统崩溃
+        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
         self.moduleBackgrounds[key] = bg;
     }
 
     // 如果父视图变了，重新挂载
-    if (bg.containerView.superview != superview) {
-        [bg.containerView removeFromSuperview];
-        [superview insertSubview:bg.containerView belowSubview:moduleView];
+    if (bg.containerLayer.superlayer != superview.layer) {
+        [bg.containerLayer removeFromSuperlayer];
+        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
     }
 
     // 背景 frame 是模块在父视图中的 frame（模块后面，尺寸位置与模块一致）
@@ -685,8 +688,8 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 
     // 优化 D: 如果尺寸和圆角都没变，跳过更新
-    if (CGRectEqualToRect(bg.containerView.frame, moduleFrameInSuperview) &&
-        fabs(bg.containerView.layer.cornerRadius - cornerRadius) < 0.1) {
+    if (CGRectEqualToRect(bg.containerLayer.frame, moduleFrameInSuperview) &&
+        fabs(bg.containerLayer.cornerRadius - cornerRadius) < 0.1) {
         // 尺寸未变,只确保播放状态正确
         if (self.cachedHasVideo && self.isControlCenterVisible && self.sharedVideoPlayer.rate == 0) {
             [self.sharedVideoPlayer play];
@@ -695,8 +698,8 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         BOOL isVisible = [self isModuleViewVisible:moduleView];
         [bg setVideoLayerHidden:!isVisible];
         // 同步隐藏状态
-        bg.containerView.hidden = moduleView.hidden;
-        bg.containerView.alpha = moduleView.alpha;
+        [bg setHidden:moduleView.hidden];
+        [bg setAlpha:moduleView.alpha];
         return;
     }
 
@@ -725,8 +728,8 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 
     // 同步隐藏/透明度
-    bg.containerView.hidden = moduleView.hidden;
-    bg.containerView.alpha = moduleView.alpha;
+    [bg setHidden:moduleView.hidden];
+    [bg setAlpha:moduleView.alpha];
 }
 
 // 优化 C: 判断模块是否在控制中心可见区域内
