@@ -1368,6 +1368,71 @@ void LGAppendAboutMarkdownLine(NSString *line, UIStackView *stack) {
     [stack addArrangedSubview:row];
 }
 
+static void LGUpdateAboutMarkdownStack(UIStackView *markdownStack, NSString *markdownText, NSString *packageVersion) {
+    for (UIView *subview in markdownStack.arrangedSubviews) {
+        [markdownStack removeArrangedSubview:subview];
+        [subview removeFromSuperview];
+    }
+    if (markdownText.length) {
+        for (NSString *line in [markdownText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+            LGAppendAboutMarkdownLine(line, markdownStack);
+        }
+    } else {
+        [markdownStack addArrangedSubview:LGMakeAboutMarkdownLabel([NSString stringWithFormat:@"No changelog found for %@.", packageVersion], [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular], UIColor.secondaryLabelColor)];
+    }
+}
+
+static void LGFetchGitHubChangelog(NSString *packageVersion, void (^completion)(NSString * _Nullable markdownText)) {
+    NSString *urlString = @"https://api.github.com/repos/hf805864818/Liquid-state/releases";
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) {
+        completion(nil);
+        return;
+    }
+
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    config.timeoutIntervalForRequest = 10.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:config];
+    NSURLSessionDataTask *task = [session dataTaskWithURL:url completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+        if (error || !data) {
+            completion(nil);
+            return;
+        }
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        if (httpResponse.statusCode != 200) {
+            completion(nil);
+            return;
+        }
+        NSError *jsonError = nil;
+        NSArray *releases = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        if (![releases isKindOfClass:[NSArray class]] || jsonError) {
+            completion(nil);
+            return;
+        }
+
+        NSMutableString *result = [NSMutableString string];
+        for (NSDictionary *release in releases) {
+            if (![release isKindOfClass:[NSDictionary class]]) continue;
+            NSString *tagName = release[@"tag_name"];
+            NSString *body = release[@"body"];
+            BOOL isPrerelease = [release[@"prerelease"] boolValue];
+            if (!tagName.length) continue;
+
+            NSString *versionStr = [tagName hasPrefix:@"v"] ? [tagName substringFromIndex:1] : tagName;
+            if (result.length > 0) [result appendString:@"\n\n"];
+            [result appendFormat:@"# %@%@", versionStr, isPrerelease ? @" (beta)" : @""];
+            if (body.length) {
+                [result appendString:@"\n\n"];
+                [result appendString:body];
+            }
+        }
+
+        completion(result.length > 0 ? result : nil);
+    }];
+    [task resume];
+}
+
 UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, NSString *packageVersion) {
     UIView *container = [[UIView alloc] initWithFrame:CGRectZero];
     container.backgroundColor = UIColor.clearColor;
@@ -1400,27 +1465,38 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
         versionLabel.textAlignment = NSTextAlignmentCenter;
     }
 
-    UIView *markdownCard = [[UIView alloc] initWithFrame:CGRectZero];
-    markdownCard.translatesAutoresizingMaskIntoConstraints = NO;
-    markdownCard.backgroundColor = LGSubpageCardBackgroundColor();
-    markdownCard.layer.cornerRadius = 23.25;
-    markdownCard.layer.cornerCurve = kCACornerCurveContinuous;
-    markdownCard.layer.masksToBounds = YES;
+    // Scrollable changelog card
+    UIView *changelogContainer = [[UIView alloc] initWithFrame:CGRectZero];
+    changelogContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    changelogContainer.backgroundColor = LGSubpageCardBackgroundColor();
+    changelogContainer.layer.cornerRadius = 23.25;
+    changelogContainer.layer.cornerCurve = kCACornerCurveContinuous;
+    changelogContainer.layer.masksToBounds = YES;
+
+    UIScrollView *changelogScrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    changelogScrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    changelogScrollView.showsVerticalScrollIndicator = YES;
+    changelogScrollView.alwaysBounceVertical = NO;
+    [changelogContainer addSubview:changelogScrollView];
+
     UIStackView *markdownStack = [[UIStackView alloc] initWithFrame:CGRectZero];
     markdownStack.axis = UILayoutConstraintAxisVertical;
     markdownStack.alignment = UIStackViewAlignmentFill;
     markdownStack.spacing = 7.0;
     markdownStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [markdownCard addSubview:markdownStack];
+    [changelogScrollView addSubview:markdownStack];
 
-    NSString *markdownText = LGAboutChangelogMarkdownText(bundle, packageVersion);
-    if (markdownText.length) {
-        for (NSString *line in [markdownText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
-            LGAppendAboutMarkdownLine(line, markdownStack);
-        }
-    } else {
-        [markdownStack addArrangedSubview:LGMakeAboutMarkdownLabel([NSString stringWithFormat:@"No changelog found for %@.", packageVersion], [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular], UIColor.secondaryLabelColor)];
-    }
+    // Initial load from bundled changelog
+    NSString *initialMarkdown = LGAboutChangelogMarkdownText(bundle, packageVersion);
+    LGUpdateAboutMarkdownStack(markdownStack, initialMarkdown, packageVersion);
+
+    // Async fetch from GitHub
+    LGFetchGitHubChangelog(packageVersion, ^(NSString * _Nullable markdownText) {
+        if (!markdownText.length) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LGUpdateAboutMarkdownStack(markdownStack, markdownText, packageVersion);
+        });
+    });
 
     [stack addArrangedSubview:iconView];
     [stack addArrangedSubview:nameLabel];
@@ -1431,7 +1507,7 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
         lastHeader = versionLabel;
     }
     [stack setCustomSpacing:18.0 afterView:lastHeader];
-    [stack addArrangedSubview:markdownCard];
+    [stack addArrangedSubview:changelogContainer];
     [NSLayoutConstraint activateConstraints:@[
         [stack.topAnchor constraintEqualToAnchor:container.topAnchor constant:8.0],
         [stack.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
@@ -1441,12 +1517,18 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
         [nameLabel.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor constant:-18.0],
         [subtitleLabel.leadingAnchor constraintEqualToAnchor:stack.leadingAnchor constant:22.0],
         [subtitleLabel.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor constant:-22.0],
-        [markdownCard.leadingAnchor constraintEqualToAnchor:stack.leadingAnchor],
-        [markdownCard.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor],
-        [markdownStack.topAnchor constraintEqualToAnchor:markdownCard.topAnchor constant:16.0],
-        [markdownStack.leadingAnchor constraintEqualToAnchor:markdownCard.leadingAnchor constant:16.0],
-        [markdownStack.trailingAnchor constraintEqualToAnchor:markdownCard.trailingAnchor constant:-16.0],
-        [markdownStack.bottomAnchor constraintEqualToAnchor:markdownCard.bottomAnchor constant:-16.0],
+        [changelogContainer.leadingAnchor constraintEqualToAnchor:stack.leadingAnchor],
+        [changelogContainer.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor],
+        [changelogContainer.heightAnchor constraintEqualToConstant:280.0],
+        [changelogScrollView.topAnchor constraintEqualToAnchor:changelogContainer.topAnchor],
+        [changelogScrollView.leadingAnchor constraintEqualToAnchor:changelogContainer.leadingAnchor],
+        [changelogScrollView.trailingAnchor constraintEqualToAnchor:changelogContainer.trailingAnchor],
+        [changelogScrollView.bottomAnchor constraintEqualToAnchor:changelogContainer.bottomAnchor],
+        [markdownStack.topAnchor constraintEqualToAnchor:changelogScrollView.contentLayoutGuide.topAnchor constant:16.0],
+        [markdownStack.leadingAnchor constraintEqualToAnchor:changelogScrollView.contentLayoutGuide.leadingAnchor constant:16.0],
+        [markdownStack.trailingAnchor constraintEqualToAnchor:changelogScrollView.contentLayoutGuide.trailingAnchor constant:-16.0],
+        [markdownStack.bottomAnchor constraintEqualToAnchor:changelogScrollView.contentLayoutGuide.bottomAnchor constant:-16.0],
+        [markdownStack.widthAnchor constraintEqualToAnchor:changelogScrollView.frameLayoutGuide.widthAnchor constant:-32.0],
     ]];
     return container;
 }
