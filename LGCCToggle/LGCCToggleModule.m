@@ -3,6 +3,7 @@
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <notify.h>
 
 // Forward declarations for CCUI protocols
 @protocol CCUIContentModuleContentViewController <NSObject>
@@ -175,7 +176,7 @@ static NSString * const kLGQuickToggleNotification = @"dylv.liquidass/QuickToggl
 
     // Write new state to preferences
     CFPreferencesSetAppValue(CFSTR("Global.Enabled"),
-                             (__bridge CFBooleanRef)(self.isGlassEnabled ? kCFBooleanTrue : kCFBooleanFalse),
+                             self.isGlassEnabled ? kCFBooleanTrue : kCFBooleanFalse,
                              (__bridge CFStringRef)kLGPrefsDomain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)kLGPrefsDomain);
 
