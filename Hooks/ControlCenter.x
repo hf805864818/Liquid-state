@@ -690,7 +690,7 @@ static BOOL ccSliderHapticsEnabled(void) {
 }
 
 static CGFloat ccSliderHapticIntensity(void) {
-    return LG_prefFloat(@"ControlCenter.SliderHaptics.Intensity", 0.3); // 默认偏轻
+    return LG_prefFloat(@"ControlCenter.SliderHaptics.Intensity", 0.6); // 中等强度
 }
 
 static BOOL ccSliderEdgeFeedbackEnabled(void) {
@@ -700,7 +700,7 @@ static BOOL ccSliderEdgeFeedbackEnabled(void) {
 static UIImpactFeedbackGenerator *ccSliderHapticGenerator(UIView *slider) {
     UIImpactFeedbackGenerator *gen = objc_getAssociatedObject(slider, kCCSliderHapticFeedbackKey);
     if (!gen) {
-        gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight]; // 轻触感
+        gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium]; // 中等触感
         objc_setAssociatedObject(slider, kCCSliderHapticFeedbackKey, gen, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     [gen prepare];
