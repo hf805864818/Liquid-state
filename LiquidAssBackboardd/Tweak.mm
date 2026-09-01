@@ -1200,6 +1200,19 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
                                float opacity, void *surface, float scale,
                                bool flag, void *cm, void *shape, float *out)
 {
+    // 全局发烫修复: 帧率限制到 30fps,降低 GPU 负载
+    static CFTimeInterval sLastRenderTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - sLastRenderTime < 0.033) {
+        // 跳过此帧,调用原始渲染函数
+        if (g_origRender13) {
+            ((void(*)(void*, void*, void*, void*, float, void*, float, bool, void*, void*, float*))g_origRender13)(
+                self, filter, layer, ctx, opacity, surface, scale, flag, cm, shape, out);
+        }
+        return;
+    }
+    sLastRenderTime = now;
+
     static uint64_t tsum_stop = 0, tsum_ours = 0, tsum_gauss = 0, tcount = 0;
     uint64_t t_start = mach_absolute_time();
 

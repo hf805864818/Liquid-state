@@ -694,16 +694,83 @@ static UIImpactFeedbackGenerator *ccSliderHapticGenerator(UIView *slider) {
     return gen;
 }
 
+// 动态属性缓存: 避免每次调用都枚举所有属性
+static NSMutableDictionary<NSString *, NSString *> *sSliderValuePropertyCache = nil;
+
+static NSString *ccSliderFindValueProperty(Class cls) {
+    if (!sSliderValuePropertyCache) {
+        sSliderValuePropertyCache = [NSMutableDictionary dictionary];
+    }
+    NSString *className = NSStringFromClass(cls);
+    NSString *cached = sSliderValuePropertyCache[className];
+    if (cached) return cached.length > 0 ? cached : nil;
+    
+    // 动态枚举所有属性，找到返回 0-1 范围 float 的属性
+    unsigned int outCount = 0;
+    objc_property_t *props = class_copyPropertyList(cls, &outCount);
+    NSString *foundKey = nil;
+    
+    // 优先尝试常见的值属性名
+    NSArray *commonKeys = @[@"value", @"_value", @"normalizedValue", @"_normalizedValue",
+                            @"sliderValue", @"_sliderValue", @"continuousValue",
+                            @"_continuousValue", @"rawValue", @"_rawValue",
+                            @"representedValue", @"_representedValue"];
+    
+    for (NSString *key in commonKeys) {
+        BOOL found = NO;
+        for (unsigned int i = 0; i < outCount; i++) {
+            const char *propName = property_getName(props[i]);
+            if (strcmp(propName, key.UTF8String) == 0) {
+                found = YES;
+                break;
+            }
+        }
+        if (found) {
+            // 验证该属性确实返回有效值
+            @try {
+                id val = [[cls alloc] performSelector:NSSelectorFromString(key)];
+                if ([val isKindOfClass:[NSNumber class]]) {
+                    CGFloat v = [val floatValue];
+                    if (v >= 0.0 && v <= 1.0) {
+                        foundKey = key;
+                        break;
+                    }
+                }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    
+    // 如果常见属性没找到，枚举所有属性
+    if (!foundKey) {
+        for (unsigned int i = 0; i < outCount; i++) {
+            const char *propName = property_getName(props[i]);
+            NSString *key = [NSString stringWithUTF8String:propName];
+            @try {
+                id val = [[cls alloc] performSelector:NSSelectorFromString(key)];
+                if ([val isKindOfClass:[NSNumber class]]) {
+                    CGFloat v = [val floatValue];
+                    if (v >= 0.0 && v <= 1.0) {
+                        foundKey = key;
+                        break;
+                    }
+                }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    
+    free(props);
+    sSliderValuePropertyCache[className] = foundKey ?: @"";
+    return foundKey;
+}
+
 static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
     if (!slider) return 0.5;
 
-    // Method 1: Try KVC on common value property names
-    for (NSString *key in @[@"value", @"_value", @"normalizedValue", @"_normalizedValue",
-                            @"sliderValue", @"_sliderValue", @"continuousValue",
-                            @"_continuousValue", @"rawValue", @"_rawValue",
-                            @"representedValue", @"_representedValue"]) {
+    // Method 1: 动态属性枚举 + 缓存
+    NSString *valueKey = ccSliderFindValueProperty([slider class]);
+    if (valueKey) {
         @try {
-            id val = [slider valueForKey:key];
+            id val = [slider valueForKey:valueKey];
             if ([val isKindOfClass:[NSNumber class]]) {
                 CGFloat v = [val floatValue];
                 if (v >= 0.0 && v <= 1.0) return v;

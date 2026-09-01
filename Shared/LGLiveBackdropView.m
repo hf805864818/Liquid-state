@@ -138,6 +138,9 @@ static CGFloat sLGMotionSensitivity = 2.0;
 static CGFloat sLGMotionLoggedSensitivity = -1.0;
 static CFStringRef const kLGMotionPrefsReloadNotification = CFSTR("dylv.liquidassprefs/Reload");
 
+// 方案C: 控制中心背景开启时禁用 CoreMotion 高光,降低 CPU/GPU 开销
+static BOOL sLGCCBgSpecularDisabled = NO;
+
 static void LGApplyMotionHighlightAngle(void);
 static void LGRefreshMotionHighlights(void);
 static void LGEnsureFilterRefreshObserver(void);
@@ -343,7 +346,8 @@ static void LGApplyMotionHighlightAngle(void) {
 
 static void LGRefreshMotionHighlights(void) {
     if (!sLGMotionSetup || !LGIsSpringBoardBundle()) return;
-    if (!sLGMotionEnabled) {
+    // 方案C: CCBg 背景开启时禁用 CoreMotion 高光
+    if (sLGCCBgSpecularDisabled || !sLGMotionEnabled) {
         [sLGMotionManager stopDeviceMotionUpdates];
         sLGMotionRunning = NO;
         sLGSpecularAngle = -M_PI_4;
@@ -412,6 +416,28 @@ static const CGFloat kLGSpecularBrightBoostOpacity = 0.70;
     uint32_t         _lgId;
     CGFloat          _appliedScale;
     BOOL             _parameterRefreshVariant;
+}
+
+// 方案C: 跨 dylib 接口,由 CustomCCBg 调用
++ (void)setCCBgSpecularDisabled:(BOOL)disabled {
+    if (sLGCCBgSpecularDisabled == disabled) return;
+    sLGCCBgSpecularDisabled = disabled;
+    if (disabled) {
+        // 立即停止 CoreMotion
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (sLGMotionRunning) {
+                [sLGMotionManager stopDeviceMotionUpdates];
+                sLGMotionRunning = NO;
+                sLGSpecularAngle = -M_PI_4;
+                LGApplyMotionHighlightAngle();
+            }
+        });
+    } else {
+        // 恢复时重新检查是否需要启动
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LGRefreshMotionHighlights();
+        });
+    }
 }
 
 - (NSString *)lgEffectiveFilterType {

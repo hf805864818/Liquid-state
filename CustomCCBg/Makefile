@@ -9,6 +9,6 @@ TWEAK_NAME = CustomCCBg
 
 CustomCCBg_FILES = Tweak.x
 CustomCCBg_CFLAGS = -fobjc-arc
-CustomCCBg_FRAMEWORKS = UIKit Foundation AVFoundation AVKit QuartzCore
+CustomCCBg_FRAMEWORKS = UIKit Foundation AVFoundation AVKit QuartzCore CoreImage
 
 include $(THEOS)/makefiles/tweak.mk

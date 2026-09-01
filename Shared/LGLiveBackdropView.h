@@ -25,6 +25,10 @@ UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
 
 @property (nonatomic, copy) NSNumber *lgSpecularEnabledOverride;
 
+// 方案C: 控制中心背景开启时禁用 CoreMotion 高光,降低 CPU/GPU 开销
+// 由 CustomCCBg 通过 ObjC 运行时跨 dylib 调用
++ (void)setCCBgSpecularDisabled:(BOOL)disabled;
+
 - (instancetype)initWithFrame:(CGRect)frame groupName:(NSString *)groupName;
 
 - (instancetype)initWithFrame:(CGRect)frame groupName:(NSString *)groupName
