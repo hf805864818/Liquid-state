@@ -6,6 +6,9 @@
 #import "../Shared/LGHostRegistry.h"
 #import <notify.h>
 
+// Forward declaration - defined later in this file
+static NSArray<NSDictionary *> *LGModuleResetItem(NSString *actionName, NSString *title, NSString *subtitle);
+
 NSString * const kLGPrefsUIRefreshNotification = @"LGPrefsUIRefreshNotification";
 NSString * const kLGPrefsRespringChangedNotification = @"LGPrefsRespringChangedNotification";
 NSString * const kLGLastSurfaceKey = @"LGPrefsLastSurface";

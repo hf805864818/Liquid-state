@@ -11,6 +11,9 @@
 #import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+// Forward declaration for custom sort controller (defined later in this file)
+@class LGCustomSortViewController;
+
 #ifndef LG_PACKAGE_VERSION
 #define LG_PACKAGE_VERSION @""
 #endif
@@ -515,7 +518,7 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 }
 
 - (void)presentClockDateFormatEditor {
-    NSString *currentFormat = LGReadPreference(@"Clock.DateFormat.Format", @"EEE MMM d");
+    NSString *currentFormat = LGReadPreferenceObject(@"Clock.DateFormat.Format", @"EEE MMM d");
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:LGLocalized(@"prefs.control.date_format")
                          message:LGLocalized(@"prefs.subtitle.date_format")
@@ -540,7 +543,7 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
                 handler:^(__unused UIAlertAction *_Nonnull action) {
         NSString *newFormat = alert.textFields.firstObject.text;
         if (newFormat.length == 0) newFormat = @"EEE MMM d";
-        LGWritePreference(@"Clock.DateFormat.Format", newFormat);
+        LGWritePreferenceObject(@"Clock.DateFormat.Format", newFormat);
         [weakSelf reloadVisibleSettings];
         [weakSelf updateRespringBarAnimated:YES];
     }]];
@@ -564,7 +567,7 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
         actionWithTitle:LGLocalized(@"prefs.button.confirm")
                   style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *_Nonnull action) {
-        LGWritePreference(@"Clock.VariableFont.Name", @"adaptive");
+        LGWritePreferenceObject(@"Clock.VariableFont.Name", @"adaptive");
         LGWritePreference(@"Clock.VariableFont.Weight", @(750.0));
         LGWritePreference(@"Clock.VariableFont.SizeScale", @(1.4));
         LGWritePreference(@"Clock.VariableFont.Width", @(100.0));
@@ -2098,7 +2101,6 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     for (NSDictionary *theme in themes) {
         NSString *themeId = theme[@"id"];
         NSString *themeName = theme[@"name"];
-        NSString *themeSubtitle = theme[@"subtitle"];
         BOOL isCurrent = [themeId isEqualToString:currentTheme];
 
         UIAlertAction *action = [UIAlertAction
