@@ -1299,7 +1299,7 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
 
     UILabel *versionLabel = nil;
     if (packageVersion.length) {
-        versionLabel = LGMakeAboutMarkdownLabel([NSString stringWithFormat:@"v%@", packageVersion], [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold], UIColor.tertiaryLabelColor];
+        versionLabel = LGMakeAboutMarkdownLabel([NSString stringWithFormat:@"v%@", packageVersion], [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold], UIColor.tertiaryLabelColor);
         versionLabel.textAlignment = NSTextAlignmentCenter;
     }
 
