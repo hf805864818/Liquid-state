@@ -395,16 +395,21 @@ UIUserInterfaceStyle LGCurrentSystemAppearance(void) {
             return tc.userInterfaceStyle;
         }
     }
-    // Fallback: check key window
+    // Fallback: check key window via connected scenes
     UIWindow *keyWindow = nil;
     for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if ([scene isKindOfClass:[UIWindowScene class]]) {
-            keyWindow = scene.windows.firstObject;
-            break;
+            for (UIWindow *w in scene.windows) {
+                if (w.isKeyWindow) {
+                    keyWindow = w;
+                    break;
+                }
+            }
+            if (!keyWindow && scene.windows.count > 0) {
+                keyWindow = scene.windows.firstObject;
+            }
+            if (keyWindow) break;
         }
-    }
-    if (!keyWindow) {
-        keyWindow = [UIApplication sharedApplication].keyWindow;
     }
     if (keyWindow && keyWindow.traitCollection.userInterfaceStyle != UIUserInterfaceStyleUnspecified) {
         return keyWindow.traitCollection.userInterfaceStyle;
