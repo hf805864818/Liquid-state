@@ -270,7 +270,7 @@ static NSString * const kCCBgMediaTypeKey = @"MediaType";
 
 - (void)layoutSubviews {
     %orig;
-    UIView *host = self.superview;
+    UIView *host = [(UIView *)self superview];
     if (host) {
         [[CustomCCBgManager sharedInstance] attachToHostView:host];
     }

@@ -285,15 +285,7 @@ static void LGRemoveTabBarInjection(UITabBar *bar) {
         objc_setAssociatedObject(bar, key, nil, OBJC_ASSOCIATION_ASSIGN);
     }
 
-    Class backgroundClass = objc_getClass("_UIBarBackground");
-    for (UIView *view in bar.subviews) {
-        if (backgroundClass && [view isKindOfClass:backgroundClass]) {
-            NSNumber *originalHidden = objc_getAssociatedObject(
-                bar, kLGTabBarOriginalBackgroundHiddenKey);
-            if (originalHidden) view.hidden = originalHidden.boolValue;
-            break;
-        }
-    }
+    LGUnhideTabBarShadowViews(bar);
     NSNumber *originalClips =
         objc_getAssociatedObject(bar, kLGTabBarOriginalClipsKey);
     NSNumber *originalMasks =
@@ -449,6 +441,37 @@ static void LGPositionTabBarBlueOverlay(UITabBar *bar,
                                    CGRectGetHeight(pillFrame));
 }
 
+static BOOL LGIsInjectedTabBarView(UIView *view, UITabBar *bar) {
+    if (!view || !bar) return NO;
+    if ([view isKindOfClass:[LGLiveBackdropView class]]) return YES;
+    if (view == objc_getAssociatedObject(bar, kLGTabBarSelectedHighlightKey)) return YES;
+    if (view == objc_getAssociatedObject(bar, kLGTabBarBlueOverlayKey)) return YES;
+    return NO;
+}
+
+static void LGHideTabBarShadowViews(UITabBar *bar) {
+    Class buttonClass = objc_getClass("UITabBarButton");
+    for (UIView *view in bar.subviews) {
+        if (buttonClass && [view isKindOfClass:buttonClass]) continue;
+        if (LGIsInjectedTabBarView(view, bar)) continue;
+        view.hidden = YES;
+    }
+    bar.layer.shadowOpacity = 0.0;
+    bar.layer.shadowColor = UIColor.clearColor.CGColor;
+    bar.layer.shadowRadius = 0.0;
+    bar.layer.shadowOffset = CGSizeZero;
+    bar.layer.shadowPath = nil;
+}
+
+static void LGUnhideTabBarShadowViews(UITabBar *bar) {
+    Class buttonClass = objc_getClass("UITabBarButton");
+    for (UIView *view in bar.subviews) {
+        if (buttonClass && [view isKindOfClass:buttonClass]) continue;
+        if (LGIsInjectedTabBarView(view, bar)) continue;
+        view.hidden = NO;
+    }
+}
+
 static void LGStyleStockTabBar(UITabBar *bar) {
     if (!lgHostEnabled(@"TabBar")) {
         LGRemoveTabBarInjection(bar);
@@ -488,6 +511,7 @@ static void LGStyleStockTabBar(UITabBar *bar) {
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         stockBackground.hidden = YES;
     }
+    LGHideTabBarShadowViews(bar);
 
     const CGFloat height = 64.0;
     CGRect pillFrame = LGTabBarPillFrame(bar);
