@@ -615,9 +615,6 @@ static BOOL ccSliderPercentEnabled(void) {
     return LG_prefBool(@"ControlCenter.SliderPercent.Enabled", YES);
 }
 
-// Forward declaration - defined in the Slider Haptic Feedback section below
-static CGFloat ccSliderGetNormalizedValue(UIView *slider);
-
 static UILabel *ccSliderGetOrCreatePercentLabel(UIView *slider) {
     UILabel *label = objc_getAssociatedObject(slider, kCCSliderPercentLabelKey);
     if (!label) {
