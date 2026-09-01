@@ -713,24 +713,48 @@ static UIImpactFeedbackGenerator *ccSliderHapticGenerator(UIView *slider) {
 }
 
 static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
-    // Try to get the value from the slider view's _value or similar
-    // Fallback: use the subview layout to estimate
-    for (UIView *subview in slider.subviews) {
-        if ([subview isKindOfClass:NSClassFromString(@"UISlider")]) {
-            UISlider *s = (UISlider *)subview;
-            CGFloat range = s.maximumValue - s.minimumValue;
-            if (range <= 0) return 0.5;
-            return (s.value - s.minimumValue) / range;
-        }
+    if (!slider) return 0.5;
+
+    // Method 1: Try KVC on common value property names
+    for (NSString *key in @[@"value", @"_value", @"normalizedValue", @"_normalizedValue"]) {
+        @try {
+            id val = [slider valueForKey:key];
+            if ([val isKindOfClass:[NSNumber class]]) {
+                CGFloat v = [val floatValue];
+                if (v >= 0.0 && v <= 1.0) return v;
+                if (v > 1.0 && v <= 100.0) return v / 100.0;
+            }
+        } @catch (__unused NSException *e) {}
     }
-    // Try to find a fill view and calculate from its width
+
+    // Method 2: Find fill view by checking subview frames
+    CGFloat sliderW = CGRectGetWidth(slider.bounds);
+    CGFloat sliderH = CGRectGetHeight(slider.bounds);
+    if (sliderW <= 0 || sliderH <= 0) return 0.5;
+    BOOL isVertical = sliderH >= sliderW;
+
+    // Search all subviews (direct and nested) for a fill view
     for (UIView *subview in slider.subviews) {
-        if (!isExactClass(subview, @"UIView")) continue;
+        // Check direct subviews - look for a view whose dimension is a fraction
+        CGRect frameInSlider = [subview.superview convertRect:subview.frame toView:slider];
+        CGFloat fw = CGRectGetWidth(frameInSlider);
+        CGFloat fh = CGRectGetHeight(frameInSlider);
+        if (isVertical && fh > 0 && fh <= sliderH * 0.99) {
+            return MIN(1.0, MAX(0.0, fh / sliderH));
+        }
+        if (!isVertical && fw > 0 && fw <= sliderW * 0.99) {
+            return MIN(1.0, MAX(0.0, fw / sliderW));
+        }
+        // Check nested subviews
         for (UIView *gc in subview.subviews) {
-            if (isExactClass(gc, @"MTMaterialView")) {
-                CGFloat sliderWidth = CGRectGetWidth(slider.bounds);
-                CGFloat fillWidth = CGRectGetWidth(gc.frame);
-                if (sliderWidth > 0) return MIN(1.0, MAX(0.0, fillWidth / sliderWidth));
+            CGRect gcFrame = [gc.superview convertRect:gc.frame toView:slider];
+            CGFloat gfw = CGRectGetWidth(gcFrame);
+            CGFloat gfh = CGRectGetHeight(gcFrame);
+            if (isVertical && gfh > 0 && gfh <= sliderH * 0.99) {
+                return MIN(1.0, MAX(0.0, gfh / sliderH));
+            }
+            if (!isVertical && gfw > 0 && gfw <= sliderW * 0.99) {
+                return MIN(1.0, MAX(0.0, gfw / sliderW));
             }
         }
     }
