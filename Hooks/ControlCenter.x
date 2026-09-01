@@ -931,7 +931,7 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     %orig;
     roundContinuousSliderFill((UIView *)self);
     ccSliderUpdatePercentLabel((UIView *)self);
-    if (!self.window) {
+    if (![(UIView *)self window]) {
         ccSliderStopDisplayLink((UIView *)self);
     }
 }
@@ -969,7 +969,7 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     %orig;
     roundMRUSliderFill((UIView *)self);
     ccSliderUpdatePercentLabel((UIView *)self);
-    if (self.window) {
+    if ([(UIView *)self window]) {
         ccSliderStartDisplayLink((UIView *)self);
     } else {
         ccSliderStopDisplayLink((UIView *)self);
@@ -989,7 +989,7 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     ccSliderUpdateAll((UIView *)self);
     // For volume HUD: keep the display link running as long as the HUD is visible
     // (volume buttons can still change the value after touch ends)
-    if (!self.window) {
+    if (![(UIView *)self window]) {
         ccSliderStopDisplayLink((UIView *)self);
     }
 }
@@ -997,7 +997,7 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     %orig;
     ccSliderUpdateAll((UIView *)self);
     // Only stop if the HUD is no longer visible
-    if (!self.window) {
+    if (![(UIView *)self window]) {
         ccSliderStopDisplayLink((UIView *)self);
     }
 }
