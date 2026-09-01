@@ -666,18 +666,15 @@ static void ccSliderUpdatePercentLabel(UIView *slider) {
 
 #pragma mark - Slider Haptic Feedback
 
-static const void *kCCSliderHapticLastValueKey = &kCCSliderHapticLastValueKey;
-static const void *kCCSliderHapticAtMinKey = &kCCSliderHapticAtMinKey;
-static const void *kCCSliderHapticAtMaxKey = &kCCSliderHapticAtMaxKey;
-static const void *kCCSliderHapticLastHapticTimeKey = &kCCSliderHapticLastHapticTimeKey;
 static const void *kCCSliderHapticFeedbackKey = &kCCSliderHapticFeedbackKey;
+static const void *kCCSliderLastPercentTextKey = &kCCSliderLastPercentTextKey;
 
 static BOOL ccSliderHapticsEnabled(void) {
     return LG_prefBool(@"ControlCenter.SliderHaptics.Enabled", YES);
 }
 
 static CGFloat ccSliderHapticIntensity(void) {
-    return LG_prefFloat(@"ControlCenter.SliderHaptics.Intensity", 0.5);
+    return LG_prefFloat(@"ControlCenter.SliderHaptics.Intensity", 0.3); // 默认偏轻
 }
 
 static BOOL ccSliderEdgeFeedbackEnabled(void) {
@@ -687,106 +684,11 @@ static BOOL ccSliderEdgeFeedbackEnabled(void) {
 static UIImpactFeedbackGenerator *ccSliderHapticGenerator(UIView *slider) {
     UIImpactFeedbackGenerator *gen = objc_getAssociatedObject(slider, kCCSliderHapticFeedbackKey);
     if (!gen) {
-        gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+        gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight]; // 轻触感
         objc_setAssociatedObject(slider, kCCSliderHapticFeedbackKey, gen, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     [gen prepare];
     return gen;
-}
-
-static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
-    if (!slider) return 0.5;
-
-    // Method 1: Try KVC on common value property names
-    for (NSString *key in @[@"value", @"_value", @"normalizedValue", @"_normalizedValue",
-                            @"sliderValue", @"_sliderValue", @"continuousValue",
-                            @"_continuousValue", @"rawValue", @"_rawValue",
-                            @"representedValue", @"_representedValue"]) {
-        @try {
-            id val = [slider valueForKey:key];
-            if ([val isKindOfClass:[NSNumber class]]) {
-                CGFloat v = [val floatValue];
-                if (v >= 0.0 && v <= 1.0) return v;
-                if (v > 1.0 && v <= 100.0) return v / 100.0;
-            }
-        } @catch (__unused NSException *e) {}
-    }
-
-    // Method 2: Find MTMaterialView fill view (the actual visible fill)
-    CGFloat sliderW = CGRectGetWidth(slider.bounds);
-    CGFloat sliderH = CGRectGetHeight(slider.bounds);
-    if (sliderW <= 0 || sliderH <= 0) return 0.5;
-    BOOL isVertical = sliderH >= sliderW;
-
-    // Look for MTMaterialView in the slider's subview hierarchy
-    // Structure: CCUIContinuousSliderView > UIView > MTMaterialView (fill)
-    for (UIView *child in slider.subviews) {
-        // Direct MTMaterialView
-        if (isExactClass(child, @"MTMaterialView")) {
-            CGRect frameInSlider = [child.superview convertRect:child.frame toView:slider];
-            CGFloat fw = CGRectGetWidth(frameInSlider);
-            CGFloat fh = CGRectGetHeight(frameInSlider);
-            if (isVertical && fh > 0 && fh <= sliderH) {
-                return MIN(1.0, MAX(0.0, fh / sliderH));
-            }
-            if (!isVertical && fw > 0 && fw <= sliderW) {
-                return MIN(1.0, MAX(0.0, fw / sliderW));
-            }
-        }
-        // Nested: UIView > MTMaterialView
-        for (UIView *gc in child.subviews) {
-            if (isExactClass(gc, @"MTMaterialView")) {
-                CGRect gcFrame = [gc.superview convertRect:gc.frame toView:slider];
-                CGFloat gfw = CGRectGetWidth(gcFrame);
-                CGFloat gfh = CGRectGetHeight(gcFrame);
-                if (isVertical && gfh > 0) {
-                    return MIN(1.0, MAX(0.0, gfh / sliderH));
-                }
-                if (!isVertical && gfw > 0) {
-                    return MIN(1.0, MAX(0.0, gfw / sliderW));
-                }
-            }
-            // Check one more level deep
-            for (UIView *ggc in gc.subviews) {
-                if (isExactClass(ggc, @"MTMaterialView")) {
-                    CGRect ggcFrame = [ggc.superview convertRect:ggc.frame toView:slider];
-                    CGFloat ggfw = CGRectGetWidth(ggcFrame);
-                    CGFloat ggfh = CGRectGetHeight(ggcFrame);
-                    if (isVertical && ggfh > 0) {
-                        return MIN(1.0, MAX(0.0, ggfh / sliderH));
-                    }
-                    if (!isVertical && ggfw > 0) {
-                        return MIN(1.0, MAX(0.0, ggfw / sliderW));
-                    }
-                }
-            }
-        }
-    }
-
-    // Method 3: Fallback - find any subview with fractional dimension
-    for (UIView *subview in slider.subviews) {
-        CGRect frameInSlider = [subview.superview convertRect:subview.frame toView:slider];
-        CGFloat fw = CGRectGetWidth(frameInSlider);
-        CGFloat fh = CGRectGetHeight(frameInSlider);
-        if (isVertical && fh > 0 && fh <= sliderH * 0.99) {
-            return MIN(1.0, MAX(0.0, fh / sliderH));
-        }
-        if (!isVertical && fw > 0 && fw <= sliderW * 0.99) {
-            return MIN(1.0, MAX(0.0, fw / sliderW));
-        }
-        for (UIView *gc in subview.subviews) {
-            CGRect gcFrame = [gc.superview convertRect:gc.frame toView:slider];
-            CGFloat gfw = CGRectGetWidth(gcFrame);
-            CGFloat gfh = CGRectGetHeight(gcFrame);
-            if (isVertical && gfh > 0 && gfh <= sliderH * 0.99) {
-                return MIN(1.0, MAX(0.0, gfh / sliderH));
-            }
-            if (!isVertical && gfw > 0 && gfw <= sliderW * 0.99) {
-                return MIN(1.0, MAX(0.0, gfw / sliderW));
-            }
-        }
-    }
-    return 0.5;
 }
 
 static void ccSliderTriggerHaptic(UIView *slider, BOOL isEdge) {
@@ -795,58 +697,45 @@ static void ccSliderTriggerHaptic(UIView *slider, BOOL isEdge) {
     CGFloat intensity = ccSliderHapticIntensity();
 
     if (isEdge && ccSliderEdgeFeedbackEnabled()) {
-        // Edge feedback: strong haptic + system sound
         UIImpactFeedbackGenerator *gen = ccSliderHapticGenerator(slider);
-        [gen impactOccurredWithIntensity:MIN(1.0, intensity * 2.0)];
-        // Fallback: also play system sound
-        AudioServicesPlaySystemSound(1519); // strong tick
+        [gen impactOccurredWithIntensity:MIN(1.0, intensity * 1.5)];
     } else if (!isEdge) {
-        // Throttle continuous haptics (reduced from 0.08 to 0.04 for better responsiveness)
-        NSNumber *lastTimeNum = objc_getAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey);
-        NSTimeInterval lastTime = lastTimeNum ? lastTimeNum.doubleValue : 0;
-        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        if (now - lastTime < 0.04) return; // ~25Hz max
-        objc_setAssociatedObject(slider, kCCSliderHapticLastHapticTimeKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-        // Use full intensity instead of 0.6x for noticeable feedback
         UIImpactFeedbackGenerator *gen = ccSliderHapticGenerator(slider);
-        [gen impactOccurredWithIntensity:MAX(0.2, intensity)];
-        // Fallback: also play system sound for guaranteed feedback
-        AudioServicesPlaySystemSound(1520); // weak tick
+        [gen impactOccurredWithIntensity:MAX(0.15, intensity)];
     }
 }
 
+// 追踪百分比标签文本变化 - 文本每变一次就震一次
+// 滑得快→变化快→震动密; 滑得慢→变化慢→震动疏; 按键→每按一次震一次
 static void ccSliderUpdateHapticState(UIView *slider) {
     if (!ccSliderHapticsEnabled()) return;
 
-    CGFloat currentValue = ccSliderGetNormalizedValue(slider);
-    NSNumber *lastValueNum = objc_getAssociatedObject(slider, kCCSliderHapticLastValueKey);
-    CGFloat lastValue = lastValueNum ? lastValueNum.doubleValue : currentValue;
+    // 读取百分比标签的当前文本
+    UILabel *label = objc_getAssociatedObject(slider, kCCSliderPercentLabelKey);
+    if (!label) return;
+    NSString *currentText = label.text ?: @"";
 
-    if (fabs(currentValue - lastValue) < 0.001) return;
+    // 获取上次记录的百分比文本
+    NSString *lastText = objc_getAssociatedObject(slider, kCCSliderLastPercentTextKey);
 
-    BOOL wasAtMin = [objc_getAssociatedObject(slider, kCCSliderHapticAtMinKey) boolValue];
-    BOOL wasAtMax = [objc_getAssociatedObject(slider, kCCSliderHapticAtMaxKey) boolValue];
+    // 文本变化了 → 触发震动
+    if (lastText && ![currentText isEqualToString:lastText]) {
+        // 判断是否到达边缘
+        NSInteger percent = 0;
+        NSScanner *scanner = [NSScanner scannerWithString:currentText];
+        [scanner scanInteger:&percent];
 
-    BOOL isAtMin = currentValue <= 0.01;
-    BOOL isAtMax = currentValue >= 0.99;
-
-    // Edge feedback
-    if (isAtMin && !wasAtMin) {
-        ccSliderTriggerHaptic(slider, YES);
-    } else if (isAtMax && !wasAtMax) {
-        ccSliderTriggerHaptic(slider, YES);
-    } else if (!isAtMin && !isAtMax) {
-        // Continuous haptic based on step size (lowered threshold from 0.02 to 0.008)
-        CGFloat step = fabs(currentValue - lastValue);
-        if (step > 0.008) {
+        if (percent <= 1 || percent >= 99) {
+            // 边缘: 稍强震动
+            ccSliderTriggerHaptic(slider, YES);
+        } else {
+            // 中间: 轻震动, 每次百分比变化都震
             ccSliderTriggerHaptic(slider, NO);
         }
     }
 
-    objc_setAssociatedObject(slider, kCCSliderHapticLastValueKey, @(currentValue), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(slider, kCCSliderHapticAtMinKey, @(isAtMin), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(slider, kCCSliderHapticAtMaxKey, @(isAtMax), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // 记录当前百分比文本
+    objc_setAssociatedObject(slider, kCCSliderLastPercentTextKey, currentText, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void roundToggleFills(UIView *buttonModule) {
@@ -931,7 +820,9 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     %orig;
     roundContinuousSliderFill((UIView *)self);
     ccSliderUpdatePercentLabel((UIView *)self);
-    if (![(UIView *)self window]) {
+    if ([(UIView *)self window]) {
+        ccSliderStartDisplayLink((UIView *)self); // 滑块可见时持续运行,捕获按键驱动的值变化
+    } else {
         ccSliderStopDisplayLink((UIView *)self);
     }
 }
@@ -947,15 +838,11 @@ static void ccSliderStopDisplayLink(UIView *slider) {
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     %orig;
     ccSliderUpdateAll((UIView *)self);
-    // Keep the display link running briefly for any final animation, then stop
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        ccSliderStopDisplayLink((UIView *)self);
-    });
+    // Display link 由 didMoveToWindow 管理生命周期, 不在这里停止
 }
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     %orig;
     ccSliderUpdateAll((UIView *)self);
-    ccSliderStopDisplayLink((UIView *)self);
 }
 - (void)dealloc {
     ccSliderStopDisplayLink((UIView *)self);
