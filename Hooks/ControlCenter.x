@@ -786,7 +786,8 @@ static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
 
     // 递归搜索子视图中的填充视图 (非满尺寸的子视图即为填充指示器)
     __block CGFloat bestRatio = -1.0;
-    void (^searchSubview)(UIView *) = ^(UIView *sub) {
+    __block void (^searchSubview)(UIView *);
+    searchSubview = ^(UIView *sub) {
         if (bestRatio >= 0) return; // 已找到
         CGRect frame = [sub.superview convertRect:sub.frame toView:slider];
         CGFloat fw = CGRectGetWidth(frame), fh = CGRectGetHeight(frame);
