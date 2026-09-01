@@ -12,7 +12,12 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 // Forward declaration for custom sort controller (defined later in this file)
-@class LGCustomSortViewController;
+@interface LGCustomSortViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *items;
+@property (nonatomic, copy) void (^completionHandler)(NSArray<NSString *> *newOrder);
+- (instancetype)initWithItems:(NSArray<NSDictionary *> *)items;
+@end
 
 #ifndef LG_PACKAGE_VERSION
 #define LG_PACKAGE_VERSION @""
@@ -2239,12 +2244,6 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 @end
 
 #pragma mark - LGCustomSortViewController
-
-@interface LGCustomSortViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, strong) UITableView *tableView;
-@property (nonatomic, strong) NSMutableArray<NSDictionary *> *items;
-@property (nonatomic, copy) void (^completionHandler)(NSArray<NSString *> *newOrder);
-@end
 
 @implementation LGCustomSortViewController
 
