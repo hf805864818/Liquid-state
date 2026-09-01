@@ -223,7 +223,7 @@ static NSString * const kCCBgMediaTypeKey = @"MediaType"; // "image" / "video" /
 
 - (void)layoutSubviews {
     %orig;
-    [[CustomCCBgManager sharedInstance] attachToContainerView:self];
+    [[CustomCCBgManager sharedInstance] attachToContainerView:(UIView *)self];
 }
 
 - (void)dealloc {
