@@ -59,7 +59,8 @@ static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
 
     if (ccIsInsideSlider(mat)) {
         if (isExactClass(mat.superview, @"MRUContinuousSliderView")) return ccPillRadius(mat);
-        return -1.0;
+        // For CCUIContinuousSliderView, also apply glass radius
+        return ccPillRadius(mat);
     }
 
     UIView *module = ccModuleAncestor(mat);
@@ -590,22 +591,77 @@ static void ccApplyOrRestoreRound(UIView *view, CGFloat radius, BOOL eligible) {
 
 static void roundContinuousSliderFill(UIView *slider) {
     BOOL eligible = !ccHasSBElasticHierarchy(slider);
+    CGFloat customRadius = LG_prefFloat(@"ControlCenter.SliderCornerRadius", -1.0);
     for (UIView *child in slider.subviews) {
         if (!isExactClass(child, @"UIView")) continue;
-        for (UIView *gc in child.subviews)
-            if (isExactClass(gc, @"MTMaterialView"))
-                ccApplyOrRestoreRound(gc, ccPillRadius(gc), eligible);
+        for (UIView *gc in child.subviews) {
+            if (isExactClass(gc, @"MTMaterialView")) {
+                CGFloat r = (customRadius >= 0.0) ? customRadius : ccPillRadius(gc);
+                ccApplyOrRestoreRound(gc, r, eligible);
+            }
+        }
     }
 }
 
 static void roundMRUSliderFill(UIView *slider) {
     BOOL eligible = !ccHasSBElasticHierarchy(slider);
+    CGFloat customRadius = LG_prefFloat(@"ControlCenter.SliderCornerRadius", -1.0);
     for (UIView *child in slider.subviews) {
         if (!isExactClass(child, @"UIView")) continue;
-        for (UIView *gc in child.subviews)
-            if (isExactClass(gc, @"MTMaterialView"))
-                ccApplyOrRestoreRound(gc, ccPillRadius(gc), eligible);
+        for (UIView *gc in child.subviews) {
+            if (isExactClass(gc, @"MTMaterialView")) {
+                CGFloat r = (customRadius >= 0.0) ? customRadius : ccPillRadius(gc);
+                ccApplyOrRestoreRound(gc, r, eligible);
+            }
+        }
     }
+}
+
+#pragma mark - Slider Percentage Display
+
+static const void *kCCSliderPercentLabelKey = &kCCSliderPercentLabelKey;
+
+static BOOL ccSliderPercentEnabled(void) {
+    return LG_prefBool(@"ControlCenter.SliderPercent.Enabled", YES);
+}
+
+static UILabel *ccSliderGetOrCreatePercentLabel(UIView *slider) {
+    UILabel *label = objc_getAssociatedObject(slider, kCCSliderPercentLabelKey);
+    if (!label) {
+        label = [[UILabel alloc] initWithFrame:CGRectZero];
+        label.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
+        label.textColor = [UIColor whiteColor];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.backgroundColor = [UIColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5];
+        label.layer.cornerRadius = 10.0;
+        label.layer.masksToBounds = YES;
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        label.hidden = YES;
+        [slider addSubview:label];
+        objc_setAssociatedObject(slider, kCCSliderPercentLabelKey, label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return label;
+}
+
+static void ccSliderUpdatePercentLabel(UIView *slider) {
+    if (!ccSliderPercentEnabled()) {
+        UILabel *label = objc_getAssociatedObject(slider, kCCSliderPercentLabelKey);
+        if (label) label.hidden = YES;
+        return;
+    }
+    CGFloat value = ccSliderGetNormalizedValue(slider);
+    NSInteger percent = (NSInteger)round(value * 100.0);
+    UILabel *label = ccSliderGetOrCreatePercentLabel(slider);
+    label.text = [NSString stringWithFormat:@"%ld%%", (long)percent];
+    label.hidden = NO;
+
+    CGFloat sliderWidth = CGRectGetWidth(slider.bounds);
+    CGFloat sliderHeight = CGRectGetHeight(slider.bounds);
+    CGFloat thumbX = value * sliderWidth;
+    CGFloat labelWidth = 44.0;
+    CGFloat labelHeight = 22.0;
+    CGFloat labelX = MAX(labelWidth/2, MIN(sliderWidth - labelWidth/2, thumbX));
+    label.frame = CGRectMake(labelX - labelWidth/2, -labelHeight - 4.0, labelWidth, labelHeight);
 }
 
 #pragma mark - Slider Haptic Feedback
@@ -751,13 +807,13 @@ static void roundModuleContainer(UIView *module) {
 %end
 
 %hook CCUIContinuousSliderView
-- (void)layoutSubviews { %orig; roundContinuousSliderFill((UIView *)self); ccSliderUpdateHapticState((UIView *)self); }
-- (void)didMoveToWindow { %orig; roundContinuousSliderFill((UIView *)self); }
+- (void)layoutSubviews { %orig; roundContinuousSliderFill((UIView *)self); ccSliderUpdateHapticState((UIView *)self); ccSliderUpdatePercentLabel((UIView *)self); }
+- (void)didMoveToWindow { %orig; roundContinuousSliderFill((UIView *)self); ccSliderUpdatePercentLabel((UIView *)self); }
 %end
 
 %hook MRUContinuousSliderView
-- (void)layoutSubviews { %orig; roundMRUSliderFill((UIView *)self); ccSliderUpdateHapticState((UIView *)self); }
-- (void)didMoveToWindow { %orig; roundMRUSliderFill((UIView *)self); }
+- (void)layoutSubviews { %orig; roundMRUSliderFill((UIView *)self); ccSliderUpdateHapticState((UIView *)self); ccSliderUpdatePercentLabel((UIView *)self); }
+- (void)didMoveToWindow { %orig; roundMRUSliderFill((UIView *)self); ccSliderUpdatePercentLabel((UIView *)self); }
 %end
 
 %hook CCUIModularControlCenterOverlayViewController

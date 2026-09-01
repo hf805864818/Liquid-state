@@ -1,4 +1,4 @@
-"prefs.app_name" = "Liquid (Gl)ass";
+"prefs.app_name" = "Ai液态玻璃";
 
 "prefs.control.enabled" = "Activado";
 "prefs.control.blur" = "Desenfoque";
@@ -70,7 +70,7 @@
 "prefs.reset_confirm.surface_body_format" = "Esto restablecerá todos los ajustes de %@ a sus valores por defecto. ¿Deseas continuar?";
 "prefs.respring_confirm.title" = "Confirmar Respring";
 "prefs.respring_confirm.body" = "¿Deseas hacer respring ahora? Algunas apps o procesos en segundo plano podrían cerrarse.";
-"prefs.import_prefs.error_invalid" = "El portapapeles no contiene un blob de preferencias de LiquidAss válido.";
+"prefs.import_prefs.error_invalid" = "El portapapeles no contiene un blob de preferencias de Ai液态玻璃 válido.";
 "prefs.import_prefs.error_empty" = "El blob de preferencias importado está vacío.";
 "prefs.import_prefs.error_read" = "No se pudo leer el archivo de preferencias seleccionado.";
 "prefs.import_prefs.success" = "Preferencias importadas. Puede ser necesario un respring para algunos cambios.";

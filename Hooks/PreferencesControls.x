@@ -56,7 +56,7 @@ static BOOL LGIsLiquidAssPreferenceLoaderCell(UITableViewCell *cell) {
 
     NSString *title = cell.textLabel.text ?: LGPreferenceSpecifierProperty(specifier, @"label");
     id detail = LGPreferenceSpecifierProperty(specifier, @"detail");
-    return [title isEqualToString:@"Liquid (Gl)ass"] &&
+    return [title isEqualToString:@"Ai液态玻璃"] &&
            [[detail description] containsString:@"LGPRootListController"];
 }
 

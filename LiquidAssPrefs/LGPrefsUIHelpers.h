@@ -7,13 +7,6 @@ NSString *LGRGBAHexFromColor(UIColor *color);
 UILabel *LGMakeAboutMarkdownLabel(NSString *text, UIFont *font, UIColor *color);
 NSString *LGAboutChangelogMarkdownText(NSBundle *bundle, NSString *version);
 void LGAppendAboutMarkdownLine(NSString *line, UIStackView *stack);
-UIView *LGMakeDonationRow(UIViewController *controller,
-                          NSString *name,
-                          NSString *network,
-                          NSString *symbol,
-                          UIColor *color,
-                          NSString *address);
-UIView *LGMakeDonationCard(UIViewController *controller);
 UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, NSString *packageVersion);
 
 extern void * const kLGDefaultValueKey;

@@ -1,4 +1,4 @@
-"prefs.app_name" = "Liquid (Gl)ass";
+"prefs.app_name" = "Ai液態玻璃";
 
 "prefs.control.enabled" = "啟用";
 "prefs.control.blur" = "模糊";
@@ -74,7 +74,7 @@
 "prefs.respring_confirm.title" = "確認重新啟動主畫面";
 "prefs.respring_confirm.body" = "是否現在重新啟動主畫面？執行後，正在運作的背景 App 或程序可能會關閉。";
 
-"prefs.import_prefs.error_invalid" = "所選的檔案不是有效的 LiquidAss 設定資料。";
+"prefs.import_prefs.error_invalid" = "所選的檔案不是有效的 Ai液態玻璃 設定資料。";
 "prefs.import_prefs.error_empty" = "匯入的設定資料是空的。";
 "prefs.import_prefs.error_read" = "無法讀取所選的設定檔案。";
 "prefs.import_prefs.success" = "設定已匯入。部分變更可能仍需重新啟動主畫面才能生效。";

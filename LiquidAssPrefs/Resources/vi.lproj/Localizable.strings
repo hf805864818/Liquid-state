@@ -1,4 +1,4 @@
-"prefs.app_name" = "Liquid (Gl)ass";
+"prefs.app_name" = "Ai液态玻璃";
 
 "prefs.control.enabled" = "Bật";
 "prefs.control.blur" = "Độ mờ";
@@ -70,7 +70,7 @@
 "prefs.reset_confirm.surface_body_format" = "Thao tác này sẽ đặt lại toàn bộ %@ về mặc định. Bạn có muốn tiếp tục không?";
 "prefs.respring_confirm.title" = "Xác nhận khởi động lại giao diện";
 "prefs.respring_confirm.body" = "Bạn có muốn respring ngay bây giờ không? Nếu làm vậy, các ứng dụng hoặc tiến trình nền đang chạy có thể bị đóng.";
-"prefs.import_prefs.error_invalid" = "Tệp tuỳ chọn đã chọn không phải là gói LiquidAss hợp lệ.";
+"prefs.import_prefs.error_invalid" = "Tệp tuỳ chọn đã chọn không phải là gói Ai液态玻璃 hợp lệ.";
 "prefs.import_prefs.error_empty" = "Gói tuỳ chọn được nhập đang rỗng.";
 "prefs.import_prefs.error_read" = "Không thể đọc tệp tuỳ chọn đã chọn.";
 "prefs.import_prefs.success" = "Đã nhập tuỳ chọn. Vẫn có thể cần respring để áp dụng một số thay đổi.";
@@ -101,7 +101,7 @@
 "prefs.misc.about.title" = "Tùy chọn khác";
 "prefs.misc.about.subtitle" = "Điều khiển bổ sung và tùy chọn nâng cao.";
 "prefs.misc.prefs_settings.title" = "Giới thiệu";
-"prefs.misc.prefs_settings.subtitle" = "Ngôn ngữ, chi tiết phiên bản, donate, v.v.";
+"prefs.misc.prefs_settings.subtitle" = "Ngôn ngữ, chi tiết phiên bản, v.v.";
 "prefs.misc.options_section.title" = "Thứ khác";
 "prefs.misc.options_section.subtitle" = "Các tính năng thử nghiệm và vài tùy chọn khác.";
 "prefs.misc.language.title" = "Ngôn ngữ";

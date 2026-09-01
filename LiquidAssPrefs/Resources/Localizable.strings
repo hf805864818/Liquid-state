@@ -1,4 +1,4 @@
-"prefs.app_name" = "Liquid (Gl)ass";
+"prefs.app_name" = "Ai液态玻璃";
 
 "prefs.control.enabled" = "Enabled";
 "prefs.control.bezel_ratio" = "Bezel Ratio";
@@ -95,7 +95,7 @@
 "prefs.reset_confirm.surface_body_format" = "This will reset all of %@ to their defaults. Do you want to continue?";
 "prefs.respring_confirm.title" = "Confirm Respring";
 "prefs.respring_confirm.body" = "Do you wish to respring now? Any running background apps or processes might close if you do.";
-"prefs.import_prefs.error_invalid" = "The clipboard does not contain a valid LiquidAss preferences blob.";
+"prefs.import_prefs.error_invalid" = "The clipboard does not contain a valid Ai液态玻璃 preferences blob.";
 "prefs.import_prefs.error_empty" = "The imported preferences blob is empty.";
 "prefs.import_prefs.error_read" = "Could not read the selected preferences file.";
 "prefs.import_prefs.success" = "Preferences imported. A respring may still be needed for some changes.";
@@ -143,7 +143,7 @@
 "prefs.misc.about.title" = "More Options";
 "prefs.misc.about.subtitle" = "Additional controls and advanced preferences.";
 "prefs.misc.prefs_settings.title" = "About";
-"prefs.misc.prefs_settings.subtitle" = "Language, version details, donate, etc.";
+"prefs.misc.prefs_settings.subtitle" = "Language, version details, etc.";
 "prefs.misc.options_section.title" = "Extra stuff";
 "prefs.misc.options_section.subtitle" = "Experimental features and other stuff.";
 "prefs.control.fresnel_glare" = "Fresnel Glare";
@@ -298,9 +298,16 @@
 "prefs.control_center.fullscreen_backdrop_dim_color.title" = "Fullscreen Dim";
 "prefs.control_center.fullscreen_backdrop_dim_color.subtitle" = "Overlay color above the fullscreen blur. The color alpha controls the dim amount.";
 "prefs.control_center_custom_bg.title" = "Custom Control Center Background";
-"prefs.control_center_custom_bg.subtitle" = "Custom background image / video / blur amount";
+"prefs.control_center_custom_bg.subtitle" = "Choose an image or video as the Control Center background.";
+"prefs.control_center_custom_bg.not_available" = "Custom background plugin not found. Please ensure it is installed correctly.";
 "prefs.section.slider_haptics.title" = "Slider Haptic Feedback";
 "prefs.section.slider_haptics.subtitle" = "Add tactile feedback when adjusting volume and brightness sliders.";
+"prefs.section.slider_display.title" = "Slider Display";
+"prefs.section.slider_display.subtitle" = "Display options for volume and brightness sliders.";
+"prefs.control.slider_percent" = "Show Percentage";
+"prefs.subtitle.slider_percent" = "Show the current percentage value above the volume and brightness sliders.";
+"prefs.control.slider_corner_radius" = "Slider Corner Radius";
+"prefs.subtitle.slider_corner_radius" = "Customize the corner radius of slider fills (-1 for default).";
 "prefs.control.slider_haptics" = "Slider Haptics";
 "prefs.subtitle.slider_haptics" = "Vibrate when adjusting sliders in Control Center.";
 "prefs.control.slider_haptics_intensity" = "Haptic Intensity";
@@ -312,7 +319,11 @@
 "prefs.clock_font.adaptive" = "Adaptive Numeric";
 "prefs.clock_font.newyork_adaptive" = "New York Adaptive Numeric";
 "prefs.clock_font.reset_default" = "Reset to Default";
-"prefs.clock_font.reset_default_subtitle" = "Restore LiquidAss default clock font settings";
+"prefs.clock_font.reset_default_subtitle" = "Restore Ai液态玻璃 default clock font settings";
+"prefs.font_weight.regular" = "Regular";
+"prefs.font_weight.medium" = "Medium";
+"prefs.font_weight.semibold" = "Semibold";
+"prefs.font_weight.bold" = "Bold";
 "prefs.misc.import_export_section.title" = "Import/Export preferences";
 "prefs.misc.import_export_section.subtitle" = "Share your setup or restore one from a JSON file.";
 "prefs.misc.export_prefs.title" = "Export Preferences";

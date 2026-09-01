@@ -55,7 +55,10 @@ static NSArray<NSString *> *LGExportablePreferenceKeys(void) {
 static NSBundle *LGActiveLocalizationBundle(void) {
     NSString *languageCode = [LGPrefsUIStateDefaults() stringForKey:kLGPrefsLanguageKey];
     NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
-    if (!languageCode.length || [languageCode isEqualToString:@"en"]) {
+    if (!languageCode.length) {
+        languageCode = @"zh-Hans";
+    }
+    if ([languageCode isEqualToString:@"en"]) {
         return baseBundle;
     }
 
@@ -90,7 +93,7 @@ static NSArray<NSDictionary *> *LGAvailableLanguageChoices(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
-        NSMutableOrderedSet<NSString *> *codes = [NSMutableOrderedSet orderedSetWithObject:@"en"];
+        NSMutableOrderedSet<NSString *> *codes = [NSMutableOrderedSet orderedSetWithObjects:@"zh-Hans", @"en", nil];
         for (NSString *path in [baseBundle pathsForResourcesOfType:@"lproj" inDirectory:nil]) {
             NSString *languageCode = [[path lastPathComponent] stringByDeletingPathExtension];
             if (languageCode.length && ![languageCode isEqualToString:@"Base"]) {
@@ -109,6 +112,8 @@ static NSArray<NSDictionary *> *LGAvailableLanguageChoices(void) {
         [dynamicChoices sortUsingComparator:^NSComparisonResult(NSDictionary *lhs, NSDictionary *rhs) {
             NSString *leftValue = lhs[@"value"];
             NSString *rightValue = rhs[@"value"];
+            if ([leftValue isEqualToString:@"zh-Hans"]) return NSOrderedAscending;
+            if ([rightValue isEqualToString:@"zh-Hans"]) return NSOrderedDescending;
             if ([leftValue isEqualToString:@"en"]) return NSOrderedAscending;
             if ([rightValue isEqualToString:@"en"]) return NSOrderedDescending;
             return [lhs[@"title"] localizedCaseInsensitiveCompare:rhs[@"title"]];
@@ -182,12 +187,12 @@ NSString *LGPrefsAppName(void) {
 
 NSString *LGCurrentPrefsLanguageCode(void) {
     NSString *languageCode = [LGPrefsUIStateDefaults() stringForKey:kLGPrefsLanguageKey];
-    return languageCode.length ? languageCode : @"en";
+    return languageCode.length ? languageCode : @"zh-Hans";
 }
 
 void LGSetCurrentPrefsLanguageCode(NSString *languageCode) {
     NSUserDefaults *defaults = LGPrefsUIStateDefaults();
-    if (!languageCode.length || [languageCode isEqualToString:@"en"]) {
+    if (!languageCode.length || [languageCode isEqualToString:@"zh-Hans"]) {
         [defaults removeObjectForKey:kLGPrefsLanguageKey];
     } else {
         [defaults setObject:languageCode forKey:kLGPrefsLanguageKey];
@@ -912,10 +917,26 @@ static NSArray<NSDictionary *> *LGControlCenterSliderHapticItems(void) {
     ];
 }
 
+static NSArray<NSDictionary *> *LGControlCenterSliderDisplayItems(void) {
+    return @[
+        LGSectionSetting(LGLocalized(@"prefs.section.slider_display.title"),
+                         LGLocalized(@"prefs.section.slider_display.subtitle")),
+        LGSwitchSetting(@"ControlCenter.SliderPercent.Enabled",
+                        LGLocalized(@"prefs.control.slider_percent"),
+                        LGLocalized(@"prefs.subtitle.slider_percent"),
+                        YES),
+        LGSliderSetting(@"ControlCenter.SliderCornerRadius",
+                        LGLocalized(@"prefs.control.slider_corner_radius"),
+                        LGLocalized(@"prefs.subtitle.slider_corner_radius"),
+                        -1.0, -1.0, 30.0, 1),
+    ];
+}
+
 NSArray<NSDictionary *> *LGControlCenterItems(void) {
     return LGJoinItemGroups(@[
         LGRendererItemsForHostPrefix(@"ControlCenter"),
         LGControlCenterFullscreenBackdropItems(YES),
+        LGControlCenterSliderDisplayItems(),
         LGControlCenterSliderHapticItems(),
         LGControlCenterCustomBackgroundItems(),
         LGModuleResetItem(@"resetControlCenterToDefault",
@@ -1115,7 +1136,7 @@ NSArray<NSDictionary *> *LGPrefsSettingsItems(void) {
         LGMenuSetting(kLGPrefsLanguageKey,
                       LGLocalized(@"prefs.misc.language.title"),
                       @"",
-                      @"en",
+                      @"zh-Hans",
                       LGAvailableLanguageChoices()),
         LGSpacerSetting(2.0, 0.0),
         LGAboutContentSetting(),
@@ -1393,7 +1414,7 @@ NSString *LGDebugInfoString(void) {
     NSMutableString *info = [NSMutableString string];
 
     // App & version
-    [info appendFormat:@"Liquid Glass %@\n", LG_PACKAGE_VERSION];
+    [info appendFormat:@"Ai液态玻璃 %@\n", LG_PACKAGE_VERSION];
 
     // Device info
     UIDevice *device = [UIDevice currentDevice];

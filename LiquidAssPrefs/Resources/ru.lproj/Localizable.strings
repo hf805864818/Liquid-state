@@ -1,4 +1,4 @@
-"prefs.app_name" = "Liquid (Gl)ass";
+"prefs.app_name" = "Ai液态玻璃";
 
 "prefs.control.enabled" = "Включено";
 "prefs.control.blur" = "Размытие";
@@ -70,7 +70,7 @@
 "prefs.reset_confirm.surface_body_format" = "Это сбросит все настройки для %@ до значений по умолчанию. Хотите продолжить?";
 "prefs.respring_confirm.title" = "Подтвердить респринг";
 "prefs.respring_confirm.body" = "Вы хотите выполнить респринг сейчас? Все запущенные фоновые приложения или процессы могут закрыться.";
-"prefs.import_prefs.error_invalid" = "Буфер обмена не содержит корректных данных настроек LiquidAss.";
+"prefs.import_prefs.error_invalid" = "Буфер обмена не содержит корректных данных настроек Ai液态玻璃.";
 "prefs.import_prefs.error_empty" = "Импортируемые данные настроек пусты.";
 "prefs.import_prefs.error_read" = "Не удалось прочитать выбранный файл настроек.";
 "prefs.import_prefs.success" = "Настройки успешно импортированы. Для применения некоторых изменений всё ещё может потребоваться респринг.";

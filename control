@@ -1,5 +1,5 @@
 Package: dylv.deepliquid
-Name: 深度液态
+Name: Ai液态玻璃
 Version: 0.1.8b
 Architecture: iphoneos-arm
 Description: 深度优化的液态玻璃效果，智能帧率控制 + 全局数量预算，告别发烫

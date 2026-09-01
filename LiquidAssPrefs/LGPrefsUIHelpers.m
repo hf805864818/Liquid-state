@@ -1271,153 +1271,6 @@ void LGAppendAboutMarkdownLine(NSString *line, UIStackView *stack) {
     [stack addArrangedSubview:row];
 }
 
-UIView *LGMakeDonationRow(UIViewController *controller,
-                          NSString *name,
-                          NSString *network,
-                          NSString *symbol,
-                          UIColor *color,
-                          NSString *address) {
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentFill;
-    button.contentVerticalAlignment = UIControlContentVerticalAlignmentFill;
-    button.contentEdgeInsets = UIEdgeInsetsZero;
-    __weak UIViewController *weakController = controller;
-    [button addAction:[UIAction actionWithHandler:^(__kindof UIAction * _Nonnull action) {
-        (void)action;
-        if (!address.length) return;
-        UIPasteboard.generalPasteboard.string = address;
-        LGPresentInfoSheet(weakController, @"Copied", @"Wallet address copied to clipboard.");
-    }] forControlEvents:UIControlEventTouchUpInside];
-
-    UIView *body = [[UIView alloc] initWithFrame:CGRectZero];
-    body.userInteractionEnabled = NO;
-    body.translatesAutoresizingMaskIntoConstraints = NO;
-    [button addSubview:body];
-
-    UILabel *badge = [[UILabel alloc] initWithFrame:CGRectZero];
-    badge.translatesAutoresizingMaskIntoConstraints = NO;
-    badge.text = symbol;
-    badge.textAlignment = NSTextAlignmentCenter;
-    badge.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightBold];
-    badge.textColor = UIColor.whiteColor;
-    badge.backgroundColor = color;
-    badge.layer.cornerRadius = 14.0;
-    badge.layer.cornerCurve = kCACornerCurveContinuous;
-    badge.layer.masksToBounds = YES;
-
-    UILabel *nameLabel = LGMakeAboutMarkdownLabel(name, [UIFont systemFontOfSize:16.0 weight:UIFontWeightSemibold], UIColor.labelColor);
-    UILabel *networkLabel = LGMakeAboutMarkdownLabel(network, [UIFont systemFontOfSize:12.0 weight:UIFontWeightMedium], UIColor.secondaryLabelColor);
-    UILabel *addressLabel = LGMakeAboutMarkdownLabel(address, [UIFont monospacedSystemFontOfSize:12.0 weight:UIFontWeightRegular], UIColor.tertiaryLabelColor);
-    addressLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    addressLabel.numberOfLines = 1;
-
-    UIImageView *copyIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"doc.on.doc"]];
-    copyIcon.translatesAutoresizingMaskIntoConstraints = NO;
-    copyIcon.tintColor = UIColor.tertiaryLabelColor;
-    copyIcon.contentMode = UIViewContentModeScaleAspectFit;
-
-    UIView *titleRow = [[UIView alloc] initWithFrame:CGRectZero];
-    titleRow.translatesAutoresizingMaskIntoConstraints = NO;
-    [titleRow addSubview:nameLabel];
-    [titleRow addSubview:networkLabel];
-    UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleRow, addressLabel]];
-    textStack.translatesAutoresizingMaskIntoConstraints = NO;
-    textStack.axis = UILayoutConstraintAxisVertical;
-    textStack.spacing = 3.0;
-    [body addSubview:badge];
-    [body addSubview:textStack];
-    [body addSubview:copyIcon];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [body.topAnchor constraintEqualToAnchor:button.topAnchor],
-        [body.leadingAnchor constraintEqualToAnchor:button.leadingAnchor],
-        [body.trailingAnchor constraintEqualToAnchor:button.trailingAnchor],
-        [body.bottomAnchor constraintEqualToAnchor:button.bottomAnchor],
-        [badge.leadingAnchor constraintEqualToAnchor:body.leadingAnchor constant:14.0],
-        [badge.centerYAnchor constraintEqualToAnchor:body.centerYAnchor],
-        [badge.widthAnchor constraintEqualToConstant:28.0],
-        [badge.heightAnchor constraintEqualToConstant:28.0],
-        [copyIcon.trailingAnchor constraintEqualToAnchor:body.trailingAnchor constant:-14.0],
-        [copyIcon.centerYAnchor constraintEqualToAnchor:body.centerYAnchor],
-        [copyIcon.widthAnchor constraintEqualToConstant:18.0],
-        [copyIcon.heightAnchor constraintEqualToConstant:18.0],
-        [nameLabel.topAnchor constraintEqualToAnchor:titleRow.topAnchor],
-        [nameLabel.leadingAnchor constraintEqualToAnchor:titleRow.leadingAnchor],
-        [nameLabel.bottomAnchor constraintEqualToAnchor:titleRow.bottomAnchor],
-        [networkLabel.firstBaselineAnchor constraintEqualToAnchor:nameLabel.firstBaselineAnchor],
-        [networkLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:nameLabel.trailingAnchor constant:8.0],
-        [networkLabel.trailingAnchor constraintEqualToAnchor:titleRow.trailingAnchor],
-        [textStack.topAnchor constraintEqualToAnchor:body.topAnchor constant:10.0],
-        [textStack.leadingAnchor constraintEqualToAnchor:badge.trailingAnchor constant:12.0],
-        [textStack.trailingAnchor constraintEqualToAnchor:copyIcon.leadingAnchor constant:-12.0],
-        [textStack.bottomAnchor constraintEqualToAnchor:body.bottomAnchor constant:-10.0],
-    ]];
-    return button;
-}
-
-UIView *LGMakeDonationCard(UIViewController *controller) {
-    UIView *card = [[UIView alloc] initWithFrame:CGRectZero];
-    card.translatesAutoresizingMaskIntoConstraints = NO;
-    card.backgroundColor = LGSubpageCardBackgroundColor();
-    card.layer.cornerRadius = 23.25;
-    card.layer.cornerCurve = kCACornerCurveContinuous;
-    card.layer.masksToBounds = YES;
-
-    UIStackView *stack = [[UIStackView alloc] initWithFrame:CGRectZero];
-    stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 0.0;
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [card addSubview:stack];
-    UIView *header = [[UIView alloc] initWithFrame:CGRectZero];
-    header.translatesAutoresizingMaskIntoConstraints = NO;
-    UIStackView *headerStack = [[UIStackView alloc] initWithFrame:CGRectZero];
-    headerStack.axis = UILayoutConstraintAxisVertical;
-    headerStack.spacing = 3.0;
-    headerStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [header addSubview:headerStack];
-    [headerStack addArrangedSubview:LGMakeAboutMarkdownLabel(@"Donate", [UIFont systemFontOfSize:20.0 weight:UIFontWeightBold], UIColor.labelColor)];
-    [headerStack addArrangedSubview:LGMakeAboutMarkdownLabel(@"Crypto only for now. Tap a row to copy the address.", [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium], UIColor.secondaryLabelColor)];
-    [stack addArrangedSubview:header];
-
-    NSArray<NSDictionary *> *methods = @[
-        @{@"name": @"BTC", @"network": @"Bitcoin", @"symbol": @"B", @"color": UIColor.systemOrangeColor, @"address": @"bc1qlv830emqsffqslns2e3kglkgcdnlag0nfnyj4k"},
-        @{@"name": @"ETH", @"network": @"Ethereum", @"symbol": @"E", @"color": UIColor.systemIndigoColor, @"address": @"0x6245EF47c749D1b5c2830b145cB943a8aD826bea"},
-        @{@"name": @"LTC", @"network": @"Litecoin", @"symbol": @"L", @"color": UIColor.systemGrayColor, @"address": @"ltc1q7j6vlgvymxdtwm46u0n22h7m4890cexfp22vfm"},
-        @{@"name": @"DOGE", @"network": @"Dogecoin", @"symbol": @"D", @"color": UIColor.systemYellowColor, @"address": @"D76nuR1HWSymSLhFYYhkfpc4JHg1HjvgWD"},
-        @{@"name": @"SOL", @"network": @"Solana", @"symbol": @"S", @"color": UIColor.systemPurpleColor, @"address": @"F1rH3PSMHFHXbGLGQiWXGLRaahfYoVULUwhsvrewM37W"},
-        @{@"name": @"TRX", @"network": @"Tron", @"symbol": @"T", @"color": UIColor.systemRedColor, @"address": @"TVuW2KcYBMcr2VAMhYVqYmoT15N3MbZ8eX"},
-        @{@"name": @"USDC", @"network": @"Polygon", @"symbol": @"U", @"color": UIColor.systemBlueColor, @"address": @"0x6245EF47c749D1b5c2830b145cB943a8aD826bea"},
-        @{@"name": @"USDT", @"network": @"Tron TRC-20", @"symbol": @"U", @"color": UIColor.systemGreenColor, @"address": @"TVuW2KcYBMcr2VAMhYVqYmoT15N3MbZ8eX"},
-    ];
-    for (NSUInteger index = 0; index < methods.count; index++) {
-        NSDictionary *method = methods[index];
-        [stack addArrangedSubview:LGMakeDonationRow(controller, method[@"name"], method[@"network"], method[@"symbol"], method[@"color"], method[@"address"])];
-        if (index + 1 == methods.count) continue;
-        UIView *dividerRow = [[UIView alloc] initWithFrame:CGRectZero];
-        dividerRow.translatesAutoresizingMaskIntoConstraints = NO;
-        UIView *divider = LGMakeSectionDivider();
-        [dividerRow addSubview:divider];
-        [NSLayoutConstraint activateConstraints:@[
-            [divider.leadingAnchor constraintEqualToAnchor:dividerRow.leadingAnchor constant:54.0],
-            [divider.trailingAnchor constraintEqualToAnchor:dividerRow.trailingAnchor constant:-14.0],
-            [divider.centerYAnchor constraintEqualToAnchor:dividerRow.centerYAnchor],
-        ]];
-        [stack addArrangedSubview:dividerRow];
-    }
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:card.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
-        [headerStack.topAnchor constraintEqualToAnchor:header.topAnchor constant:16.0],
-        [headerStack.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:16.0],
-        [headerStack.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-16.0],
-        [headerStack.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-13.0],
-    ]];
-    return card;
-}
-
 UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, NSString *packageVersion) {
     UIView *container = [[UIView alloc] initWithFrame:CGRectZero];
     container.backgroundColor = UIColor.clearColor;
@@ -1433,16 +1286,22 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
     UIImageView *iconView = [[UIImageView alloc] initWithImage:icon];
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
     iconView.contentMode = UIViewContentModeScaleAspectFit;
-    iconView.layer.cornerRadius = 19.0;
+    iconView.layer.cornerRadius = 14.0;
     iconView.layer.cornerCurve = kCACornerCurveContinuous;
     iconView.layer.masksToBounds = YES;
-    [iconView.widthAnchor constraintEqualToConstant:82.0].active = YES;
-    [iconView.heightAnchor constraintEqualToConstant:82.0].active = YES;
+    [iconView.widthAnchor constraintEqualToConstant:60.0].active = YES;
+    [iconView.heightAnchor constraintEqualToConstant:60.0].active = YES;
 
     UILabel *nameLabel = LGMakeAboutMarkdownLabel(LGLocalized(@"prefs.app_name"), [UIFont systemFontOfSize:28.0 weight:UIFontWeightBold], UIColor.labelColor);
     nameLabel.textAlignment = NSTextAlignmentCenter;
     UILabel *subtitleLabel = LGMakeAboutMarkdownLabel(LGLocalized(@"prefs.hero.subtitle"), [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium], UIColor.secondaryLabelColor);
     subtitleLabel.textAlignment = NSTextAlignmentCenter;
+
+    UILabel *versionLabel = nil;
+    if (packageVersion.length) {
+        versionLabel = LGMakeAboutMarkdownLabel([NSString stringWithFormat:@"v%@", packageVersion], [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold], UIColor.tertiaryLabelColor];
+        versionLabel.textAlignment = NSTextAlignmentCenter;
+    }
 
     UIView *markdownCard = [[UIView alloc] initWithFrame:CGRectZero];
     markdownCard.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1466,14 +1325,16 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
         [markdownStack addArrangedSubview:LGMakeAboutMarkdownLabel([NSString stringWithFormat:@"No changelog found for %@.", packageVersion], [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular], UIColor.secondaryLabelColor)];
     }
 
-    UIView *donationCard = LGMakeDonationCard(controller);
     [stack addArrangedSubview:iconView];
     [stack addArrangedSubview:nameLabel];
     [stack addArrangedSubview:subtitleLabel];
-    [stack setCustomSpacing:18.0 afterView:subtitleLabel];
+    UIView *lastHeader = subtitleLabel;
+    if (versionLabel) {
+        [stack addArrangedSubview:versionLabel];
+        lastHeader = versionLabel;
+    }
+    [stack setCustomSpacing:18.0 afterView:lastHeader];
     [stack addArrangedSubview:markdownCard];
-    [stack setCustomSpacing:12.0 afterView:markdownCard];
-    [stack addArrangedSubview:donationCard];
     [NSLayoutConstraint activateConstraints:@[
         [stack.topAnchor constraintEqualToAnchor:container.topAnchor constant:8.0],
         [stack.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
@@ -1485,8 +1346,6 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
         [subtitleLabel.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor constant:-22.0],
         [markdownCard.leadingAnchor constraintEqualToAnchor:stack.leadingAnchor],
         [markdownCard.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor],
-        [donationCard.leadingAnchor constraintEqualToAnchor:stack.leadingAnchor],
-        [donationCard.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor],
         [markdownStack.topAnchor constraintEqualToAnchor:markdownCard.topAnchor constant:16.0],
         [markdownStack.leadingAnchor constraintEqualToAnchor:markdownCard.leadingAnchor constant:16.0],
         [markdownStack.trailingAnchor constraintEqualToAnchor:markdownCard.trailingAnchor constant:-16.0],

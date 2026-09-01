@@ -462,25 +462,30 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 }
 
 - (void)openCustomCCBgSettings {
-    NSURL *prefsURL = [NSURL URLWithString:@"prefs:root=CustomCCBgPrefs"];
-    if ([[UIApplication sharedApplication] canOpenURL:prefsURL]) {
-        [[UIApplication sharedApplication] openURL:prefsURL options:@{} completionHandler:nil];
-    } else {
-        // Fallback: try to present the bundle view controller directly
-        NSString *bundlePath = @"/var/jb/Library/PreferenceBundles/CustomCCBgPrefs.bundle";
-        NSBundle *prefsBundle = [NSBundle bundleWithPath:bundlePath];
-        if (!prefsBundle) {
-            // Try rootless path
-            bundlePath = @"/Library/PreferenceBundles/CustomCCBgPrefs.bundle";
-            prefsBundle = [NSBundle bundleWithPath:bundlePath];
-        }
-        if (prefsBundle && [prefsBundle load]) {
-            Class controllerClass = NSClassFromString(@"CCBGRootListController");
-            if (controllerClass) {
-                UIViewController *vc = [[controllerClass alloc] init];
-                [self.navigationController pushViewController:vc animated:YES];
+    // Try to load the CustomCCBgPrefs bundle and push its controller
+    Class controllerClass = NSClassFromString(@"CCBGRootListController");
+    if (!controllerClass) {
+        // Try loading from multiple possible paths
+        NSArray *searchPaths = @[
+            @"/var/jb/Library/PreferenceBundles/CustomCCBgPrefs.bundle",
+            @"/Library/PreferenceBundles/CustomCCBgPrefs.bundle",
+            @"/var/jb/usr/lib/PreferenceBundles/CustomCCBgPrefs.bundle",
+        ];
+        for (NSString *path in searchPaths) {
+            NSBundle *bundle = [NSBundle bundleWithPath:path];
+            if (bundle && [bundle load]) {
+                controllerClass = NSClassFromString(@"CCBGRootListController");
+                if (controllerClass) break;
             }
         }
+    }
+    if (controllerClass) {
+        UIViewController *vc = [[controllerClass alloc] init];
+        [self.navigationController pushViewController:vc animated:YES];
+    } else {
+        LGPresentInfoSheet(self,
+                           LGLocalized(@"prefs.control_center_custom_bg.title"),
+                           LGLocalized(@"prefs.control_center_custom_bg.not_available"));
     }
 }
 
@@ -493,10 +498,10 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
                   preferredStyle:UIAlertControllerStyleActionSheet];
 
     NSArray *presets = @[
-        @{ @"title": @"Regular", @"value": @(400.0) },
-        @{ @"title": @"Medium", @"value": @(500.0) },
-        @{ @"title": @"Semibold", @"value": @(600.0) },
-        @{ @"title": @"Bold", @"value": @(700.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.regular"), @"value": @(400.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.medium"), @"value": @(500.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.semibold"), @"value": @(600.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.bold"), @"value": @(700.0) },
     ];
 
     for (NSDictionary *preset in presets) {
@@ -1592,7 +1597,6 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 
     UIButton *menuButton = [UIButton buttonWithType:UIButtonTypeSystem];
     menuButton.translatesAutoresizingMaskIntoConstraints = NO;
-    menuButton.showsMenuAsPrimaryAction = YES;
     menuButton.tintColor = _accentColor;
     menuButton.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
     #pragma clang diagnostic push
@@ -1617,10 +1621,12 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
         config.background.backgroundColor = UIColor.clearColor;
         config.contentInsets = NSDirectionalEdgeInsetsMake(4.0, 8.0, 4.0, 8.0);
         menuButton.configuration = config;
+        menuButton.showsMenuAsPrimaryAction = YES;
     } else {
         [menuButton setTitle:selectedTitle forState:UIControlStateNormal];
         [menuButton setImage:[UIImage systemImageNamed:@"chevron.down"] forState:UIControlStateNormal];
         menuButton.semanticContentAttribute = UISemanticContentAttributeForceRightToLeft;
+        menuButton.showsMenuAsPrimaryAction = YES;
     }
 
     __weak typeof(self) weakSelf = self;
@@ -1640,6 +1646,7 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
             updatedConfig.background.backgroundColor = UIColor.clearColor;
             updatedConfig.contentInsets = NSDirectionalEdgeInsetsMake(4.0, 8.0, 4.0, 8.0);
             strongMenuButton.configuration = updatedConfig;
+            strongMenuButton.showsMenuAsPrimaryAction = YES;
         } else {
             [strongMenuButton setTitle:newTitle forState:UIControlStateNormal];
         }

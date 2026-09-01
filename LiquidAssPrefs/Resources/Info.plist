@@ -23,7 +23,7 @@
 	<key>MinimumOSVersion</key>
 	<string>3.0</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>LiquidAss needs photo library access so you can choose custom homescreen and lockscreen backdrop images.</string>
+	<string>Ai液态玻璃 needs photo library access so you can choose custom homescreen and lockscreen backdrop images.</string>
 	<key>NSPrincipalClass</key>
 	<string>LGPRootListController</string>
 </dict>

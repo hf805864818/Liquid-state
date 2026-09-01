@@ -1,4 +1,4 @@
-"prefs.app_name" = "Liquid (Gl)ass";
+"prefs.app_name" = "Ai液态玻璃";
 
 "prefs.control.enabled" = "启用";
 "prefs.control.blur" = "模糊";
@@ -71,7 +71,7 @@
 
 "prefs.button.reset" = "重置";
 "prefs.button.cancel" = "取消";
-"prefs.button.respring" = "重启 SpringBoard";
+"prefs.button.respring" = "注销";
 "prefs.button.later" = "稍后";
 "prefs.button.reopen_settings" = "重新打开";
 "prefs.button.ok" = "确定";
@@ -81,17 +81,17 @@
 "prefs.reset_confirm.title" = "确认重置？";
 "prefs.reset_confirm.body" = "此操作会将所有偏好设置重置为默认值。确定要继续吗？";
 "prefs.reset_confirm.surface_body_format" = "这将把 %@ 的所有设置重置为默认值。确定要继续吗？";
-"prefs.respring_confirm.title" = "确认重启桌面";
-"prefs.respring_confirm.body" = "现在要重启桌面吗？某些应用或后台进程可能会被关闭。";
-"prefs.import_prefs.error_invalid" = "剪贴板中不包含有效的 LiquidAss 偏好设置数据块。";
+"prefs.respring_confirm.title" = "确认注销";
+"prefs.respring_confirm.body" = "现在要注销吗？某些应用或后台进程可能会被关闭。";
+"prefs.import_prefs.error_invalid" = "剪贴板中不包含有效的 Ai液态玻璃 偏好设置数据块。";
 "prefs.import_prefs.error_empty" = "导入的偏好设置数据块为空。";
 "prefs.import_prefs.error_read" = "无法读取选中的偏好设置文件。";
-"prefs.import_prefs.success" = "偏好设置已导入。某些更改可能需要重启 SpringBoard 才能生效。";
+"prefs.import_prefs.success" = "偏好设置已导入。某些更改可能需要注销才能生效。";
 "prefs.export_prefs.error" = "无法生成可共享的偏好设置导出文件。";
 "prefs.reopen_settings.title" = "重新打开设置";
 "prefs.reopen_settings.body" = "此更改将在下次打开“设置”时生效。现在重新打开“设置”吗？";
-"prefs.respring_bar.title" = "建议重启桌面";
-"prefs.respring_bar.subtitle" = "进行更改后，建议重启桌面。";
+"prefs.respring_bar.title" = "建议注销";
+"prefs.respring_bar.subtitle" = "进行更改后，建议注销以使更改生效。";
 "prefs.info.title" = "信息";
 "prefs.jump_to.title" = "跳转到";
 "prefs.value_prompt.title" = "设定数值";
@@ -112,12 +112,12 @@
 "prefs.section.lockscreen_clock.title" = "时钟";
 "prefs.surface.app_library.title" = "App 资源库";
 "prefs.surface.app_library.subtitle" = "与 App 资源库表面相关的玻璃控制项。";
-"prefs.misc.respring.title" = "重启桌面";
-"prefs.misc.respring.subtitle" = "如果你使用 iOS 16 或更高版本，请在更改后重启 SpringBoard，因为实时更新功能已损坏。";
+"prefs.misc.respring.title" = "注销";
+"prefs.misc.respring.subtitle" = "如果你使用 iOS 16 或更高版本，请在更改后注销，因为实时更新功能已损坏。";
 "prefs.misc.about.title" = "更多选项";
 "prefs.misc.about.subtitle" = "附加控制项和高级偏好设置。";
 "prefs.misc.prefs_settings.title" = "关于";
-"prefs.misc.prefs_settings.subtitle" = "语言、版本详情、捐赠等。";
+"prefs.misc.prefs_settings.subtitle" = "语言、版本详情等。";
 "prefs.misc.options_section.title" = "额外选项";
 "prefs.misc.options_section.subtitle" = "实验性功能及其他选项。";
 "prefs.misc.rwb_third_party.title" = "RWB 白名单";
@@ -129,10 +129,17 @@
 "prefs.control_center.fullscreen_backdrop_blur_radius.subtitle" = "限制控制中心背景材质的模糊程度。数值越低，模糊越轻。";
 "prefs.control_center.fullscreen_backdrop_dim_color.title" = "全屏变暗";
 "prefs.control_center.fullscreen_backdrop_dim_color.subtitle" = "叠加在全屏模糊上的颜色。Alpha 通道控制变暗强度。";
-"prefs.control_center_custom_bg.title" = "控制中心背景设置";
-"prefs.control_center_custom_bg.subtitle" = "自定义背景图片 / 视频 / 模糊度";
+"prefs.control_center_custom_bg.title" = "控制中心自定义背景";
+"prefs.control_center_custom_bg.subtitle" = "选择图片或视频作为控制中心背景。";
+"prefs.control_center_custom_bg.not_available" = "自定义背景插件未找到，请确保已正确安装。";
 "prefs.section.slider_haptics.title" = "滑块振动反馈";
 "prefs.section.slider_haptics.subtitle" = "调节音量和亮度滑块时添加触觉反馈。";
+"prefs.section.slider_display.title" = "滑块显示设置";
+"prefs.section.slider_display.subtitle" = "音量和亮度滑块的显示选项。";
+"prefs.control.slider_percent" = "显示百分比";
+"prefs.subtitle.slider_percent" = "在音量和亮度滑块上方显示当前百分比值。";
+"prefs.control.slider_corner_radius" = "滑块圆角半径";
+"prefs.subtitle.slider_corner_radius" = "自定义滑块填充的圆角大小（-1 为默认值）。";
 "prefs.control.slider_haptics" = "滑块振动";
 "prefs.subtitle.slider_haptics" = "在控制中心调节滑块时产生振动。";
 "prefs.control.slider_haptics_intensity" = "振动强度";
@@ -144,7 +151,11 @@
 "prefs.clock_font.adaptive" = "自适应数字";
 "prefs.clock_font.newyork_adaptive" = "纽约自适应数字";
 "prefs.clock_font.reset_default" = "恢复默认";
-"prefs.clock_font.reset_default_subtitle" = "恢复 LiquidAss 默认时钟字体设置";
+"prefs.clock_font.reset_default_subtitle" = "恢复 Ai液态玻璃 默认时钟字体设置";
+"prefs.font_weight.regular" = "常规";
+"prefs.font_weight.medium" = "中等";
+"prefs.font_weight.semibold" = "半粗";
+"prefs.font_weight.bold" = "粗体";
 "prefs.misc.import_export_section.title" = "导入/导出偏好设置";
 "prefs.misc.import_export_section.subtitle" = "分享你的配置或从 JSON 文件恢复配置。";
 "prefs.misc.export_prefs.title" = "导出偏好设置";

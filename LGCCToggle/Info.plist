@@ -3,7 +3,7 @@
     CFBundleExecutable = LGCCToggle;
     CFBundleIdentifier = "dylv.liquidglass.cctoggle";
     CFBundleInfoDictionaryVersion = "6.0";
-    CFBundleName = "Liquid Glass";
+    CFBundleName = "Ai液态玻璃";
     CFBundlePackageType = BNDL;
     CFBundleShortVersionString = "1.0";
     CFBundleSignature = "????";

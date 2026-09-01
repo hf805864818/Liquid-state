@@ -1,4 +1,4 @@
-"prefs.app_name" = "Liquid (Gl)ass";
+"prefs.app_name" = "Ai液态玻璃";
 
 "prefs.control.enabled" = "Włączony";
 "prefs.control.bezel_ratio" = "Stosunek obramowania";
@@ -82,7 +82,7 @@
 "prefs.reset_confirm.surface_body_format" = "To zresetuje wszystkie ustawienia %@ do wartości domyślnych. Czy chcesz kontynuować?";
 "prefs.respring_confirm.title" = "Potwierdź respring";
 "prefs.respring_confirm.body" = "Czy chcesz wykonać resping teraz? Wszelkie uruchomione aplikacje w tle lub procesy mogą zostać zamknięte.";
-"prefs.import_prefs.error_invalid" = "Schowek nie zawiera prawidłowego blobu preferencji LiquidAss.";
+"prefs.import_prefs.error_invalid" = "Schowek nie zawiera prawidłowego blobu preferencji Ai液态玻璃.";
 "prefs.import_prefs.error_empty" = "Importowany blob preferencji jest pusty.";
 "prefs.import_prefs.error_read" = "Nie można odczytać wybranego pliku preferencji.";
 "prefs.import_prefs.success" = "Preferencje zaimportowane. Respring może nadal być potrzebny dla niektórych zmian.";
