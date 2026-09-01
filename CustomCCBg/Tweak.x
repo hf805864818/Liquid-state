@@ -84,7 +84,6 @@ static void CCBgSetSpecularDisabled(BOOL disabled) {
         _registeredLayers = [NSMutableSet set];
         _ciContext = [CIContext contextWithOptions:@{
             kCIContextUseSoftwareRenderer: @NO,  // 使用 GPU
-            kCIContextPriority: kCIContextPriorityLow,
         }];
     }
     return self;
@@ -118,7 +117,7 @@ static void CCBgSetSpecularDisabled(BOOL disabled) {
             self.videoOutput = nil;
         }
         if (item) {
-            self.videoOutput = [[AVPlayerItemVideoOutput alloc] initWithVideoSettings:@{
+            self.videoOutput = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:@{
                 (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
             }];
             [item addOutput:self.videoOutput];
@@ -572,7 +571,6 @@ static UIImage *CCBgPreBlurImage(UIImage *image) {
 
 - (void)reloadPreferences {
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kCCBgPreferencesDomain];
-    BOOL wasEnabled = self.isEnabled;
     self.isEnabled = [defaults boolForKey:kCCBgEnabledKey];
     self.blurAlpha = [defaults floatForKey:kCCBgBlurAlphaKey];
     if (self.blurAlpha <= 0) self.blurAlpha = 0.3;
