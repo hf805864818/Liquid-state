@@ -567,24 +567,32 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 
     NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
     CCBgModuleBackground *bg = self.moduleBackgrounds[key];
+    UIView *superview = moduleView.superview;
+    if (!superview) return;
+
     if (!bg) {
         bg = [[CCBgModuleBackground alloc] init];
-        [moduleView insertSubview:bg.containerView atIndex:0];
+        // 背景放到模块的父视图中，层级在模块下面
+        [superview insertSubview:bg.containerView belowSubview:moduleView];
         self.moduleBackgrounds[key] = bg;
     }
 
-    if (bg.containerView.superview != moduleView) {
-        [moduleView insertSubview:bg.containerView atIndex:0];
+    // 如果父视图变了，重新挂载
+    if (bg.containerView.superview != superview) {
+        [bg.containerView removeFromSuperview];
+        [superview insertSubview:bg.containerView belowSubview:moduleView];
     }
 
-    // 优化 D: 如果尺寸和圆角都没变,跳过更新
-    CGRect frame = moduleView.bounds;
+    // 背景 frame 是模块在父视图中的 frame（模块后面，尺寸位置与模块一致）
+    CGRect moduleFrameInSuperview = moduleView.frame;
     CGFloat cornerRadius = moduleView.layer.cornerRadius;
     if (cornerRadius <= 0) {
         CGFloat minDim = fmin(CGRectGetWidth(moduleView.bounds), CGRectGetHeight(moduleView.bounds));
         cornerRadius = minDim * 0.25;
     }
-    if (CGRectEqualToRect(bg.containerView.frame, frame) &&
+
+    // 优化 D: 如果尺寸和圆角都没变，跳过更新
+    if (CGRectEqualToRect(bg.containerView.frame, moduleFrameInSuperview) &&
         fabs(bg.containerView.layer.cornerRadius - cornerRadius) < 0.1) {
         // 尺寸未变,只确保播放状态正确
         if (self.cachedHasVideo && self.isControlCenterVisible && self.sharedVideoPlayer.rate == 0) {
@@ -593,6 +601,9 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
         // 优化 C: 检查是否在可见区域内
         BOOL isVisible = [self isModuleViewVisible:moduleView];
         [bg setVideoLayerHidden:!isVisible];
+        // 同步隐藏状态
+        bg.containerView.hidden = moduleView.hidden;
+        bg.containerView.alpha = moduleView.alpha;
         return;
     }
 
@@ -602,7 +613,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     if (self.cachedHasVideo) {
         AVQueuePlayer *player = [self getSharedVideoPlayer];
         if (player) {
-            [bg updateWithPlayer:player blurredImage:blurredImage frame:frame cornerRadius:cornerRadius];
+            [bg updateWithPlayer:player blurredImage:blurredImage frame:moduleFrameInSuperview cornerRadius:cornerRadius];
             if (self.isControlCenterVisible && self.sharedVideoPlayer.rate == 0) {
                 [self.sharedVideoPlayer play];
             }
@@ -613,12 +624,16 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     } else if (self.cachedHasImage) {
         UIImage *image = [self getCachedImage];
         if (image) {
-            [bg updateWithImage:image blurredImage:blurredImage frame:frame cornerRadius:cornerRadius];
+            [bg updateWithImage:image blurredImage:blurredImage frame:moduleFrameInSuperview cornerRadius:cornerRadius];
         }
     } else {
         [bg cleanup];
         [self.moduleBackgrounds removeObjectForKey:key];
     }
+
+    // 同步隐藏/透明度
+    bg.containerView.hidden = moduleView.hidden;
+    bg.containerView.alpha = moduleView.alpha;
 }
 
 // 优化 C: 判断模块是否在控制中心可见区域内
