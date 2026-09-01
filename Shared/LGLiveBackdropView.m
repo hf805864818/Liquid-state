@@ -132,6 +132,7 @@ static NSHashTable<LGLiveBackdropView *> *sLGMotionGlasses;
 static CMMotionManager *sLGMotionManager;
 static BOOL sLGMotionSetup;
 static BOOL sLGMotionRunning;
+static BOOL sLGSpringBoardInForeground; // set lazily on first setup
 static CGFloat sLGSpecularAngle = -M_PI_4;
 static BOOL sLGMotionEnabled;
 static CGFloat sLGMotionSensitivity = 2.0;
@@ -334,6 +335,15 @@ static void LGEnsureFilterRefreshObserver(void) {
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
 }
 
+static BOOL LGHasVisibleMotionGlass(void) {
+    for (LGLiveBackdropView *glass in sLGMotionGlasses.allObjects) {
+        if (glass.window && !glass.hidden && glass.alpha > 0.001) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static void LGApplyMotionHighlightAngle(void) {
     for (LGLiveBackdropView *glass in sLGMotionGlasses.allObjects) {
         if (!glass.window || glass.hidden || glass.alpha <= 0.001) continue;
@@ -343,13 +353,41 @@ static void LGApplyMotionHighlightAngle(void) {
 
 static void LGRefreshMotionHighlights(void) {
     if (!sLGMotionSetup || !LGIsSpringBoardBundle()) return;
+
+    // Motion disabled in settings → always stop
     if (!sLGMotionEnabled) {
-        [sLGMotionManager stopDeviceMotionUpdates];
-        sLGMotionRunning = NO;
+        if (sLGMotionRunning) {
+            [sLGMotionManager stopDeviceMotionUpdates];
+            sLGMotionRunning = NO;
+        }
         sLGSpecularAngle = -M_PI_4;
         LGApplyMotionHighlightAngle();
         return;
     }
+
+    // SpringBoard in background (app in front) → no glass is actually visible, stop sensor
+    if (!sLGSpringBoardInForeground) {
+        if (sLGMotionRunning) {
+            [sLGMotionManager stopDeviceMotionUpdates];
+            sLGMotionRunning = NO;
+            LGLog(@"motion highlights stopped — SpringBoard in background");
+        }
+        return;
+    }
+
+    BOOL hasVisibleGlass = LGHasVisibleMotionGlass();
+
+    // No visible glass → stop sensor completely to save power
+    if (!hasVisibleGlass) {
+        if (sLGMotionRunning) {
+            [sLGMotionManager stopDeviceMotionUpdates];
+            sLGMotionRunning = NO;
+            LGLog(@"motion highlights stopped — no visible glasses");
+        }
+        return;
+    }
+
+    // Has visible glass and not running → start sensor
     if (sLGMotionRunning) return;
 
     CMAttitudeReferenceFrame frames = [CMMotionManager availableAttitudeReferenceFrames];
@@ -357,21 +395,14 @@ static void LGRefreshMotionHighlights(void) {
         ? CMAttitudeReferenceFrameXMagneticNorthZVertical
         : CMAttitudeReferenceFrameXArbitraryCorrectedZVertical;
 
-    sLGMotionManager.deviceMotionUpdateInterval = 1.0 / 5.0; // 10Hz -> 5Hz, reduces sensor power draw
+    sLGMotionManager.deviceMotionUpdateInterval = 1.0 / 5.0; // 5Hz, reduces sensor power draw
     sLGMotionRunning = YES;
     [sLGMotionManager startDeviceMotionUpdatesUsingReferenceFrame:frame
                                                             toQueue:NSOperationQueue.mainQueue
                                                         withHandler:^(CMDeviceMotion *motion, NSError *error) {
         if (!motion || error || !sLGMotionEnabled) return;
-        // Skip update if no visible glasses need motion highlights
-        BOOL hasVisibleGlass = NO;
-        for (LGLiveBackdropView *glass in sLGMotionGlasses.allObjects) {
-            if (glass.window && !glass.hidden && glass.alpha > 0.001) {
-                hasVisibleGlass = YES;
-                break;
-            }
-        }
-        if (!hasVisibleGlass) return;
+        // Double-check visibility inside handler (defensive, should not be needed but harmless)
+        if (!LGHasVisibleMotionGlass()) return;
 
         CMAttitude *attitude = motion.attitude;
 
@@ -391,15 +422,46 @@ static void LGRefreshMotionHighlights(void) {
     LGLog(@"motion highlights started reference=%s", frame == CMAttitudeReferenceFrameXMagneticNorthZVertical ? "magnetic-north" : "corrected-arbitrary");
 }
 
+static void LGSpringBoardResignedActive(CFNotificationCenterRef center, void *observer,
+                                        CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        sLGSpringBoardInForeground = NO;
+        LGLog(@"SpringBoard resigned active — pausing motion sensor");
+        LGRefreshMotionHighlights();
+    });
+}
+
+static void LGSpringBoardBecameActive(CFNotificationCenterRef center, void *observer,
+                                      CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        sLGSpringBoardInForeground = YES;
+        LGLog(@"SpringBoard became active — resuming motion sensor");
+        LGRefreshMotionHighlights();
+    });
+}
+
 static void LGEnsureMotionHighlights(void) {
     if (!LGIsSpringBoardBundle()) return;
     if (!sLGMotionGlasses) sLGMotionGlasses = [NSHashTable weakObjectsHashTable];
     if (!sLGMotionManager) sLGMotionManager = [CMMotionManager new];
     if (!sLGMotionSetup) {
         sLGMotionSetup = YES;
+        // Determine initial foreground state from UIApplication
+        sLGSpringBoardInForeground = [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                         LGMotionPreferencesDidChange,
                                         kLGMotionPrefsReloadNotification, NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+        // Observe SpringBoard active state — stop sensor when an app is in front
+        CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(), NULL,
+                                        LGSpringBoardResignedActive,
+                                        (CFStringRef)UIApplicationWillResignActiveNotification, NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+        CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(), NULL,
+                                        LGSpringBoardBecameActive,
+                                        (CFStringRef)UIApplicationDidBecomeActiveNotification, NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
     }
     LGReloadMotionHighlightPreferences();
@@ -484,12 +546,34 @@ static const CGFloat kLGSpecularBrightBoostOpacity = 0.70;
 - (void)dealloc {
     [sLGAllGlasses removeObject:self];
     [sLGMotionGlasses removeObject:self];
+    // Re-evaluate motion state after removing this glass
+    if (sLGMotionSetup) LGRefreshMotionHighlights();
 }
 
 - (void)didMoveToWindow {
     [super didMoveToWindow];
     [self applyFilters];
+    // Window changed → re-evaluate whether motion sensor needs to be running
+    if (sLGMotionSetup) LGRefreshMotionHighlights();
 }
+
+- (void)setHidden:(BOOL)hidden {
+    BOOL wasHidden = self.hidden;
+    [super setHidden:hidden];
+    if (wasHidden != hidden && sLGMotionSetup) {
+        LGRefreshMotionHighlights();
+    }
+}
+
+- (void)setAlpha:(CGFloat)alpha {
+    BOOL wasVisible = self.alpha > 0.001;
+    [super setAlpha:alpha];
+    BOOL isVisible = alpha > 0.001;
+    if (wasVisible != isVisible && sLGMotionSetup) {
+        LGRefreshMotionHighlights();
+    }
+}
+
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     if (previousTraitCollection.userInterfaceStyle != self.traitCollection.userInterfaceStyle) {
@@ -723,6 +807,16 @@ static const CGFloat kLGSpecularBrightBoostOpacity = 0.70;
 @end
 
 #pragma mark - generic host injection
+
+void LGSetSpringBoardInForeground(BOOL inForeground) {
+    if (!LGIsSpringBoardBundle()) return;
+    if (sLGSpringBoardInForeground == inForeground) return;
+    sLGSpringBoardInForeground = inForeground;
+    LGLog(@"SpringBoard foreground state changed: %d", inForeground);
+    if (sLGMotionSetup) {
+        LGRefreshMotionHighlights();
+    }
+}
 
 static CGRect LGOutsetFrame(CGRect mf, UIEdgeInsets outset) {
     return CGRectMake(mf.origin.x - outset.left,

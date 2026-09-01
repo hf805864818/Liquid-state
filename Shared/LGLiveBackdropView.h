@@ -32,6 +32,9 @@ UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
 - (void)applyFilters;
 @end
 
+// Call to notify that SpringBoard is in foreground (icons visible) or background (app in front)
+void LGSetSpringBoardInForeground(BOOL inForeground);
+
 void LGInjectGlassIntoMaterialGroupType(UIView *materialView, const void *assocKey,
                                         UIEdgeInsets outset, CGFloat cornerRadius,
                                         NSString *groupName, NSString *filterType);
