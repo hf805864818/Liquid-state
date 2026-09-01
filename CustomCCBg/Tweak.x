@@ -6,6 +6,8 @@
 //   B. 视频背景: 限制 30fps,降低解码+渲染功耗
 //   C. 模块级模式: 离屏模块不渲染视频层
 //   D. layoutSubviews: 节流去重,避免重复更新
+//   E. 模糊图降采样: 模糊前先缩放到 1/2,GPU 计算量减少 75%
+//   H. 延迟释放: 控制中心关闭 30 秒后释放视频资源,降低后台功耗
 
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -35,18 +37,36 @@ static const NSInteger kCCBgTargetVideoFPS = 30;
 
 // MARK: - 图片预渲染模糊工具
 
+// 优化 E: 模糊前降采样 — 先缩放到 1/2 再模糊，GPU 计算量减少 75%，视觉几乎无差异
+static const CGFloat kCCBgBlurDownscaleFactor = 0.5;
+
 static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     if (!image || blurRadius <= 0.01) return image;
 
     @autoreleasepool {
-        CIImage *inputImage = [CIImage imageWithCGImage:image.CGImage];
+        // 优化 E: 降采样后再模糊，大幅减少 GPU 计算量和内存占用
+        CGFloat scale = kCCBgBlurDownscaleFactor;
+        CGSize originalSize = image.size;
+        CGSize downscaledSize = CGSizeMake(originalSize.width * scale, originalSize.height * scale);
+        CGFloat scaledRadius = blurRadius * scale; // 模糊半径按比例缩放
+
+        // 第一步：将原图缩放到目标尺寸
+        UIGraphicsBeginImageContextWithOptions(downscaledSize, YES, 1.0);
+        [image drawInRect:CGRectMake(0, 0, downscaledSize.width, downscaledSize.height)];
+        UIImage *downscaledImage = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+
+        if (!downscaledImage) return image;
+
+        // 第二步：对缩小后的图做模糊
+        CIImage *inputImage = [CIImage imageWithCGImage:downscaledImage.CGImage];
         if (!inputImage) return image;
 
         CIFilter *blurFilter = [CIFilter filterWithName:@"CIGaussianBlur"];
         if (!blurFilter) return image;
 
         [blurFilter setValue:inputImage forKey:kCIInputImageKey];
-        [blurFilter setValue:@(blurRadius) forKey:kCIInputRadiusKey];
+        [blurFilter setValue:@(scaledRadius) forKey:kCIInputRadiusKey];
 
         CIImage *outputImage = blurFilter.outputImage;
         if (!outputImage) return image;
@@ -56,9 +76,18 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
         CGImageRef cgImage = [context createCGImage:outputImage fromRect:extent];
         if (!cgImage) return image;
 
-        UIImage *result = [UIImage imageWithCGImage:cgImage scale:image.scale orientation:image.imageOrientation];
+        UIImage *blurredSmall = [UIImage imageWithCGImage:cgImage scale:image.scale orientation:image.imageOrientation];
         CGImageRelease(cgImage);
-        return result;
+
+        if (!blurredSmall) return image;
+
+        // 第三步：放大回原尺寸（模糊后放大几乎看不出失真）
+        UIGraphicsBeginImageContextWithOptions(originalSize, YES, image.scale);
+        [blurredSmall drawInRect:CGRectMake(0, 0, originalSize.width, originalSize.height)];
+        UIImage *result = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+
+        return result ?: image;
     }
 }
 
@@ -271,6 +300,8 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 @property (nonatomic, assign) CGFloat blurAlpha;
 @property (nonatomic, assign) CCBgMode backgroundMode;
 @property (nonatomic, assign) BOOL isControlCenterVisible;
+// 优化 H: 控制中心关闭后延迟释放视频资源
+@property (nonatomic, strong) dispatch_source_t deferredReleaseTimer;
 
 + (instancetype)sharedInstance;
 - (void)reloadPreferences;
@@ -422,18 +453,78 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 
 #pragma mark - 可见性控制
 
+// 优化 H: 控制中心关闭后延迟释放视频的时间（秒）
+static const NSTimeInterval kCCBgDeferredReleaseDelay = 30.0;
+
+- (void)cancelDeferredRelease {
+    if (self.deferredReleaseTimer) {
+        dispatch_source_cancel(self.deferredReleaseTimer);
+        self.deferredReleaseTimer = nil;
+    }
+}
+
+- (void)scheduleDeferredRelease {
+    [self cancelDeferredRelease];
+    if (!self.cachedHasVideo) return;
+
+    dispatch_queue_t queue = dispatch_get_main_queue();
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+    dispatch_source_set_timer(timer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCCBgDeferredReleaseDelay * NSEC_PER_SEC)),
+        DISPATCH_TIME_FOREVER, 0);
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(timer, ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (strongSelf.isControlCenterVisible) return;
+
+        // 延迟释放：完全销毁视频资源，降低后台内存和解码器功耗
+        if (strongSelf.backgroundMode == kCCBgModeFullscreen) {
+            [strongSelf detachVideoView];
+        } else {
+            if (strongSelf.sharedVideoPlayer) {
+                [strongSelf.sharedVideoPlayer pause];
+                strongSelf.sharedVideoPlayer = nil;
+            }
+            strongSelf.sharedLooper = nil;
+            // 隐藏所有模块视频层（保留 imageView 作为静态占位）
+            for (CCBgModuleBackground *bg in strongSelf.moduleBackgrounds.allValues) {
+                [bg setVideoLayerHidden:YES];
+            }
+        }
+        strongSelf.deferredReleaseTimer = nil;
+    });
+    dispatch_resume(timer);
+    self.deferredReleaseTimer = timer;
+}
+
 - (void)setControlCenterVisible:(BOOL)visible {
     if (self.isControlCenterVisible == visible) return;
     self.isControlCenterVisible = visible;
 
     if (visible) {
-        // 控制中心可见:恢复播放
+        // 控制中心可见:取消延迟释放，恢复播放
+        [self cancelDeferredRelease];
         if (self.backgroundMode == kCCBgModeFullscreen) {
             if (self.videoView && self.isEnabled) [self.videoView play];
+            else if (self.isEnabled && self.cachedHasVideo) {
+                // 视频已被延迟释放，重新加载
+                [self updateBackgroundView];
+            }
         } else {
             // 模块级模式
             if (self.sharedVideoPlayer && self.isEnabled && self.sharedVideoPlayer.rate == 0) {
                 [self.sharedVideoPlayer play];
+            } else if (self.isEnabled && self.cachedHasVideo && !self.sharedVideoPlayer) {
+                // 视频已被延迟释放，重新加载共享 player
+                AVQueuePlayer *player = [self getSharedVideoPlayer];
+                if (player) {
+                    [player play];
+                    // 更新所有模块的视频层
+                    for (CCBgModuleBackground *bg in self.moduleBackgrounds.allValues) {
+                        [bg setVideoLayerHidden:NO];
+                    }
+                }
             }
             // 优化 C: 确保所有模块视频层可见
             for (CCBgModuleBackground *bg in self.moduleBackgrounds.allValues) {
@@ -441,12 +532,14 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
             }
         }
     } else {
-        // 控制中心不可见:暂停视频
+        // 控制中心不可见:暂停视频，并安排延迟释放
         if (self.backgroundMode == kCCBgModeFullscreen) {
             if (self.videoView) [self.videoView pause];
         } else {
             if (self.sharedVideoPlayer) [self.sharedVideoPlayer pause];
         }
+        // 优化 H: 30秒后仍未打开控制中心，则释放视频资源
+        [self scheduleDeferredRelease];
     }
 }
 
