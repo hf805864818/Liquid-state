@@ -1020,7 +1020,7 @@ static void LGStartSettingsSegmentDisplayLink(UISegmentedControl *control) {
         !control.window) return;
     CADisplayLink *link = [CADisplayLink displayLinkWithTarget:control
         selector:@selector(lg_settingsSegmentTick:)];
-    link.preferredFramesPerSecond = UIScreen.mainScreen.maximumFramesPerSecond ?: 60;
+    link.preferredFramesPerSecond = 30; // 30fps is sufficient for settings UI interactions
     [link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     objc_setAssociatedObject(control, kLGSettingsSegmentDisplayLinkKey, link,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);

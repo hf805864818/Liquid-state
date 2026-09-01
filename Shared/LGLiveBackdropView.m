@@ -357,12 +357,22 @@ static void LGRefreshMotionHighlights(void) {
         ? CMAttitudeReferenceFrameXMagneticNorthZVertical
         : CMAttitudeReferenceFrameXArbitraryCorrectedZVertical;
 
-    sLGMotionManager.deviceMotionUpdateInterval = 1.0 / 10.0;
+    sLGMotionManager.deviceMotionUpdateInterval = 1.0 / 5.0; // 10Hz -> 5Hz, reduces sensor power draw
     sLGMotionRunning = YES;
     [sLGMotionManager startDeviceMotionUpdatesUsingReferenceFrame:frame
                                                             toQueue:NSOperationQueue.mainQueue
                                                         withHandler:^(CMDeviceMotion *motion, NSError *error) {
         if (!motion || error || !sLGMotionEnabled) return;
+        // Skip update if no visible glasses need motion highlights
+        BOOL hasVisibleGlass = NO;
+        for (LGLiveBackdropView *glass in sLGMotionGlasses.allObjects) {
+            if (glass.window && !glass.hidden && glass.alpha > 0.001) {
+                hasVisibleGlass = YES;
+                break;
+            }
+        }
+        if (!hasVisibleGlass) return;
+
         CMAttitude *attitude = motion.attitude;
 
         CGFloat baseMotion = attitude.yaw + attitude.roll * 0.65 + attitude.pitch * 0.35;
@@ -412,6 +422,8 @@ static const CGFloat kLGSpecularBrightBoostOpacity = 0.70;
     uint32_t         _lgId;
     CGFloat          _appliedScale;
     BOOL             _parameterRefreshVariant;
+    CGSize           _lastLayoutSize;       // layoutSubviews throttling
+    CGFloat          _lastLayoutCornerRadius; // layoutSubviews throttling
 }
 
 - (NSString *)lgEffectiveFilterType {
@@ -498,7 +510,20 @@ static const CGFloat kLGSpecularBrightBoostOpacity = 0.70;
     [self updateSpecular];
 }
 
-- (void)layoutSubviews  { [super layoutSubviews];  [self applyFilters]; [self updateSpecular]; }
+- (void)layoutSubviews  {
+    [super layoutSubviews];
+    CGSize currentSize = self.bounds.size;
+    CGFloat currentRadius = self.layer.cornerRadius;
+    // Throttle: skip filter/specular reapply if size & corner radius haven't changed
+    if (CGSizeEqualToSize(currentSize, _lastLayoutSize) &&
+        fabs(currentRadius - _lastLayoutCornerRadius) < 0.5) {
+        return;
+    }
+    _lastLayoutSize = currentSize;
+    _lastLayoutCornerRadius = currentRadius;
+    [self applyFilters];
+    [self updateSpecular];
+}
 
 - (void)updateNativeBlurOverlayWithRadius:(CGFloat)radius filterClass:(Class)filterCls {
     if (radius <= 0.0 || !filterCls) {

@@ -557,6 +557,7 @@ static void LGCoverSheetSetDisplayLinkActive(BOOL active) {
         sLGCoverSheetDisplayLink =
             [CADisplayLink displayLinkWithTarget:sLGCoverSheetDisplayLinkTarget
                                          selector:@selector(lg_coverSheetDisplayLinkTick:)];
+        sLGCoverSheetDisplayLink.preferredFramesPerSecond = 30; // geometry sync doesn't need high FPS
         [sLGCoverSheetDisplayLink addToRunLoop:NSRunLoop.mainRunLoop
                                        forMode:NSRunLoopCommonModes];
     } else {

@@ -190,6 +190,11 @@ static void lgRouteMaterialHost(UIView *material) {
         LGRemoveGlassFromMaterial(material, kGlassKey);
         return;
     }
+    // Fast path: if glass is already injected, just resync geometry (skip route matching)
+    if (LGMaterialHasGlass(material, kGlassKey)) {
+        LGResyncGlassGeometry(material, kGlassKey);
+        return;
+    }
     for (LGMaterialHostRoute *route in sMaterialHostRoutes) {
         if (!route.matcher(material)) continue;
         CGFloat radius = route.cornerRadiusProvider

@@ -99,6 +99,7 @@ static inline CGFloat LGTabBarSpringStep(CGFloat current,
     self.lastDisplayTime = 0.0;
     self.displayLink = [CADisplayLink displayLinkWithTarget:self
                                                    selector:@selector(tick:)];
+    self.displayLink.preferredFramesPerSecond = 60; // 60fps is smooth enough for lens animation
     [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 
