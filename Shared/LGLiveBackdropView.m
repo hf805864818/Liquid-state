@@ -736,7 +736,6 @@ static void LGReportMemoryUsageIfNeeded(void) {
     _lastLayoutCornerRadius = currentRadius;
     [self applyFilters];
     [self updateSpecular];
-    LGReportMemoryUsageIfNeeded();
 }
 
 - (void)updateNativeBlurOverlayWithRadius:(CGFloat)radius filterClass:(Class)filterCls {
