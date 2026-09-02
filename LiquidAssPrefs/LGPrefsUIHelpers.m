@@ -515,6 +515,8 @@ void LGPresentRespringConfirmation(UIViewController *controller) {
         actionWithTitle:LGLocalized(@"prefs.button.respring")
                   style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) {
+        // 注销前必须刷新暂存的偏好设置, 否则未应用的更改会丢失
+        LGForceSynchronizePreferences();
         LGSetNeedsRespring(NO);
         notify_post(LGPrefsRespringNotificationCString);
     }]];
