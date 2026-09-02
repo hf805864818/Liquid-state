@@ -455,34 +455,59 @@ static BOOL LGIsInjectedTabBarView(UIView *view, UITabBar *bar) {
     return NO;
 }
 
-// 递归清除按钮内部视图的阴影图层属性
-// 只修改 shadow 属性, 不触碰 backgroundColor — 背景色是 iOS 内部渲染管线的一部分,
-// 清除会导致标签切换后内容视图 (图标/文字) 逐渐消失
-static void LGClearTabBarButtonShadows(UIView *view) {
-    if (!view) return;
+// 后序遍历: 先处理子视图, 再根据子树是否包含内容来决定是否清除背景色
+// 返回 YES 表示该视图或其后代包含内容视图 (UITabBarSwappableImageView / UITabBarButtonLabel)
+// — 阴影属性: 对所有视图清除 (安全, 不影响渲染)
+// — 背景色: 只清除「不包含内容后代」的视图 (如选中背景、阴影视图)
+//   保留「包含内容后代」的视图背景 (如内容容器), 避免破坏 iOS 渲染管线
+static BOOL LGClearTabBarButtonShadowsRecursive(UIView *view) {
+    if (!view) return NO;
+
+    NSString *cn = NSStringFromClass(view.class);
+    BOOL isContent =
+        [cn isEqualToString:@"UITabBarSwappableImageView"] ||
+        [cn isEqualToString:@"UITabBarButtonLabel"];
+
+    // 先处理子视图 (后序遍历)
+    BOOL subtreeHasContent = isContent;
+    for (UIView *child in view.subviews) {
+        if (LGClearTabBarButtonShadowsRecursive(child)) {
+            subtreeHasContent = YES;
+        }
+    }
+
+    // 阴影属性: 对所有视图清除
     view.layer.shadowOpacity = 0.0;
     view.layer.shadowColor = UIColor.clearColor.CGColor;
     view.layer.shadowRadius = 0.0;
     view.layer.shadowOffset = CGSizeZero;
     view.layer.shadowPath = nil;
-    for (UIView *child in view.subviews) {
-        LGClearTabBarButtonShadows(child);
+
+    // 背景色: 只清除不含内容后代的视图
+    // 选中背景/阴影视图是内容的同级 (不含内容后代) → 清除
+    // 内容容器是内容的父级 (含内容后代) → 保留
+    if (!isContent && !subtreeHasContent) {
+        if (view.backgroundColor) {
+            view.backgroundColor = UIColor.clearColor;
+        }
     }
+
+    return subtreeHasContent;
 }
 
-// 清除 UITabBarButton 内部的阴影图层属性 (不隐藏视图, 不修改背景色)
+// 清除 UITabBarButton 内部的阴影和选中背景 (不隐藏视图)
 static void LGHideTabBarButtonInternals(UITabBar *bar) {
     Class buttonClass = objc_getClass("UITabBarButton");
     for (UIView *button in bar.subviews) {
         if (!buttonClass || ![button isKindOfClass:buttonClass]) continue;
-        // 只清除按钮自身的 shadow 属性
+        // 清除按钮自身的 shadow 属性
         button.layer.shadowOpacity = 0.0;
         button.layer.shadowColor = UIColor.clearColor.CGColor;
         button.layer.shadowRadius = 0.0;
         button.layer.shadowOffset = CGSizeZero;
         button.layer.shadowPath = nil;
-        // 递归清除子视图的阴影 (不修改背景色)
-        LGClearTabBarButtonShadows(button);
+        // 递归清除子视图: 阴影全部清除, 背景只清除不含内容的视图
+        LGClearTabBarButtonShadowsRecursive(button);
     }
 }
 
@@ -498,7 +523,7 @@ static void LGHideTabBarShadowViews(UITabBar *bar) {
     bar.layer.shadowRadius = 0.0;
     bar.layer.shadowOffset = CGSizeZero;
     bar.layer.shadowPath = nil;
-    // 清除按钮内部的阴影图层属性 (不修改背景色)
+    // 清除按钮内部的阴影和选中背景 (保留内容容器背景)
     LGHideTabBarButtonInternals(bar);
 }
 
