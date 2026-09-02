@@ -596,6 +596,23 @@ static void LGStyleStockTabBar(UITabBar *bar) {
     if (bar.clipsToBounds) bar.clipsToBounds = NO;
     if (bar.layer.masksToBounds) bar.layer.masksToBounds = NO;
 
+    // 通过 UITabBarAppearance API 清除系统选中背景 (iOS 13+)
+    // 这是方块阴影的真正来源 — iOS 通过外观 API 渲染选中背景,
+    // 不是通过视图的 backgroundColor, 所以清除视图属性无效
+    if (@available(iOS 13.0, *)) {
+        UITabBarAppearance *appearance = [bar.standardAppearance copy];
+        if (!appearance) appearance = [[UITabBarAppearance alloc] init];
+        [appearance.stackedLayoutAppearance configureWithTransparentBackground];
+        [appearance.inlineLayoutAppearance configureWithTransparentBackground];
+        [appearance.compactInlineLayoutAppearance configureWithTransparentBackground];
+        appearance.selectionIndicatorBackgroundImage = nil;
+        bar.standardAppearance = appearance;
+        if (@available(iOS 15.0, *)) {
+            bar.scrollEdgeAppearance = appearance;
+        }
+        bar.selectionIndicatorImage = nil;
+    }
+
     UIView *stockBackground = nil;
     Class backgroundClass = objc_getClass("_UIBarBackground");
     for (UIView *view in bar.subviews) {
