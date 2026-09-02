@@ -455,8 +455,20 @@ static BOOL LGIsInjectedTabBarView(UIView *view, UITabBar *bar) {
     return NO;
 }
 
-// 隐藏 UITabBarButton 内部的选中背景/阴影子视图
-// 只保留 UITabBarSwappableImageView(图标) 和 UITabBarButtonLabel(文字)
+// 判断视图子树是否包含内容视图(图标或文字)
+static BOOL LGViewSubtreeContainsContent(UIView *view) {
+    if (!view) return NO;
+    NSString *cn = NSStringFromClass(view.class);
+    if ([cn isEqualToString:@"UITabBarSwappableImageView"] ||
+        [cn isEqualToString:@"UITabBarButtonLabel"]) return YES;
+    for (UIView *child in view.subviews) {
+        if (LGViewSubtreeContainsContent(child)) return YES;
+    }
+    return NO;
+}
+
+// 隐藏 UITabBarButton 内部的选中背景/阴影视图
+// 只保留 UITabBarSwappableImageView(图标) 和 UITabBarButtonLabel(文字)及其祖先容器
 static void LGHideTabBarButtonInternals(UITabBar *bar) {
     Class buttonClass = objc_getClass("UITabBarButton");
     for (UIView *button in bar.subviews) {
@@ -467,19 +479,11 @@ static void LGHideTabBarButtonInternals(UITabBar *bar) {
         button.layer.shadowRadius = 0.0;
         button.layer.shadowOffset = CGSizeZero;
         button.layer.shadowPath = nil;
-        // 递归隐藏按钮内部的非内容子视图
-        NSMutableArray<UIView *> *stack =
-            [NSMutableArray arrayWithArray:button.subviews];
-        while (stack.count) {
-            UIView *v = stack.lastObject;
-            [stack removeLastObject];
-            NSString *cn = NSStringFromClass(v.class);
-            BOOL isContent =
-                [cn isEqualToString:@"UITabBarSwappableImageView"] ||
-                [cn isEqualToString:@"UITabBarButtonLabel"];
-            if (!isContent) v.hidden = YES;
-            // 仍然递归查看子视图(已隐藏的父视图的子视图也会被隐藏)
-            for (UIView *child in v.subviews) [stack addObject:child];
+        // 递归: 只隐藏不含内容视图的叶子背景/阴影视图
+        for (UIView *child in button.subviews) {
+            if (!LGViewSubtreeContainsContent(child)) {
+                child.hidden = YES;
+            }
         }
     }
 }
