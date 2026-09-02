@@ -1111,6 +1111,8 @@ static void LGHideTabBarSelectionLens(UITabBarButton *button) {
 
 static void LGPersistTabBarDump(NSString *dump, NSString *reason) {
     if (!dump.length) return;
+
+    // 1. Save structured plist (original)
     NSString *path = [NSTemporaryDirectory()
         stringByAppendingPathComponent:@"liquidass-tabbar.plist"];
     NSArray *existing = [NSArray arrayWithContentsOfFile:path];
@@ -1125,6 +1127,39 @@ static void LGPersistTabBarDump(NSString *dump, NSString *reason) {
     }];
     while (entries.count > 12) [entries removeObjectAtIndex:0];
     [entries writeToFile:path atomically:YES];
+
+    // 2. Also save plain text to Documents for easy access via Filza
+    NSString *docDir = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+    NSString *txtPath = [docDir stringByAppendingPathComponent:@"liquidass-tabbar-dump.txt"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:docDir]) {
+        [fm createDirectoryAtPath:docDir withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    NSString *timestamp = [NSDateFormatter localizedStringFromDate:[NSDate date]
+        dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterLongStyle];
+    NSString *header = [NSString stringWithFormat:
+        @"\n\n========================================\n"
+         "=== %@ | reason: %@ | bundle: %@\n"
+         "========================================\n",
+        timestamp, reason ?: @"unknown",
+        NSBundle.mainBundle.bundleIdentifier ?: @"unknown"];
+    NSString *fullText = [header stringByAppendingString:dump];
+    NSData *existingTxt = [NSData dataWithContentsOfFile:txtPath];
+    NSMutableData *allData = [NSMutableData data];
+    if (existingTxt) [allData appendData:existingTxt];
+    [allData appendData:[fullText dataUsingEncoding:NSUTF8StringEncoding]];
+    [allData writeToFile:txtPath atomically:YES];
+
+    // 3. Keep only last 5 dumps in text file to avoid bloat
+    if (allData.length > 50000) {
+        NSString *str = [[NSString alloc] initWithData:allData encoding:NSUTF8StringEncoding];
+        NSArray *parts = [str componentsSeparatedByString:@"========================================"];
+        if (parts.count > 11) { // 5 dumps = 11 parts (before first + 5*2)
+            NSArray *lastParts = [parts subarrayWithRange:NSMakeRange(parts.count - 11, 11)];
+            NSString *trimmed = [lastParts componentsJoinedByString:@"========================================"];
+            [trimmed writeToFile:txtPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
+    }
 }
 
 static NSString *LGTabBarColorDescription(UIColor *color) {
