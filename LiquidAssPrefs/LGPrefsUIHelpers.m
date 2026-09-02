@@ -1508,41 +1508,6 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
         versionLabel.textAlignment = NSTextAlignmentCenter;
     }
 
-    // Scrollable changelog card
-    UIView *changelogContainer = [[UIView alloc] initWithFrame:CGRectZero];
-    changelogContainer.translatesAutoresizingMaskIntoConstraints = NO;
-    changelogContainer.backgroundColor = LGSubpageCardBackgroundColor();
-    changelogContainer.layer.cornerRadius = 23.25;
-    changelogContainer.layer.cornerCurve = kCACornerCurveContinuous;
-    changelogContainer.layer.masksToBounds = YES;
-
-    UIScrollView *changelogScrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
-    changelogScrollView.translatesAutoresizingMaskIntoConstraints = NO;
-    changelogScrollView.showsVerticalScrollIndicator = YES;
-    changelogScrollView.alwaysBounceVertical = NO;
-    [changelogContainer addSubview:changelogScrollView];
-
-    UIStackView *markdownStack = [[UIStackView alloc] initWithFrame:CGRectZero];
-    markdownStack.axis = UILayoutConstraintAxisVertical;
-    markdownStack.alignment = UIStackViewAlignmentFill;
-    markdownStack.spacing = 7.0;
-    markdownStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [changelogScrollView addSubview:markdownStack];
-
-    // Loading indicator
-    [markdownStack addArrangedSubview:LGMakeAboutMarkdownLabel(@"正在获取版本信息…", [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular], UIColor.secondaryLabelColor)];
-
-    // Async fetch from GitHub only (no local fallback)
-    LGFetchGitHubChangelog(packageVersion, ^(NSString * _Nullable markdownText) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (markdownText.length) {
-                LGUpdateAboutMarkdownStack(markdownStack, markdownText, packageVersion);
-            } else {
-                LGUpdateAboutMarkdownStack(markdownStack, @"", packageVersion);
-            }
-        });
-    });
-
     [stack addArrangedSubview:iconView];
     [stack addArrangedSubview:nameLabel];
     [stack addArrangedSubview:subtitleLabel];
@@ -1551,8 +1516,6 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
         [stack addArrangedSubview:versionLabel];
         lastHeader = versionLabel;
     }
-    [stack setCustomSpacing:18.0 afterView:lastHeader];
-    [stack addArrangedSubview:changelogContainer];
     [NSLayoutConstraint activateConstraints:@[
         [stack.topAnchor constraintEqualToAnchor:container.topAnchor constant:8.0],
         [stack.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
@@ -1562,18 +1525,6 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
         [nameLabel.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor constant:-18.0],
         [subtitleLabel.leadingAnchor constraintEqualToAnchor:stack.leadingAnchor constant:22.0],
         [subtitleLabel.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor constant:-22.0],
-        [changelogContainer.leadingAnchor constraintEqualToAnchor:stack.leadingAnchor],
-        [changelogContainer.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor],
-        [changelogContainer.heightAnchor constraintEqualToConstant:280.0],
-        [changelogScrollView.topAnchor constraintEqualToAnchor:changelogContainer.topAnchor],
-        [changelogScrollView.leadingAnchor constraintEqualToAnchor:changelogContainer.leadingAnchor],
-        [changelogScrollView.trailingAnchor constraintEqualToAnchor:changelogContainer.trailingAnchor],
-        [changelogScrollView.bottomAnchor constraintEqualToAnchor:changelogContainer.bottomAnchor],
-        [markdownStack.topAnchor constraintEqualToAnchor:changelogScrollView.contentLayoutGuide.topAnchor constant:16.0],
-        [markdownStack.leadingAnchor constraintEqualToAnchor:changelogScrollView.contentLayoutGuide.leadingAnchor constant:16.0],
-        [markdownStack.trailingAnchor constraintEqualToAnchor:changelogScrollView.contentLayoutGuide.trailingAnchor constant:-16.0],
-        [markdownStack.bottomAnchor constraintEqualToAnchor:changelogScrollView.contentLayoutGuide.bottomAnchor constant:-16.0],
-        [markdownStack.widthAnchor constraintEqualToAnchor:changelogScrollView.frameLayoutGuide.widthAnchor constant:-32.0],
     ]];
     return container;
 }
