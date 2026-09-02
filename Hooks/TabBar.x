@@ -607,7 +607,8 @@ static void LGStyleStockTabBar(UITabBar *bar) {
         // 清除标签栏背景色、背景图、阴影色、阴影图 (UIBarAppearance 方法)
         [appearance configureWithTransparentBackground];
         // 清除选中指示器 (新版 API)
-        appearance.selectionIndicatorBackgroundImage = nil;
+        appearance.selectionIndicatorImage = nil;
+        appearance.selectionIndicatorTintColor = UIColor.clearColor;
         bar.standardAppearance = appearance;
         if (@available(iOS 15.0, *)) {
             bar.scrollEdgeAppearance = appearance;
