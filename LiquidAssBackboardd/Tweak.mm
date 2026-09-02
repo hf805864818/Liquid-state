@@ -181,7 +181,6 @@ static bool           g_pipelineInit = false;
 // 充电/热状态降级: 从偏好文件读取 (SpringBoard 写入)
 static BOOL g_chargingActive = NO;  // 设备是否正在充电
 static NSUInteger g_thermalState = 0; // NSProcessInfoThermalState
-static uint32_t g_frameSkipCounter = 0; // 跳帧计数器
 
 static NSString * const kClockMaskPath =
     @"/var/mobile/Library/Accessibility/liquidglass-clock-mask.bin";
@@ -1238,28 +1237,10 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     static uint64_t tsum_stop = 0, tsum_ours = 0, tsum_gauss = 0, tcount = 0;
     uint64_t t_start = mach_absolute_time();
 
-    // 充电 + 热状态≥Fair 时隔帧渲染，GPU 负载减半
-    // 跳帧时调用原始 Gaussian 渲染，保持基础模糊效果
-    BOOL shouldSkipThisFrame = NO;
-    if (g_chargingActive && g_thermalState >= 2) {
-        g_frameSkipCounter++;
-        shouldSkipThisFrame = (g_frameSkipCounter % 2 == 0);
-    } else if (g_thermalState >= 3) {
-        // 热状态≥Serious 时无论是否充电都跳帧
-        g_frameSkipCounter++;
-        shouldSkipThisFrame = (g_frameSkipCounter % 2 == 0);
-    }
-    if (shouldSkipThisFrame) {
-        // 跳过此帧 — 调用原始 Gaussian 渲染保持基础模糊
-        if (g_inLegacyRender && g_origGaussR14) {
-            g_origGaussR14(self, filter, layer, ctx, opacity, surface, scale,
-                           g_legacyRenderOffset, cm, shape, out);
-        } else if (g_origGaussR13) {
-            g_origGaussR13(self, filter, layer, ctx, opacity, surface, scale,
-                           flag, cm, shape, out);
-        }
-        return;
-    }
+    // 注意: 不再使用隔帧渲染 (frame skipping)。
+    // 隔帧渲染会在自定义液态渲染和原始 Gaussian 渲染之间交替，
+    // 两条渲染路径的视觉差异 (折射/色散/高光) 会导致明显闪烁。
+    // 改为始终使用自定义渲染器，仅通过参数降级 (refraction/dispersion/fresnel) 控制负载。
 
     // trace only the first calls so render logs stay usable
     static uint64_t g_traceCalls = 0;

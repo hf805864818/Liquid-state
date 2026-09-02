@@ -820,13 +820,27 @@ static void roundModuleContainer(UIView *module) {
 #pragma mark - hooks
 
 %hook CCUIContentModuleContainerView
-- (void)layoutSubviews { %orig; roundModuleContainer((UIView *)self); }
-- (void)didMoveToWindow { %orig; roundModuleContainer((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    roundModuleContainer((UIView *)self);
+}
+- (void)didMoveToWindow {
+    %orig;
+    roundModuleContainer((UIView *)self);
+}
 %end
 
 %hook CCUIButtonModuleView
-- (void)layoutSubviews { %orig; roundToggleFills((UIView *)self); ccUpdateButtonModuleGlass((UIView *)self); }
-- (void)didMoveToWindow { %orig; roundToggleFills((UIView *)self); ccUpdateButtonModuleGlass((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    roundToggleFills((UIView *)self);
+    ccUpdateButtonModuleGlass((UIView *)self);
+}
+- (void)didMoveToWindow {
+    %orig;
+    roundToggleFills((UIView *)self);
+    ccUpdateButtonModuleGlass((UIView *)self);
+}
 %end
 
 // Display link for real-time slider value polling (catches changes not triggered by layout)
@@ -875,7 +889,11 @@ static void ccSliderStopDisplayLink(UIView *slider) {
 }
 
 %hook CCUIContinuousSliderView
-- (void)layoutSubviews { %orig; roundContinuousSliderFill((UIView *)self); ccSliderUpdateAll((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    roundContinuousSliderFill((UIView *)self);
+    ccSliderUpdateAll((UIView *)self);
+}
 - (void)didMoveToWindow {
     %orig;
     roundContinuousSliderFill((UIView *)self);
@@ -911,7 +929,11 @@ static void ccSliderStopDisplayLink(UIView *slider) {
 %end
 
 %hook MRUContinuousSliderView
-- (void)layoutSubviews { %orig; roundMRUSliderFill((UIView *)self); ccSliderUpdateAll((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    roundMRUSliderFill((UIView *)self);
+    ccSliderUpdateAll((UIView *)self);
+}
 - (void)didMoveToWindow {
     %orig;
     roundMRUSliderFill((UIView *)self);

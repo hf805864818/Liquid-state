@@ -241,15 +241,10 @@ static void LGThermalStateChanged(void) {
     // 热状态变化时重新评估运动传感器
     if (sLGMotionSetup) LGRefreshMotionHighlights();
 
-    // 重新应用所有滤镜 (降采样率变化)
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        for (LGLiveBackdropView *glass in sLGAllGlasses.allObjects) {
-            [glass reapplyFilterForParameterReload];
-        }
-        [CATransaction commit];
-    });
+    // 不直接调用 reapplyFilterForParameterReload。
+    // 上面的 notify_post 会触发通知链: backboardd 重新读取参数后
+    // 发回 kLGParametersReloaded 通知, SpringBoard 的 LGParametersReloaded
+    // 会统一刷新所有 glass 的滤镜。避免双重刷新导致的闪烁。
 }
 
 // 充电状态变化回调
@@ -272,15 +267,9 @@ static void LGBatteryStateDidChange(NSNotification *note) {
         notify_post(LGPrefsChangedNotificationCString);
         LGUpdatePerformanceDegradedState();
         if (sLGMotionSetup) LGRefreshMotionHighlights();
-        // 充电状态变化时重新应用所有滤镜
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            for (LGLiveBackdropView *glass in sLGAllGlasses.allObjects) {
-                [glass reapplyFilterForParameterReload];
-            }
-            [CATransaction commit];
-        });
+        // 不直接调用 reapplyFilterForParameterReload, 避免双重刷新。
+        // notify_post 已触发通知链, backboardd 刷新后会通过
+        // kLGParametersReloaded 通知回到 SpringBoard 统一刷新。
     }
 }
 
@@ -1058,8 +1047,11 @@ static void LGReportMemoryUsageIfNeeded(void) {
 
     _parameterRefreshVariant = !_parameterRefreshVariant;
 
+    // 只重置 scale，不重置 _filterAttached。
+    // 这样 applyFilters 会重新评估 scale，
+    // 但如果 filter 类型未变，会走 early return 路径，
+    // 避免替换 layer.filters 数组导致的闪烁。
     _appliedScale = -1.0;
-    _filterAttached = NO;
     [self applyFilters];
     [self.layer setNeedsDisplay];
 }

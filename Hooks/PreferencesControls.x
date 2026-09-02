@@ -1302,7 +1302,10 @@ static void LGSettingsSuppressModernSwitchElementIfNeeded(UIView *element) {
     if (!self.window) LGStopSettingsSegmentDisplayLink((UISegmentedControl *)self);
     LGProfiledInstallSettingsSegmentGlass((UISegmentedControl *)self);
 }
-- (void)layoutSubviews { %orig; LGProfiledInstallSettingsSegmentGlass((UISegmentedControl *)self); }
+- (void)layoutSubviews {
+    %orig;
+    LGProfiledInstallSettingsSegmentGlass((UISegmentedControl *)self);
+}
 - (void)setSelectedSegmentIndex:(NSInteger)index {
     %orig;
     LGProfiledInstallSettingsSegmentGlass((UISegmentedControl *)self);

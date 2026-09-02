@@ -374,9 +374,18 @@ static void restorePasscodeForDisable(void) {
 %end
 
 %hook CSPasscodeBackgroundView
-- (void)didMoveToWindow { %orig; updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self)); }
-- (void)layoutSubviews  { %orig; updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self)); }
-- (void)setHidden:(BOOL)hidden { %orig; updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self)); }
+- (void)didMoveToWindow {
+    %orig;
+    updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self));
+}
+- (void)layoutSubviews {
+    %orig;
+    updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self));
+}
+- (void)setHidden:(BOOL)hidden {
+    %orig;
+    updatePasscodeVisible(passcodeBackgroundVisible((UIView *)self));
+}
 %end
 
 %ctor {

@@ -253,15 +253,27 @@ __attribute__((constructor)) static void lgGlassInitEnableObserver(void) {
     lgRouteMaterialHost((UIView *)self);
 }
 
-- (void)layoutSubviews { %orig; lgRouteMaterialHost((UIView *)self); }
+- (void)layoutSubviews {
+    %orig;
+    lgRouteMaterialHost((UIView *)self);
+}
 
 - (void)setHidden:(BOOL)hidden {
     if (LGMaterialHasGlass((UIView *)self, kGlassKey)) hidden = YES;
     %orig(hidden);
 }
 
-- (void)setFrame:(CGRect)frame   { %orig;  LGResyncGlassGeometry((UIView *)self, kGlassKey); }
-- (void)setBounds:(CGRect)bounds { %orig; LGResyncGlassGeometry((UIView *)self, kGlassKey); }
-- (void)setCenter:(CGPoint)center{ %orig; LGResyncGlassGeometry((UIView *)self, kGlassKey); }
+- (void)setFrame:(CGRect)frame {
+    %orig;
+    LGResyncGlassGeometry((UIView *)self, kGlassKey);
+}
+- (void)setBounds:(CGRect)bounds {
+    %orig;
+    LGResyncGlassGeometry((UIView *)self, kGlassKey);
+}
+- (void)setCenter:(CGPoint)center {
+    %orig;
+    LGResyncGlassGeometry((UIView *)self, kGlassKey);
+}
 
 %end
