@@ -774,6 +774,34 @@ static void roundToggleFills(UIView *buttonModule) {
         if (isExactClass(child, @"UIView")) ccApplyOrRestoreRound(child, r, eligible);
 }
 
+// 直接给小圆形按钮 (手电筒/计时器等) 注入玻璃效果
+// 这些按钮内部没有 MTMaterialView, 不会被标准的玻璃路由系统处理
+static void *kCCButtonGlassKey = &kCCButtonGlassKey;
+
+static void ccUpdateButtonModuleGlass(UIView *buttonModule) {
+    if (!lgHostEnabled(@"ControlCenter")) {
+        for (UIView *child in buttonModule.subviews)
+            if (isExactClass(child, @"UIView"))
+                LGRemoveGlassFromMaterial(child, kCCButtonGlassKey);
+        return;
+    }
+    if (!buttonModule.window || CGRectIsEmpty(buttonModule.bounds)) {
+        for (UIView *child in buttonModule.subviews)
+            if (isExactClass(child, @"UIView"))
+                LGRemoveGlassFromMaterial(child, kCCButtonGlassKey);
+        return;
+    }
+    // 找到背景填充 UIView (第一个纯 UIView 子视图)
+    UIView *fillView = nil;
+    for (UIView *child in buttonModule.subviews) {
+        if (isExactClass(child, @"UIView")) { fillView = child; break; }
+    }
+    if (!fillView || CGRectIsEmpty(fillView.bounds)) return;
+    CGFloat radius = ccPillRadius(fillView);
+    LGInstallRegisteredGlassInMaterial(fillView, kCCButtonGlassKey, @"ControlCenter",
+                                       UIEdgeInsetsZero, radius, nil);
+}
+
 static void roundModuleContainer(UIView *module) {
     if (!isExactClass(module, @"CCUIContentModuleContainerView")) return;
     BOOL eligible = ccIsModuleCandidate(module);
@@ -793,8 +821,8 @@ static void roundModuleContainer(UIView *module) {
 %end
 
 %hook CCUIButtonModuleView
-- (void)layoutSubviews { %orig; roundToggleFills((UIView *)self); }
-- (void)didMoveToWindow { %orig; roundToggleFills((UIView *)self); }
+- (void)layoutSubviews { %orig; roundToggleFills((UIView *)self); ccUpdateButtonModuleGlass((UIView *)self); }
+- (void)didMoveToWindow { %orig; roundToggleFills((UIView *)self); ccUpdateButtonModuleGlass((UIView *)self); }
 %end
 
 // Display link for real-time slider value polling (catches changes not triggered by layout)
