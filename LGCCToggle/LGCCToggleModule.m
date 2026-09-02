@@ -201,6 +201,7 @@ static NSString * const kLGQuickToggleNotification = @"dylv.liquidass/QuickToggl
 
 @interface LGCCToggleModule : NSObject <CCUIContentModule>
 @property (nonatomic, strong) LGCCToggleContentViewController *contentViewController;
+@property (nonatomic, strong) id contentModuleContext;
 @end
 
 @implementation LGCCToggleModule
@@ -211,6 +212,10 @@ static NSString * const kLGQuickToggleNotification = @"dylv.liquidass/QuickToggl
         // Content view controller created lazily
     }
     return self;
+}
+
+- (void)setContentModuleContext:(id)context {
+    _contentModuleContext = context;
 }
 
 - (UIViewController<CCUIContentModuleContentViewController> *)contentViewController {

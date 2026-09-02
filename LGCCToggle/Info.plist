@@ -4,10 +4,14 @@
     CFBundleIdentifier = "dylv.liquidglass.cctoggle";
     CFBundleInfoDictionaryVersion = "6.0";
     CFBundleName = "Ai液态玻璃";
+    CFBundleDisplayName = "Ai液态玻璃";
     CFBundlePackageType = BNDL;
     CFBundleShortVersionString = "1.0";
     CFBundleSignature = "????";
     CFBundleVersion = "1.0";
     NSPrincipalClass = LGCCToggleModule;
     "CCModuleIdentifier" = "dylv.liquidglass.cctoggle";
+    "CCSupportedModuleSizes" = (
+        small
+    );
 }
