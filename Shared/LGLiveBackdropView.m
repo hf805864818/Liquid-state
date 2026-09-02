@@ -799,9 +799,23 @@ static void LGReportMemoryUsageIfNeeded(void) {
 
 - (void)didMoveToWindow {
     [super didMoveToWindow];
-    [self applyFilters];
-    // Window changed → re-evaluate whether motion sensor needs to be running
-    if (sLGMotionSetup) LGRefreshMotionHighlights();
+    if (!self.window) {
+        // 视图离开窗口: 停止 GPU 模糊渲染
+        // CABackdropLayer 和 _nativeBlurLayer 在视图不可见时仍会
+        // 在 render server 中持续合成, 浪费大量 GPU 资源
+        self.layer.filters = @[];
+        if (_nativeBlurLayer) {
+            [_nativeBlurLayer removeFromSuperlayer];
+            _nativeBlurLayer = nil;
+            _nativeBlurRadius = 0.0;
+        }
+        _filterAttached = NO;
+        if (sLGMotionSetup) LGRefreshMotionHighlights();
+    } else {
+        // 视图回到窗口: 重新挂载滤镜
+        [self applyFilters];
+        if (sLGMotionSetup) LGRefreshMotionHighlights();
+    }
 }
 
 - (void)setHidden:(BOOL)hidden {
