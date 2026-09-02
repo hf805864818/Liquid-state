@@ -190,8 +190,8 @@ static CGFloat LGThermalScaleFactor(void) {
             factor = 1.0;
             break;
     }
-    // 充电时进一步降低 scale，减少 GPU 模糊计算量
-    if (sLGCharging) factor *= 0.70;
+    // 充电时轻微降低 scale，减少 GPU 模糊计算量 (不能太低否则边缘模糊)
+    if (sLGCharging) factor *= 0.90;
     return factor;
 }
 

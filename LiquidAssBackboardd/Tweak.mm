@@ -1045,20 +1045,19 @@ static void lgReloadHostPrefs(void) {
         }
     }
 
-    // 充电模式优化: 充电时减少渲染开销 (配合跳帧策略)
-    if (g_chargingActive) {
+    // 充电模式优化: 仅在热状态≥Fair时降低渲染参数
+    // 充电+Nominal热状态时不降级，避免边缘模糊
+    if (g_chargingActive && g_thermalState >= 2) {
         int chargeOverrides = 0;
         for (int i = 1; i < kHostCount; i++) {
-            // 减少折射强度 (最耗 GPU 的部分)
-            g_hostParams[i].refractionScale *= 0.6f;
-            // 减少色散
-            g_hostParams[i].dispersionStrength *= 0.3f;
-            // 减少 Fresnel 眩光
-            g_hostParams[i].glassThickness *= 0.8f;
+            // 轻微减少折射 (保持边缘清晰度)
+            g_hostParams[i].refractionScale *= 0.85f;
+            // 减少色散 (色散不影响边缘)
+            g_hostParams[i].dispersionStrength *= 0.5f;
             chargeOverrides++;
         }
-        g_fresnelGlareStrength *= 0.5f;
-        lglog("charging mode: refraction -40%%, dispersion -70%%, fresnel -50%%, hosts=%d",
+        g_fresnelGlareStrength *= 0.7f;
+        lglog("charging+thermal mode: refraction -15%%, dispersion -50%%, fresnel -30%%, hosts=%d",
               chargeOverrides);
     }
 
