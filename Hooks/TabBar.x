@@ -599,17 +599,20 @@ static void LGStyleStockTabBar(UITabBar *bar) {
     // 通过 UITabBarAppearance API 清除系统选中背景 (iOS 13+)
     // 这是方块阴影的真正来源 — iOS 通过外观 API 渲染选中背景,
     // 不是通过视图的 backgroundColor, 所以清除视图属性无效
+    // 注意: configureWithTransparentBackground 是 UIBarAppearance 的方法,
+    // 只能在 UITabBarAppearance 上调用, 不能在 UITabBarItemAppearance 上调用
     if (@available(iOS 13.0, *)) {
         UITabBarAppearance *appearance = [bar.standardAppearance copy];
         if (!appearance) appearance = [[UITabBarAppearance alloc] init];
-        [appearance.stackedLayoutAppearance configureWithTransparentBackground];
-        [appearance.inlineLayoutAppearance configureWithTransparentBackground];
-        [appearance.compactInlineLayoutAppearance configureWithTransparentBackground];
+        // 清除标签栏背景和阴影 (UIBarAppearance 方法)
+        [appearance configureWithTransparentBackground];
+        // 清除选中指示器
         appearance.selectionIndicatorBackgroundImage = nil;
         bar.standardAppearance = appearance;
         if (@available(iOS 15.0, *)) {
             bar.scrollEdgeAppearance = appearance;
         }
+        // 清除旧版选中指示器 API
         bar.selectionIndicatorImage = nil;
     }
 
