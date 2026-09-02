@@ -455,6 +455,35 @@ static BOOL LGIsInjectedTabBarView(UIView *view, UITabBar *bar) {
     return NO;
 }
 
+// 隐藏 UITabBarButton 内部的选中背景/阴影子视图
+// 只保留 UITabBarSwappableImageView(图标) 和 UITabBarButtonLabel(文字)
+static void LGHideTabBarButtonInternals(UITabBar *bar) {
+    Class buttonClass = objc_getClass("UITabBarButton");
+    for (UIView *button in bar.subviews) {
+        if (!buttonClass || ![button isKindOfClass:buttonClass]) continue;
+        // 清除按钮自身的 shadow 属性
+        button.layer.shadowOpacity = 0.0;
+        button.layer.shadowColor = UIColor.clearColor.CGColor;
+        button.layer.shadowRadius = 0.0;
+        button.layer.shadowOffset = CGSizeZero;
+        button.layer.shadowPath = nil;
+        // 递归隐藏按钮内部的非内容子视图
+        NSMutableArray<UIView *> *stack =
+            [NSMutableArray arrayWithArray:button.subviews];
+        while (stack.count) {
+            UIView *v = stack.lastObject;
+            [stack removeLastObject];
+            NSString *cn = NSStringFromClass(v.class);
+            BOOL isContent =
+                [cn isEqualToString:@"UITabBarSwappableImageView"] ||
+                [cn isEqualToString:@"UITabBarButtonLabel"];
+            if (!isContent) v.hidden = YES;
+            // 仍然递归查看子视图(已隐藏的父视图的子视图也会被隐藏)
+            for (UIView *child in v.subviews) [stack addObject:child];
+        }
+    }
+}
+
 static void LGHideTabBarShadowViews(UITabBar *bar) {
     Class buttonClass = objc_getClass("UITabBarButton");
     for (UIView *view in bar.subviews) {
@@ -467,6 +496,8 @@ static void LGHideTabBarShadowViews(UITabBar *bar) {
     bar.layer.shadowRadius = 0.0;
     bar.layer.shadowOffset = CGSizeZero;
     bar.layer.shadowPath = nil;
+    // 同时清除按钮内部的选中背景和 shadow
+    LGHideTabBarButtonInternals(bar);
 }
 
 static void LGUnhideTabBarShadowViews(UITabBar *bar) {
@@ -475,6 +506,18 @@ static void LGUnhideTabBarShadowViews(UITabBar *bar) {
         if (buttonClass && [view isKindOfClass:buttonClass]) continue;
         if (LGIsInjectedTabBarView(view, bar)) continue;
         view.hidden = NO;
+    }
+    // 恢复按钮内部被隐藏的子视图
+    for (UIView *button in bar.subviews) {
+        if (!buttonClass || ![button isKindOfClass:buttonClass]) continue;
+        NSMutableArray<UIView *> *stack =
+            [NSMutableArray arrayWithArray:button.subviews];
+        while (stack.count) {
+            UIView *v = stack.lastObject;
+            [stack removeLastObject];
+            v.hidden = NO;
+            for (UIView *child in v.subviews) [stack addObject:child];
+        }
     }
 }
 
