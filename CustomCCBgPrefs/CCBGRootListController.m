@@ -1,23 +1,35 @@
 #import <UIKit/UIKit.h>
 #import <Preferences/Preferences.h>
 #import <Photos/Photos.h>
+#import <AVFoundation/AVFoundation.h>
+#import <MobileCoreServices/MobileCoreServices.h>
+#import "CCBGProgressHUD.h"
+#import "CCBGMediaManager.h"
+#import "CCBGThumbnailButtonCell.h"
+
+// MARK: - 常量
+
+static NSString * const kCCBgPrefsDomain = @"dylv.Deepliquid.ccbg";
+static NSString * const kCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadPrefs";
+
+// 偏好设置 key
+static NSString * const kCCBgEnabledKey = @"Enabled";
+static NSString * const kCCBgBlurAlphaKey = @"BlurAlpha";
+static NSString * const kCCBgBackgroundModeKey = @"BackgroundMode"; // 0=全屏, 1=模块级
+static NSString * const kCCBgConnectModuleEnabledKey = @"ConnectModuleBgEnabled";
+static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 
 // PSSpecifier private method declarations
 @interface PSSpecifier (Private)
 + (PSSpecifier *)groupSpecifierWithProperties:(NSDictionary *)properties;
 @end
 
-static NSString * const kCCBgPrefsDomain = @"dylv.Deepliquid.ccbg";
-static NSString * const kCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadPrefs";
-static NSString * const kCCBgMediaDirectory = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media";
-static NSString * const kCCBgImageFileName = @"background.jpg";
-static NSString * const kCCBgVideoFileName = @"background.mp4";
-
-@interface CCBGRootListController : PSListController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+@interface CCBGRootListController : PSListController
 - (PSSpecifier *)groupSpecifierWithName:(NSString *)name footerText:(NSString *)footer;
 - (PSSpecifier *)switchSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue;
 - (PSSpecifier *)sliderSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue min:(id)min max:(id)max;
 - (PSSpecifier *)buttonSpecifierWithTitle:(NSString *)title action:(SEL)action;
+- (PSSpecifier *)thumbnailButtonSpecifierWithTitle:(NSString *)title action:(SEL)action;
 - (id)readPreferenceValue:(PSSpecifier *)specifier;
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier;
 @end
@@ -28,35 +40,42 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
     if (!_specifiers) {
         NSMutableArray *specs = [NSMutableArray array];
 
-        // 全局开关组
+        // 分组1：全局开关
         [specs addObject:[self groupSpecifierWithName:@"全局开关" footerText:nil]];
-        [specs addObject:[self switchSpecifierWithKey:@"Enabled"
+        [specs addObject:[self switchSpecifierWithKey:kCCBgEnabledKey
                                                   title:@"开启自定义控制中心背景"
                                                defaultValue:@(NO)]];
 
-        // 背景模式组
-        [specs addObject:[self groupSpecifierWithName:@"背景模式"
-                                            footerText:@"全屏背景: 背景图/视频铺满整个控制中心\n模块级背景: 背景图/视频显示在每个独立模块内部"]];
-        [specs addObject:[self buttonSpecifierWithTitle:@"选择背景模式"
-                                                   action:@selector(chooseBackgroundMode:)]];
-
-        // 背景设置组
+        // 分组2：背景设置
         [specs addObject:[self groupSpecifierWithName:@"背景设置" footerText:nil]];
-        [specs addObject:[self buttonSpecifierWithTitle:@"选择控制中心背景 (图片/视频)"
-                                                   action:@selector(chooseMedia:)]];
+        [specs addObject:[self thumbnailButtonSpecifierWithTitle:@"选择控制中心背景 (图片/视频)"
+                                                            action:@selector(chooseMedia:)]];
         [specs addObject:[self buttonSpecifierWithTitle:@"清除背景"
                                                    action:@selector(clearMedia:)]];
 
-        // 模糊度组
-        [specs addObject:[self groupSpecifierWithName:@"背景模糊度调节" footerText:@"调整控制中心背景的毛玻璃强度"]];
-        [specs addObject:[self sliderSpecifierWithKey:@"BlurAlpha"
+        // 分组3：背景模糊度调节
+        [specs addObject:[self groupSpecifierWithName:@"背景模糊度调节"
+                                            footerText:@"调整控制中心背景的毛玻璃强度"]];
+        [specs addObject:[self sliderSpecifierWithKey:kCCBgBlurAlphaKey
                                                    title:nil
                                               defaultValue:@(0.3)
                                                      min:@(0.0)
                                                      max:@(1.0)]];
 
-        // 高级选项
+        // 分组4：特定模块背景
+        [specs addObject:[self groupSpecifierWithName:@"特定模块背景"
+                                            footerText:@"关闭全屏背景时生效，仅在指定模块内显示背景"]];
+        [specs addObject:[self switchSpecifierWithKey:kCCBgConnectModuleEnabledKey
+                                                  title:@"连接模块背景"
+                                               defaultValue:@(NO)]];
+        [specs addObject:[self switchSpecifierWithKey:kCCBgMediaModuleEnabledKey
+                                                  title:@"播放控制模块背景"
+                                               defaultValue:@(NO)]];
+
+        // 分组5：高级选项
         [specs addObject:[self groupSpecifierWithName:@"高级选项" footerText:nil]];
+        [specs addObject:[self buttonSpecifierWithTitle:@"背景模式选择"
+                                                   action:@selector(chooseBackgroundMode:)]];
         [specs addObject:[self buttonSpecifierWithTitle:@"跳转 Filza 路径"
                                                    action:@selector(openFilzaPath:)]];
 
@@ -64,6 +83,14 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
     }
     return _specifiers;
 }
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // 页面出现时刷新缩略图
+    [self.tableView reloadData];
+}
+
+#pragma mark - 偏好读写
 
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
@@ -86,36 +113,18 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
 #pragma mark - Actions
 
 - (void)chooseMedia:(PSSpecifier *)specifier {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"选择背景"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"从相册选择图片"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:@"public.image"];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"从相册选择视频"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        [self presentImagePickerWithSourceType:UIImagePickerControllerSourceTypePhotoLibrary mediaType:@"public.movie"];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-
-    // iPad 适配
-    alert.popoverPresentationController.sourceView = self.view;
-    alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
-
-    [self presentViewController:alert animated:YES completion:nil];
+    // 直接打开 PHPicker（图片和视频都可以选）
+    if (@available(iOS 14, *)) {
+        [self presentPHPicker];
+    } else {
+        // iOS 13 及以下降级：先弹窗选类型
+        [self presentLegacyPickerWithActionSheet];
+    }
 }
 
 - (void)chooseBackgroundMode:(PSSpecifier *)specifier {
     NSInteger currentMode = 0;
-    CFPropertyListRef val = CFPreferencesCopyAppValue(CFSTR("BackgroundMode"),
+    CFPropertyListRef val = CFPreferencesCopyAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey,
                                                       (__bridge CFStringRef)kCCBgPrefsDomain);
     if (val) {
         currentMode = [(__bridge NSNumber *)val integerValue];
@@ -129,7 +138,7 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
     [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"全屏背景%@", currentMode == 0 ? @" ✓" : @""]
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
-        CFPreferencesSetAppValue(CFSTR("BackgroundMode"), (__bridge CFPropertyListRef)@(0),
+        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0),
                                 (__bridge CFStringRef)kCCBgPrefsDomain);
         CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
         [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
@@ -139,7 +148,7 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
     [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"模块级背景%@", currentMode == 1 ? @" ✓" : @""]
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
-        CFPreferencesSetAppValue(CFSTR("BackgroundMode"), (__bridge CFPropertyListRef)@(1),
+        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(1),
                                 (__bridge CFStringRef)kCCBgPrefsDomain);
         CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
         [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
@@ -156,50 +165,21 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)presentImagePickerWithSourceType:(UIImagePickerControllerSourceType)type mediaType:(NSString *)mediaType {
-    [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (status != PHAuthorizationStatusAuthorized) {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法访问相册"
-                                                                               message:@"请在设置中允许访问相册"
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
-                [self presentViewController:alert animated:YES completion:nil];
-                return;
-            }
-
-            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
-            picker.sourceType = type;
-            picker.mediaTypes = @[mediaType];
-            picker.delegate = self;
-            picker.allowsEditing = NO;
-            [self presentViewController:picker animated:YES completion:nil];
-        });
-    }];
-}
-
 - (void)clearMedia:(PSSpecifier *)specifier {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"清除背景"
                                                                    message:@"确定要清除当前设置的控制中心背景吗？"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *dir = kCCBgMediaDirectory;
-        NSError *error = nil;
-        for (NSString *fname in @[kCCBgImageFileName, kCCBgVideoFileName]) {
-            NSString *path = [dir stringByAppendingPathComponent:fname];
-            if ([fm fileExistsAtPath:path]) {
-                [fm removeItemAtPath:path error:&error];
-            }
-        }
+        [[CCBGMediaManager sharedManager] clearAllMedia];
         [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
+        [self.tableView reloadData];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)openFilzaPath:(PSSpecifier *)specifier {
-    NSString *path = [@"filza://" stringByAppendingString:kCCBgMediaDirectory];
+    NSString *path = [@"filza://" stringByAppendingString:[CCBGMediaManager sharedManager].mediaDirectory];
     NSURL *url = [NSURL URLWithString:path];
     if ([[UIApplication sharedApplication] canOpenURL:url]) {
         [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
@@ -212,44 +192,234 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
     }
 }
 
-#pragma mark - UIImagePickerControllerDelegate
+#pragma mark - PHPicker (iOS 14+)
+
+- (void)presentPHPicker API_AVAILABLE(ios(14)) {
+    // PHPicker 不需要权限申请，用户自己选择
+    Class PHPickerConfigurationClass = NSClassFromString(@"PHPickerConfiguration");
+    Class PHPickerViewControllerClass = NSClassFromString(@"PHPickerViewController");
+    Class PHPickerFilterClass = NSClassFromString(@"PHPickerFilter");
+
+    if (!PHPickerConfigurationClass || !PHPickerViewControllerClass) {
+        // 降级
+        [self presentLegacyPickerWithActionSheet];
+        return;
+    }
+
+    id config = [[PHPickerConfigurationClass alloc] init];
+
+    // filter = [PHPickerFilter anyFilterMatchingSubfilters:@[images, videos]]
+    id imagesFilter = [PHPickerFilterClass imagesFilter];
+    id videosFilter = [PHPickerFilterClass videosFilter];
+    id anyFilter = [PHPickerFilterClass anyFilterMatchingSubfilters:@[imagesFilter, videosFilter]];
+    [config setValue:anyFilter forKey:@"filter"];
+
+    [config setValue:@(1) forKey:@"selectionLimit"]; // 单选
+
+    UIViewController *picker = [[PHPickerViewControllerClass alloc] initWithConfiguration:config];
+    [picker setValue:self forKey:@"delegate"];
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+// PHPickerViewControllerDelegate 方法（用运行时实现，避免编译依赖）
+- (void)picker:(UIViewController *)picker didFinishPicking:(NSArray *)results API_AVAILABLE(ios(14)) {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+
+    if (results.count == 0) return;
+
+    id result = results.firstObject;
+    NSString *itemIdentifier = [result valueForKey:@"itemIdentifier"];
+    if (!itemIdentifier) return;
+
+    // 显示处理中 HUD
+    [CCBGProgressHUD showInView:self.view text:@"处理中..."];
+
+    // 用 NSItemProvider 加载
+    NSItemProvider *provider = [result valueForKey:@"itemProvider"];
+    if (!provider) {
+        [CCBGProgressHUD dismissFromView:self.view];
+        return;
+    }
+
+    // 先判断类型
+    if ([provider hasItemConformingToTypeIdentifier:(NSString *)kUTTypeMovie]) {
+        // 视频
+        [provider loadFileRepresentationForTypeIdentifier:(NSString *)kUTTypeMovie
+                                        completionHandler:^(NSURL * _Nullable url, NSError * _Nullable error) {
+            if (url && !error) {
+                // 先复制到临时目录（loadFileRepresentation 的 URL 是临时的，结束后会删除）
+                NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ccbg_temp_video.mp4"];
+                NSFileManager *fm = [NSFileManager defaultManager];
+                [fm removeItemAtPath:tempPath error:nil];
+                NSError *copyError = nil;
+                [fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:tempPath] error:&copyError];
+
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[CCBGMediaManager sharedManager] saveVideoFromURL:[NSURL fileURLWithPath:tempPath]
+                                                            completion:^(BOOL success) {
+                        [self didFinishSavingMedia:success];
+                    }];
+                });
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [CCBGProgressHUD dismissFromView:self.view];
+                });
+            }
+        }];
+    } else if ([provider hasItemConformingToTypeIdentifier:(NSString *)kUTTypeImage]) {
+        // 图片
+        [provider loadObjectOfClass:[UIImage class]
+                  completionHandler:^(id<NSItemProviderReading>  _Nullable object, NSError * _Nullable error) {
+            if (object && [object isKindOfClass:[UIImage class]]) {
+                UIImage *image = (UIImage *)object;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[CCBGMediaManager sharedManager] saveImage:image
+                                                    completion:^(BOOL success) {
+                        [self didFinishSavingMedia:success];
+                    }];
+                });
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [CCBGProgressHUD dismissFromView:self.view];
+                });
+            }
+        }];
+    } else {
+        [CCBGProgressHUD dismissFromView:self.view];
+    }
+}
+
+#pragma mark - 旧版选择器（iOS 13 及以下）
+
+- (void)presentLegacyPickerWithActionSheet {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"选择背景"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"从相册选择图片"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        [self presentLegacyImagePickerWithMediaType:@"public.image"];
+    }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"从相册选择视频"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        [self presentLegacyImagePickerWithMediaType:@"public.movie"];
+    }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+
+    alert.popoverPresentationController.sourceView = self.view;
+    alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentLegacyImagePickerWithMediaType:(NSString *)mediaType {
+    [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (status != PHAuthorizationStatusAuthorized) {
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法访问相册"
+                                                                               message:@"请在设置中允许访问相册"
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+                return;
+            }
+
+            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+            picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
+            picker.mediaTypes = @[mediaType];
+            picker.delegate = self;
+            picker.allowsEditing = NO;
+            [self presentViewController:picker animated:YES completion:nil];
+        });
+    }];
+}
+
+#pragma mark - UIImagePickerControllerDelegate (旧版)
 
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary *)info {
     [picker dismissViewControllerAnimated:YES completion:nil];
 
     NSString *mediaType = info[UIImagePickerControllerMediaType];
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *mediaDir = kCCBgMediaDirectory;
-    NSError *error = nil;
 
-    // 确保目录存在
-    [fm createDirectoryAtPath:mediaDir withIntermediateDirectories:YES attributes:nil error:&error];
+    // 显示处理中 HUD
+    [CCBGProgressHUD showInView:self.view text:@"处理中..."];
 
     if ([mediaType isEqualToString:@"public.image"]) {
         UIImage *image = info[UIImagePickerControllerOriginalImage];
-        NSData *imageData = UIImageJPEGRepresentation(image, 0.85);
-        NSString *destPath = [mediaDir stringByAppendingPathComponent:kCCBgImageFileName];
-        // 先清除旧视频
-        [fm removeItemAtPath:[mediaDir stringByAppendingPathComponent:kCCBgVideoFileName] error:nil];
-        [imageData writeToFile:destPath atomically:YES];
+        [[CCBGMediaManager sharedManager] saveImage:image completion:^(BOOL success) {
+            [self didFinishSavingMedia:success];
+        }];
     } else if ([mediaType isEqualToString:@"public.movie"]) {
         NSURL *videoURL = info[UIImagePickerControllerMediaURL];
-        NSString *destPath = [mediaDir stringByAppendingPathComponent:kCCBgVideoFileName];
-        // 先清除旧图片
-        [fm removeItemAtPath:[mediaDir stringByAppendingPathComponent:kCCBgImageFileName] error:nil];
-        [fm copyItemAtPath:videoURL.path toPath:destPath error:&error];
+        [[CCBGMediaManager sharedManager] saveVideoFromURL:videoURL completion:^(BOOL success) {
+            [self didFinishSavingMedia:success];
+        }];
     }
-
-    // 自动开启
-    CFPreferencesSetAppValue(CFSTR("Enabled"), kCFBooleanTrue, (__bridge CFStringRef)kCCBgPrefsDomain);
-    CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
-    [self reloadSpecifiers];
-
-    [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
 }
 
 - (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
     [picker dismissViewControllerAnimated:YES completion:nil];
+}
+
+#pragma mark - 保存完成回调
+
+- (void)didFinishSavingMedia:(BOOL)success {
+    [CCBGProgressHUD dismissFromView:self.view];
+
+    if (success) {
+        // 自动开启
+        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey,
+                                 kCFBooleanTrue,
+                                 (__bridge CFStringRef)kCCBgPrefsDomain);
+        CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
+
+        [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
+        [self.tableView reloadData];
+    }
+}
+
+#pragma mark - UITableViewDelegate（自定义缩略图 cell）
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    PSSpecifier *specifier = [self specifierForIndexPath:indexPath];
+    NSString *actionName = [specifier propertyForKey:@"action"];
+
+    // 如果是缩略图按钮 cell
+    if ([actionName isEqualToString:NSStringFromSelector(@selector(chooseMedia:))]) {
+        static NSString *thumbCellId = @"CCBgThumbnailButtonCell";
+        CCBGThumbnailButtonCell *cell = [tableView dequeueReusableCellWithIdentifier:thumbCellId];
+        if (!cell) {
+            cell = [[CCBGThumbnailButtonCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                  reuseIdentifier:thumbCellId];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
+        cell.textLabel.text = specifier.name;
+        [cell setThumbnailImage:[[CCBGMediaManager sharedManager] currentThumbnail]];
+        return cell;
+    }
+
+    // 其他 cell 走默认
+    return [super tableView:tableView cellForRowAtIndexPath:indexPath];
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    PSSpecifier *specifier = [self specifierForIndexPath:indexPath];
+    NSString *actionName = [specifier propertyForKey:@"action"];
+
+    // 缩略图按钮点击
+    if ([actionName isEqualToString:NSStringFromSelector(@selector(chooseMedia:))]) {
+        [tableView deselectRowAtIndexPath:indexPath animated:YES];
+        [self chooseMedia:specifier];
+        return;
+    }
+
+    [super tableView:tableView didSelectRowAtIndexPath:indexPath];
 }
 
 #pragma mark - Helper
@@ -299,6 +469,21 @@ static NSString * const kCCBgVideoFileName = @"background.mp4";
                                                         cell:PSButtonCell
                                                         edit:nil];
     [spec setProperty:NSStringFromSelector(action) forKey:@"action"];
+    return spec;
+}
+
+- (PSSpecifier *)thumbnailButtonSpecifierWithTitle:(NSString *)title action:(SEL)action {
+    // 用 PSButtonCell 类型，但在 cellForRow 里替换为自定义 cell
+    PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:title
+                                                      target:self
+                                                         set:nil
+                                                         get:nil
+                                                      detail:nil
+                                                        cell:PSButtonCell
+                                                        edit:nil];
+    [spec setProperty:NSStringFromSelector(action) forKey:@"action"];
+    // 标记这是缩略图按钮
+    [spec setProperty:@(YES) forKey:@"hasThumbnail"];
     return spec;
 }
 

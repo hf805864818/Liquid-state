@@ -21,6 +21,8 @@ static NSString * const kCCBgPreferencesDomain = @"dylv.Deepliquid.ccbg";
 static NSString * const kCCBgEnabledKey = @"Enabled";
 static NSString * const kCCBgBlurAlphaKey = @"BlurAlpha";
 static NSString * const kCCBgBackgroundModeKey = @"BackgroundMode"; // 0=全屏, 1=模块级
+static NSString * const kCCBgConnectModuleEnabledKey = @"ConnectModuleBgEnabled";
+static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 static NSString * const kCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadPrefs";
 static NSString * const kCCBgMediaDirectory = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media";
 static NSString * const kCCBgImageFileName = @"background.jpg";
@@ -34,6 +36,111 @@ typedef NS_ENUM(NSInteger, CCBgMode) {
 
 // 优化 B: 视频目标帧率 30fps,观感几乎无差别,解码+渲染功耗降低约40%
 static const NSInteger kCCBgTargetVideoFPS = 30;
+
+// 视频静音（默认静音，避免与系统媒体音量冲突）
+static const BOOL kCCBgVideoMuted = YES;
+
+// 模块级视频降分辨率优化
+static const BOOL kCCBgModuleVideoDownscaleEnabled = YES;
+static const NSInteger kCCBgModuleVideoMaxWidth = 480;
+
+// 控制中心收起动画时长（用于延迟恢复系统背景）
+static const NSTimeInterval kCCBgCCDismissAnimationDuration = 0.35;
+
+// MARK: - 工具函数
+
+// 递归查找视图层级中的 MTMaterialView
+static UIView *ccbgFindMaterialView(UIView *rootView) {
+    if (!rootView) return nil;
+    for (UIView *subview in rootView.subviews) {
+        NSString *className = NSStringFromClass([subview class]);
+        if ([className containsString:@"MTMaterialView"]) {
+            return subview;
+        }
+        UIView *found = ccbgFindMaterialView(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
+// 模块类型识别
+// 连接模块类名关键词
+static NSArray *ccbgConnectModuleKeywords() {
+    static NSArray *keywords = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keywords = @[@"Network", @"Connect", @"WiFi", @"Airplane", @"Cellular"];
+    });
+    return keywords;
+}
+
+// 播放控制模块类名关键词
+static NSArray *ccbgMediaModuleKeywords() {
+    static NSArray *keywords = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keywords = @[@"Media", @"NowPlaying", @"Playback", @"Audio"];
+    });
+    return keywords;
+}
+
+// 判断是否为连接模块（通过类名匹配）
+static BOOL ccbgIsConnectModule(UIView *view) {
+    if (!view) return NO;
+    NSString *className = NSStringFromClass([view class]);
+    for (NSString *keyword in ccbgConnectModuleKeywords()) {
+        if ([className rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return YES;
+        }
+    }
+    // 也检查父视图类名
+    UIView *superview = view.superview;
+    if (superview) {
+        NSString *superClassName = NSStringFromClass([superview class]);
+        for (NSString *keyword in ccbgConnectModuleKeywords()) {
+            if ([superClassName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                return YES;
+            }
+        }
+    }
+    return NO;
+}
+
+// 判断是否为播放控制模块（通过类名匹配）
+static BOOL ccbgIsMediaModule(UIView *view) {
+    if (!view) return NO;
+    NSString *className = NSStringFromClass([view class]);
+    for (NSString *keyword in ccbgMediaModuleKeywords()) {
+        if ([className rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return YES;
+        }
+    }
+    // 也检查父视图类名
+    UIView *superview = view.superview;
+    if (superview) {
+        NSString *superClassName = NSStringFromClass([superview class]);
+        for (NSString *keyword in ccbgMediaModuleKeywords()) {
+            if ([superClassName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                return YES;
+            }
+        }
+    }
+    return NO;
+}
+
+// 判断模块是否处于展开态（通过尺寸判断）
+static const CGFloat kCCBgExpandModuleMinSizeRatio = 0.6;
+
+static BOOL ccbgIsModuleExpanded(UIView *moduleView) {
+    if (!moduleView || !moduleView.window) return NO;
+    UIView *rootView = moduleView.window.rootViewController.view;
+    if (!rootView) return NO;
+    CGFloat moduleWidth = CGRectGetWidth(moduleView.bounds);
+    CGFloat rootWidth = CGRectGetWidth(rootView.bounds);
+    if (rootWidth <= 0) return NO;
+    // 模块宽度超过屏幕宽度的 60%，认为是展开态
+    return (moduleWidth / rootWidth) > kCCBgExpandModuleMinSizeRatio;
+}
 
 // MARK: - 图片预渲染模糊工具
 
@@ -130,7 +237,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     AVPlayerItem *item = [AVPlayerItem playerItemWithURL:url];
     self.player = [AVQueuePlayer queuePlayerWithItems:@[item]];
     self.playerLayer.player = self.player;
-    self.player.muted = YES;
+    self.player.muted = kCCBgVideoMuted;
     self.player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
 
     // 优化 B: 限制视频帧率到 30fps
@@ -282,7 +389,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 @property (nonatomic, strong) UIView *bgContainerView;
 @property (nonatomic, strong) UIImageView *imageView;
 @property (nonatomic, strong) CustomCCBgVideoView *videoView;
-// 移除 blurOverlayView,改用预渲染模糊图
+@property (nonatomic, weak) UIView *originalMaterialView; // 系统原毛玻璃背景（隐藏用）
 
 // 模块级模式属性
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, CCBgModuleBackground *> *moduleBackgrounds;
@@ -303,6 +410,8 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 @property (nonatomic, assign) CGFloat blurAlpha;
 @property (nonatomic, assign) CCBgMode backgroundMode;
 @property (nonatomic, assign) BOOL isControlCenterVisible;
+@property (nonatomic, assign) BOOL connectModuleBgEnabled;
+@property (nonatomic, assign) BOOL mediaModuleBgEnabled;
 // 优化 H: 控制中心关闭后延迟释放视频资源
 @property (nonatomic, strong) dispatch_source_t deferredReleaseTimer;
 
@@ -351,6 +460,8 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     self.blurAlpha = [defaults floatForKey:kCCBgBlurAlphaKey];
     if (self.blurAlpha <= 0) self.blurAlpha = 0.3;
     NSInteger mode = [defaults integerForKey:kCCBgBackgroundModeKey];
+    self.connectModuleBgEnabled = [defaults boolForKey:kCCBgConnectModuleEnabledKey];
+    self.mediaModuleBgEnabled = [defaults boolForKey:kCCBgMediaModuleEnabledKey];
     CCBgMode oldMode = self.backgroundMode;
     self.backgroundMode = (mode == kCCBgModePerModule) ? kCCBgModePerModule : kCCBgModeFullscreen;
 
@@ -447,7 +558,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
             [item setValue:rangeValue forKey:@"preferredFrameRateRange"];
         }
         self.sharedVideoPlayer = [AVQueuePlayer queuePlayerWithItems:@[item]];
-        self.sharedVideoPlayer.muted = YES;
+        self.sharedVideoPlayer.muted = kCCBgVideoMuted;
         self.sharedVideoPlayer.actionAtItemEnd = AVPlayerActionAtItemEndNone;
         self.sharedLooper = [AVPlayerLooper playerLooperWithPlayer:self.sharedVideoPlayer templateItem:item];
     }
@@ -484,6 +595,15 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         // 延迟释放：完全销毁视频资源，降低后台内存和解码器功耗
         if (strongSelf.backgroundMode == kCCBgModeFullscreen) {
             [strongSelf detachVideoView];
+            // 特定模块模式也释放共享视频
+            if (strongSelf.sharedVideoPlayer) {
+                [strongSelf.sharedVideoPlayer pause];
+                strongSelf.sharedVideoPlayer = nil;
+            }
+            strongSelf.sharedLooper = nil;
+            for (CCBgModuleBackground *bg in strongSelf.moduleBackgrounds.allValues) {
+                [bg setVideoLayerHidden:YES];
+            }
         } else {
             if (strongSelf.sharedVideoPlayer) {
                 [strongSelf.sharedVideoPlayer pause];
@@ -508,11 +628,37 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     if (visible) {
         // 控制中心可见:取消延迟释放，恢复播放
         [self cancelDeferredRelease];
+
+        // 恢复系统毛玻璃隐藏状态（如果是全屏模式）
+        if (self.backgroundMode == kCCBgModeFullscreen && self.originalMaterialView) {
+            self.originalMaterialView.hidden = self.isEnabled;
+        }
+
         if (self.backgroundMode == kCCBgModeFullscreen) {
+            // 立即显示背景（与控制中心同步出现）
+            self.bgContainerView.hidden = !self.isEnabled;
             if (self.videoView && self.isEnabled) [self.videoView play];
             else if (self.isEnabled && self.cachedHasVideo) {
                 // 视频已被延迟释放，重新加载
                 [self updateBackgroundView];
+            }
+
+            // 全屏关闭但特定模块开启时，也需要处理共享视频播放器
+            if (!self.isEnabled && (self.connectModuleBgEnabled || self.mediaModuleBgEnabled)) {
+                if (self.sharedVideoPlayer && self.cachedHasVideo && self.sharedVideoPlayer.rate == 0) {
+                    [self.sharedVideoPlayer play];
+                } else if (self.cachedHasVideo && !self.sharedVideoPlayer) {
+                    AVQueuePlayer *player = [self getSharedVideoPlayer];
+                    if (player) {
+                        [player play];
+                        for (CCBgModuleBackground *bg in self.moduleBackgrounds.allValues) {
+                            [bg setVideoLayerHidden:NO];
+                        }
+                    }
+                }
+                for (CCBgModuleBackground *bg in self.moduleBackgrounds.allValues) {
+                    [bg setVideoLayerHidden:NO];
+                }
             }
         } else {
             // 模块级模式
@@ -535,13 +681,30 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             }
         }
     } else {
-        // 控制中心不可见:暂停视频，并安排延迟释放
+        // 控制中心不可见:立即隐藏背景，暂停视频，并安排延迟释放
         if (self.backgroundMode == kCCBgModeFullscreen) {
+            // 立即隐藏背景（与控制中心收起动画同步）
+            self.bgContainerView.hidden = YES;
             if (self.videoView) [self.videoView pause];
+
+            // 特定模块模式下也暂停共享视频
+            if (self.sharedVideoPlayer) [self.sharedVideoPlayer pause];
+
+            // 延迟恢复系统毛玻璃（等收起动画结束）
+            __weak typeof(self) weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCCBgCCDismissAnimationDuration * NSEC_PER_SEC)),
+                          dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                // 只有在控制中心仍然不可见时才恢复
+                if (!strongSelf.isControlCenterVisible && strongSelf.originalMaterialView) {
+                    strongSelf.originalMaterialView.hidden = NO;
+                }
+            });
         } else {
             if (self.sharedVideoPlayer) [self.sharedVideoPlayer pause];
         }
-        // 优化 H: 30秒后仍未打开控制中心，则释放视频资源
+        // 优化 H: 延迟释放视频资源
         [self scheduleDeferredRelease];
     }
 }
@@ -561,10 +724,24 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     [self detachFullscreenViews];
     self.hostView = view;
 
+    // 找到系统毛玻璃背景层（MTMaterialView）
+    UIView *materialView = ccbgFindMaterialView(view);
+    self.originalMaterialView = materialView;
+
     self.bgContainerView = [[UIView alloc] initWithFrame:view.bounds];
     self.bgContainerView.userInteractionEnabled = NO;
     self.bgContainerView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [view insertSubview:self.bgContainerView atIndex:0];
+
+    // 将背景插入到 MTMaterialView 同一层级（在它下面），并隐藏 MTMaterialView
+    if (materialView) {
+        // 隐藏系统毛玻璃背景
+        materialView.hidden = YES;
+        // 把我们的背景插到 MTMaterialView 的位置
+        [view insertSubview:self.bgContainerView belowSubview:materialView];
+    } else {
+        // 找不到的话降级：插到最底层
+        [view insertSubview:self.bgContainerView atIndex:0];
+    }
 
     [self updateBackgroundView];
 }
@@ -616,6 +793,11 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 }
 
 - (void)detachFullscreenViews {
+    // 恢复系统毛玻璃背景
+    if (self.originalMaterialView) {
+        self.originalMaterialView.hidden = NO;
+        self.originalMaterialView = nil;
+    }
     [self detachMediaViews];
     if (self.bgContainerView) {
         [self.bgContainerView removeFromSuperview];
@@ -642,6 +824,109 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         [self.imageView removeFromSuperview];
         self.imageView = nil;
     }
+}
+
+#pragma mark - 特定模块背景（连接模块 / 播放控制模块）
+
+// 检查特定模块是否应该显示背景（全屏关闭时生效）
+- (BOOL)shouldShowBackgroundForModuleView:(UIView *)moduleView {
+    // 全屏模式开着的话，不走特定模块逻辑
+    if (self.isEnabled && self.backgroundMode == kCCBgModeFullscreen) return NO;
+
+    // 模块级模式已经处理了所有模块
+    if (self.backgroundMode == kCCBgModePerModule) return NO;
+
+    // 检查特定模块开关
+    if (self.connectModuleBgEnabled && ccbgIsConnectModule(moduleView)) return YES;
+    if (self.mediaModuleBgEnabled && ccbgIsMediaModule(moduleView)) return YES;
+
+    return NO;
+}
+
+// 挂载特定模块背景
+- (void)attachToSpecificModuleView:(UIView *)moduleView {
+    if (![self shouldShowBackgroundForModuleView:moduleView]) {
+        // 不应该显示背景，清理已有背景
+        NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
+        CCBgModuleBackground *bg = self.moduleBackgrounds[key];
+        if (bg) {
+            [bg cleanup];
+            [self.moduleBackgrounds removeObjectForKey:key];
+        }
+        return;
+    }
+
+    [self ensureMediaCacheValid];
+
+    NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
+    CCBgModuleBackground *bg = self.moduleBackgrounds[key];
+    UIView *superview = moduleView.superview;
+    if (!superview) return;
+
+    if (!bg) {
+        bg = [[CCBgModuleBackground alloc] init];
+        // 背景用 CALayer 插到模块 layer 下面
+        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
+        self.moduleBackgrounds[key] = bg;
+    }
+
+    // 如果父视图变了，重新挂载
+    if (bg.containerLayer.superlayer != superview.layer) {
+        [bg.containerLayer removeFromSuperlayer];
+        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
+    }
+
+    // 背景 frame 与模块一致
+    CGRect moduleFrameInSuperview = moduleView.frame;
+    CGFloat cornerRadius = moduleView.layer.cornerRadius;
+    if (cornerRadius <= 0) {
+        CGFloat minDim = fmin(CGRectGetWidth(moduleView.bounds), CGRectGetHeight(moduleView.bounds));
+        cornerRadius = minDim * 0.25;
+    }
+
+    // 节流：尺寸和圆角没变就跳过更新
+    if (CGRectEqualToRect(bg.containerLayer.frame, moduleFrameInSuperview) &&
+        fabs(bg.containerLayer.cornerRadius - cornerRadius) < 0.1) {
+        if (self.cachedHasVideo && self.isControlCenterVisible && self.sharedVideoPlayer.rate == 0) {
+            [self.sharedVideoPlayer play];
+        }
+        BOOL isVisible = [self isModuleViewVisible:moduleView];
+        [bg setVideoLayerHidden:!isVisible];
+        [bg setHidden:moduleView.hidden];
+        [bg setAlpha:moduleView.alpha];
+        return;
+    }
+
+    UIImage *blurredImage = [self getCachedBlurredImage];
+
+    if (self.cachedHasVideo) {
+        AVQueuePlayer *player = [self getSharedVideoPlayer];
+        if (player) {
+            [bg updateWithPlayer:player blurredImage:blurredImage frame:moduleFrameInSuperview cornerRadius:cornerRadius];
+            if (self.isControlCenterVisible && self.sharedVideoPlayer.rate == 0) {
+                [self.sharedVideoPlayer play];
+            }
+            BOOL isVisible = [self isModuleViewVisible:moduleView];
+            [bg setVideoLayerHidden:!isVisible];
+        }
+    } else if (self.cachedHasImage) {
+        UIImage *image = [self getCachedImage];
+        if (image) {
+            [bg updateWithImage:image blurredImage:blurredImage frame:moduleFrameInSuperview cornerRadius:cornerRadius];
+        }
+    } else {
+        [bg cleanup];
+        [self.moduleBackgrounds removeObjectForKey:key];
+    }
+
+    [bg setHidden:moduleView.hidden];
+    [bg setAlpha:moduleView.alpha];
+}
+
+// 清除所有特定模块背景（但保留模块级模式的）
+- (void)detachSpecificModuleBackgrounds {
+    // 直接复用 detachAllModules，因为两种模式共用 moduleBackgrounds 字典
+    // 切换模式时会调用 detachAllModules
 }
 
 #pragma mark - 模块级模式
@@ -820,7 +1105,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
-// 模块级 hook: 控制中心模块容器 (仅模块级模式)
+// 模块级 hook + 特定模块 hook: 控制中心模块容器
 %hook CCUIContentModuleContainerView
 
 - (void)layoutSubviews {
@@ -828,6 +1113,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if (mgr.backgroundMode == kCCBgModePerModule) {
         [mgr attachToModuleView:(UIView *)self];
+    } else {
+        // 特定模块背景（全屏关闭时生效）
+        [mgr attachToSpecificModuleView:(UIView *)self];
     }
 }
 
@@ -836,6 +1124,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if (mgr.backgroundMode == kCCBgModePerModule && [(UIView *)self window]) {
         [mgr attachToModuleView:(UIView *)self];
+    } else if ([(UIView *)self window]) {
+        // 特定模块背景
+        [mgr attachToSpecificModuleView:(UIView *)self];
     }
 }
 
