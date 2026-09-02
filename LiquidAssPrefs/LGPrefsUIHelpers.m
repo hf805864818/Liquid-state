@@ -1511,10 +1511,8 @@ UIView *LGMakeAboutContentView(UIViewController *controller, NSBundle *bundle, N
     [stack addArrangedSubview:iconView];
     [stack addArrangedSubview:nameLabel];
     [stack addArrangedSubview:subtitleLabel];
-    UIView *lastHeader = subtitleLabel;
     if (versionLabel) {
         [stack addArrangedSubview:versionLabel];
-        lastHeader = versionLabel;
     }
     [NSLayoutConstraint activateConstraints:@[
         [stack.topAnchor constraintEqualToAnchor:container.topAnchor constant:8.0],
