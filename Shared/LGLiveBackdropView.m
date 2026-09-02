@@ -137,6 +137,52 @@ static CGFloat sLGSpecularAngle = -M_PI_4;
 static BOOL sLGMotionEnabled;
 static CGFloat sLGMotionSensitivity = 2.0;
 static CGFloat sLGMotionLoggedSensitivity = -1.0;
+
+// 热状态感知: 充电发热时自动降级渲染
+static NSUInteger sLGThermalState;        // NSProcessInfoThermalState
+static BOOL sLGThermalThrottling;
+static CFTimeInterval sLGLastMemoryReportTime;
+
+static CGFloat LGThermalScaleFactor(void) {
+    switch (sLGThermalState) {
+        case 2:  // NSProcessInfoThermalStateFair
+            return 0.75;
+        case 3:  // NSProcessInfoThermalStateSerious
+            return 0.50;
+        case 4:  // NSProcessInfoThermalStateCritical
+            return 0.30;
+        default: // NSProcessInfoThermalStateNominal
+            return 1.0;
+    }
+}
+
+static BOOL LGThermalShouldDisableMotion(void) {
+    return sLGThermalState >= 3; // Serious or Critical
+}
+
+static void LGThermalStateChanged(void) {
+    NSUInteger newState = [NSProcessInfo processInfo].thermalState;
+    if (newState == sLGThermalState) return;
+    sLGThermalState = newState;
+    BOOL shouldThrottle = (newState >= 2);
+    if (shouldThrottle == sLGThermalThrottling) return;
+    sLGThermalThrottling = shouldThrottle;
+
+    LGLog(@"thermal state changed: %lu throttling=%d", (unsigned long)newState, shouldThrottle);
+
+    // 热状态变化时重新评估运动传感器
+    if (sLGMotionSetup) LGRefreshMotionHighlights();
+
+    // 重新应用所有滤镜 (降采样率变化)
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        for (LGLiveBackdropView *glass in sLGAllGlasses.allObjects) {
+            [glass reapplyFilterForParameterReload];
+        }
+        [CATransaction commit];
+    });
+}
 static CFStringRef const kLGMotionPrefsReloadNotification = CFSTR("dylv.liquidassprefs/Reload");
 
 static void LGApplyMotionHighlightAngle(void);
@@ -288,7 +334,7 @@ static CGFloat LGDynamicQualityScaleFactor(void) {
 }
 
 static CGFloat LGScaleBudget(void) {
-    return kLGDefaultScaleBudget * LGQualityValue() * LGMemorySavingScaleFactor() * LGDynamicQualityScaleFactor();
+    return kLGDefaultScaleBudget * LGQualityValue() * LGMemorySavingScaleFactor() * LGDynamicQualityScaleFactor() * LGThermalScaleFactor();
 }
 
 static CGFloat LGScaleForSize(CGSize s) {
@@ -362,6 +408,16 @@ static void LGRefreshMotionHighlights(void) {
         }
         sLGSpecularAngle = -M_PI_4;
         LGApplyMotionHighlightAngle();
+        return;
+    }
+
+    // 热状态严重时禁用运动传感器 (充电发热保护)
+    if (LGThermalShouldDisableMotion()) {
+        if (sLGMotionRunning) {
+            [sLGMotionManager stopDeviceMotionUpdates];
+            sLGMotionRunning = NO;
+            LGLog(@"motion highlights stopped — thermal throttling (state=%lu)", (unsigned long)sLGThermalState);
+        }
         return;
     }
 
@@ -463,6 +519,15 @@ static void LGEnsureMotionHighlights(void) {
                                         LGSpringBoardBecameActive,
                                         (CFStringRef)UIApplicationDidBecomeActiveNotification, NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
+        // 热状态监控: 充电发热时自动降级
+        sLGThermalState = [NSProcessInfo processInfo].thermalState;
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSProcessInfoThermalStateDidChangeNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification * _Nonnull n) {
+            (void)n;
+            LGThermalStateChanged();
+        }];
     }
     LGReloadMotionHighlightPreferences();
     LGRefreshMotionHighlights();
@@ -513,6 +578,11 @@ static unsigned long long LGTotalLiveViewMemoryUsage(void) {
 }
 
 static void LGReportMemoryUsageIfNeeded(void) {
+    CFTimeInterval now = CACurrentMediaTime();
+    // 最多每 5 秒报告一次, 避免频繁遍历
+    if (now - sLGLastMemoryReportTime < 5.0) return;
+    sLGLastMemoryReportTime = now;
+
     unsigned long long current = LGTotalLiveViewMemoryUsage();
     // 变化超过 10% 才更新, 避免频繁写入
     unsigned long long diff = current > sLGLastReportedCacheBytes
