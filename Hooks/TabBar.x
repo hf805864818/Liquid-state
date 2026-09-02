@@ -1142,7 +1142,7 @@ static NSString *LGTabBarColorDescription(UIColor *color) {
 
 static void LGAppendTabBarViewTree(NSMutableString *output, UIView *view,
                                    NSUInteger depth, NSUInteger *visited) {
-    if (!view || depth > 5 || *visited >= 120) return;
+    if (!view || depth > 8 || *visited >= 200) return;
     (*visited)++;
 
     NSMutableString *indent = [NSMutableString string];
@@ -1157,18 +1157,49 @@ static void LGAppendTabBarViewTree(NSMutableString *output, UIView *view,
 
     CALayer *layer = view.layer;
     NSString *maskClass = layer.mask ? NSStringFromClass(layer.mask.class) : @"nil";
+    NSString *layerBgDesc = @"nil";
+    if (layer.backgroundColor) {
+        UIColor *lc = [UIColor colorWithCGColor:layer.backgroundColor];
+        layerBgDesc = LGTabBarColorDescription(lc);
+    }
+    BOOL hasContents = layer.contents != nil;
+    NSUInteger sublayerCount = layer.sublayers ? layer.sublayers.count : 0;
     [output appendFormat:
         @"%@[%lu] %@ %p frame=%@ bounds=%@ window=%@ alpha=%.3f hidden=%d "
-         "opaque=%d user=%d bg=%@ layer=%@ radius=%.2f curve=%@ masks=%d "
-         "mask=%@ subviews=%lu constraints=%lu autoresize=0x%lx\n",
+         "opaque=%d user=%d bg=%@ layerBg=%@ layerCls=%@ contents=%d "
+         "radius=%.2f curve=%@ masks=%d mask=%@ sublayers=%lu "
+         "borderW=%.1f subviews=%lu constraints=%lu autoresize=0x%lx\n",
         indent, (unsigned long)depth, NSStringFromClass(view.class), view,
         NSStringFromCGRect(view.frame), NSStringFromCGRect(view.bounds),
         NSStringFromCGRect(windowFrame), view.alpha, view.hidden, view.opaque,
         view.userInteractionEnabled, LGTabBarColorDescription(view.backgroundColor),
-        NSStringFromClass(layer.class), layer.cornerRadius,
+        layerBgDesc, NSStringFromClass(layer.class), hasContents,
+        layer.cornerRadius,
         layer.cornerCurve ?: @"nil", layer.masksToBounds, maskClass,
+        (unsigned long)sublayerCount,
+        layer.borderWidth,
         (unsigned long)view.subviews.count, (unsigned long)view.constraints.count,
         (unsigned long)view.autoresizingMask];
+
+    // Dump sublayers (not subviews — raw CALayer sublayers)
+    if (sublayerCount > 0) {
+        [output appendFormat:@"%@  sublayers:\n", indent];
+        for (CALayer *sl in layer.sublayers) {
+            NSString *slBgDesc = @"nil";
+            if (sl.backgroundColor) {
+                UIColor *slc = [UIColor colorWithCGColor:sl.backgroundColor];
+                slBgDesc = LGTabBarColorDescription(slc);
+            }
+            [output appendFormat:
+                @"%@    SL %@ %p frame=%@ hidden=%d bg=%@ contents=%d "
+                 "radius=%.2f masks=%d sublayers=%lu\n",
+                indent, NSStringFromClass(sl.class), sl,
+                NSStringFromCGRect(sl.frame), sl.hidden,
+                slBgDesc, sl.contents != nil,
+                sl.cornerRadius, sl.masksToBounds,
+                sl.sublayers ? (unsigned long)sl.sublayers.count : 0UL];
+        }
+    }
 
     if ([view isKindOfClass:[UIControl class]]) {
         UIControl *control = (UIControl *)view;
@@ -1176,11 +1207,25 @@ static void LGAppendTabBarViewTree(NSMutableString *output, UIView *view,
                               "highlighted=%d label=%@\n",
             indent, (unsigned long)control.state, control.enabled, control.selected,
             control.highlighted, control.accessibilityLabel ?: @"nil"];
+        // Check backgroundImage for normal and selected states
+        @try {
+            UIImage *normalBg = [control backgroundImageForState:UIControlStateNormal];
+            UIImage *selectedBg = [control backgroundImageForState:UIControlStateSelected];
+            UIImage *highlightedBg = [control backgroundImageForState:UIControlStateHighlighted];
+            UIImage *disabledBg = [control backgroundImageForState:UIControlStateDisabled];
+            [output appendFormat:
+                @"%@  bgImages: normal=%@ selected=%@ highlighted=%@ disabled=%@\n",
+                indent,
+                normalBg ? normalBg.description ?: @"yes" : @"nil",
+                selectedBg ? selectedBg.description ?: @"yes" : @"nil",
+                highlightedBg ? highlightedBg.description ?: @"yes" : @"nil",
+                disabledBg ? disabledBg.description ?: @"yes" : @"nil"];
+        } @catch (__unused NSException *e) {}
     }
 
     for (UIView *subview in view.subviews) {
         LGAppendTabBarViewTree(output, subview, depth + 1, visited);
-        if (*visited >= 120) break;
+        if (*visited >= 200) break;
     }
 }
 
@@ -1220,7 +1265,9 @@ static void LGDumpTabBar(UITabBar *bar, NSString *reason) {
         @"[TABBAR] reason=%@ process=%@ os=%@ bar=%p class=%@ window=%p/%@ "
          "windowBounds=%@ screenScale=%.2f frame=%@ bounds=%@ safe=%@ "
          "layoutMargins=%@ intrinsic=%@ standardAppearance=%p scrollEdgeAppearance=%p "
-         "items=%lu selected=%p\n",
+         "items=%lu selected=%p\n"
+         "  bar.bg=%@ bar.layerBg=%@ bar.translucent=%d bar.bgImage=%@ "
+         "bar.selectionIndicatorImage=%@ bar.shadowImage=%@\n",
         reason ?: @"unknown", NSBundle.mainBundle.bundleIdentifier ?: @"unknown",
         UIDevice.currentDevice.systemVersion, bar, NSStringFromClass(bar.class),
         window, NSStringFromClass(window.class), NSStringFromCGRect(window.bounds),
@@ -1228,7 +1275,38 @@ static void LGDumpTabBar(UITabBar *bar, NSString *reason) {
         NSStringFromUIEdgeInsets(bar.safeAreaInsets),
         NSStringFromUIEdgeInsets(bar.layoutMargins),
         NSStringFromCGSize(bar.intrinsicContentSize), bar.standardAppearance,
-        scrollEdgeAppearance, (unsigned long)bar.items.count, bar.selectedItem];
+        scrollEdgeAppearance, (unsigned long)bar.items.count, bar.selectedItem,
+        LGTabBarColorDescription(bar.backgroundColor),
+        bar.layer.backgroundColor ? LGTabBarColorDescription(
+            [UIColor colorWithCGColor:bar.layer.backgroundColor]) : @"nil",
+        bar.translucent,
+        bar.backgroundImage ? bar.backgroundImage.description ?: @"yes" : @"nil",
+        bar.selectionIndicatorImage ? @"yes" : @"nil",
+        bar.shadowImage ? @"yes" : @"nil"];
+
+    // Dump appearance details
+    if (@available(iOS 13.0, *)) {
+        UITabBarAppearance *sa = bar.standardAppearance;
+        UITabBarAppearance *sea = nil;
+        if ([bar respondsToSelector:NSSelectorFromString(@"scrollEdgeAppearance")]) {
+            @try { sea = [bar valueForKey:@"scrollEdgeAppearance"]; }
+            @catch (__unused NSException *e) {}
+        }
+        [dump appendFormat:
+            @"  appearance: standard=%p scrollEdge=%p\n"
+            @"    std.bgColor=%@ std.bgImage=%@ std.shadowColor=%@ std.shadowImage=%@ "
+            @"std.selectionIndicatorImage=%@ std.selectionIndicatorTintColor=%@\n"
+            @"    sea.bgColor=%@ sea.selectionIndicatorImage=%@\n",
+            sa, sea,
+            LGTabBarColorDescription(sa.backgroundColor),
+            sa.backgroundImage ? @"yes" : @"nil",
+            sa.shadowColor ? LGTabBarColorDescription(sa.shadowColor) : @"nil",
+            sa.shadowImage ? @"yes" : @"nil",
+            sa.selectionIndicatorImage ? @"yes" : @"nil",
+            LGTabBarColorDescription(sa.selectionIndicatorTintColor),
+            sea ? LGTabBarColorDescription(sea.backgroundColor) : @"no-scrollEdge",
+            (sea && sea.selectionIndicatorImage) ? @"yes" : (sea ? @"nil" : @"no-scrollEdge")];
+    }
 
     [bar.items enumerateObjectsUsingBlock:^(UITabBarItem *item, NSUInteger index,
                                             __unused BOOL *stop) {
@@ -1243,17 +1321,13 @@ static void LGDumpTabBar(UITabBar *bar, NSString *reason) {
 
     NSUInteger visited = 0;
     LGAppendTabBarViewTree(dump, bar, 0, &visited);
-    if (visited >= 120) [dump appendString:@"  ... hierarchy truncated at 120 views\n"];
+    if (visited >= 200) [dump appendString:@"  ... hierarchy truncated at 200 views\n"];
     LGLog(@"%@", dump);
+    NSLog(@"%@", dump);
     LGPersistTabBarDump(dump, reason);
 }
 
 static void LGScheduleTabBarDump(UITabBar *bar, NSString *reason) {
-
-    (void)bar;
-    (void)reason;
-    return;
-
     if (!bar.window || [objc_getAssociatedObject(bar, kLGTabBarPendingDumpKey) boolValue])
         return;
     objc_setAssociatedObject(bar, kLGTabBarPendingDumpKey, @YES,
