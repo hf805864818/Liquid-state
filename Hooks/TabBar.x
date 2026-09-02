@@ -604,16 +604,19 @@ static void LGStyleStockTabBar(UITabBar *bar) {
     if (@available(iOS 13.0, *)) {
         UITabBarAppearance *appearance = [bar.standardAppearance copy];
         if (!appearance) appearance = [[UITabBarAppearance alloc] init];
-        // 清除标签栏背景和阴影 (UIBarAppearance 方法)
+        // 清除标签栏背景色、背景图、阴影色、阴影图 (UIBarAppearance 方法)
         [appearance configureWithTransparentBackground];
-        // 清除选中指示器
+        // 清除选中指示器 (新版 API)
         appearance.selectionIndicatorBackgroundImage = nil;
         bar.standardAppearance = appearance;
         if (@available(iOS 15.0, *)) {
             bar.scrollEdgeAppearance = appearance;
         }
-        // 清除旧版选中指示器 API
+        // 清除旧版 API: 选中指示器图、阴影图
         bar.selectionIndicatorImage = nil;
+        bar.shadowImage = nil;
+        // 确保标签栏半透明
+        bar.translucent = YES;
     }
 
     UIView *stockBackground = nil;
