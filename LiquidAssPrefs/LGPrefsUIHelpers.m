@@ -1382,10 +1382,25 @@ static void LGUpdateAboutMarkdownStack(UIStackView *markdownStack, NSString *mar
     }
 }
 
+static NSString *LGFetchURLSync(NSURL *url, NSURLSession *session) {
+    if (!url || !session) return nil;
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block NSString *result = nil;
+    NSURLSessionDataTask *task = [session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (!error && data && [(NSHTTPURLResponse *)response statusCode] == 200) {
+            result = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        }
+        dispatch_semaphore_signal(sema);
+    }];
+    [task resume];
+    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)));
+    return result;
+}
+
 static void LGFetchGitHubChangelog(NSString *packageVersion, void (^completion)(NSString * _Nullable markdownText)) {
-    NSString *urlString = @"https://api.github.com/repos/hf805864818/Liquid-state/releases";
-    NSURL *url = [NSURL URLWithString:urlString];
-    if (!url) {
+    NSString *releasesURLString = @"https://api.github.com/repos/hf805864818/Liquid-state/releases";
+    NSURL *releasesURL = [NSURL URLWithString:releasesURLString];
+    if (!releasesURL) {
         completion(nil);
         return;
     }
@@ -1393,8 +1408,10 @@ static void LGFetchGitHubChangelog(NSString *packageVersion, void (^completion)(
     NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
     config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
     config.timeoutIntervalForRequest = 10.0;
+    config.timeoutIntervalForResource = 20.0;
     NSURLSession *session = [NSURLSession sessionWithConfiguration:config];
-    NSURLSessionDataTask *task = [session dataTaskWithURL:url completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+
+    NSURLSessionDataTask *task = [session dataTaskWithURL:releasesURL completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
         if (error || !data) {
             completion(nil);
             return;
@@ -1411,8 +1428,12 @@ static void LGFetchGitHubChangelog(NSString *packageVersion, void (^completion)(
             return;
         }
 
+        // 最多获取最近 8 个版本的详细 changelog
+        NSInteger maxVersions = MIN(8, (NSInteger)releases.count);
         NSMutableString *result = [NSMutableString string];
-        for (NSDictionary *release in releases) {
+
+        for (NSInteger i = 0; i < maxVersions; i++) {
+            NSDictionary *release = releases[i];
             if (![release isKindOfClass:[NSDictionary class]]) continue;
             NSString *tagName = release[@"tag_name"];
             NSString *body = release[@"body"];
@@ -1422,7 +1443,29 @@ static void LGFetchGitHubChangelog(NSString *packageVersion, void (^completion)(
             NSString *versionStr = [tagName hasPrefix:@"v"] ? [tagName substringFromIndex:1] : tagName;
             if (result.length > 0) [result appendString:@"\n\n"];
             [result appendFormat:@"# %@%@", versionStr, isPrerelease ? @" (beta)" : @""];
-            if (body.length) {
+
+            // 尝试从仓库 changelogs 目录获取详细更新日志
+            NSString *changelogURLString = [NSString stringWithFormat:
+                @"https://raw.githubusercontent.com/hf805864818/Liquid-state/main/changelogs/%@.md",
+                versionStr];
+            NSString *changelogContent = LGFetchURLSync([NSURL URLWithString:changelogURLString], session);
+
+            if (changelogContent.length > 0) {
+                // 移除文件中的版本标题行 (第一行 # xxx), 避免重复
+                NSArray *lines = [changelogContent componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+                NSMutableArray *filteredLines = [NSMutableArray array];
+                BOOL skippedFirstHeading = NO;
+                for (NSString *line in lines) {
+                    if (!skippedFirstHeading && [line hasPrefix:@"# "]) {
+                        skippedFirstHeading = YES;
+                        continue;
+                    }
+                    [filteredLines addObject:line];
+                }
+                NSString *detailText = [filteredLines componentsJoinedByString:@"\n"];
+                [result appendString:@"\n\n"];
+                [result appendString:[detailText stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet]];
+            } else if (body.length > 0) {
                 [result appendString:@"\n\n"];
                 [result appendString:body];
             }

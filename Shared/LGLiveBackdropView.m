@@ -471,6 +471,62 @@ static void LGEnsureMotionHighlights(void) {
 static const CGFloat kLGSpecularMinimumOpacity = 0.30;
 static const CGFloat kLGSpecularBrightBoostOpacity = 0.70;
 
+// MARK: - Memory usage tracking
+static NSHashTable<LGLiveBackdropView *> *sLGLiveViews;
+static unsigned long long sLGLastReportedCacheBytes = 0;
+
+static NSHashTable *LGLiveViews(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sLGLiveViews = [NSHashTable weakObjectsHashTable];
+    });
+    return sLGLiveViews;
+}
+
+static void LGRegisterLiveView(LGLiveBackdropView *view) {
+    if (!view) return;
+    [LGLiveViews() addObject:view];
+}
+
+static void LGUnregisterLiveView(LGLiveBackdropView *view) {
+    if (!view) return;
+    [LGLiveViews() removeObject:view];
+}
+
+static unsigned long long LGEstimateViewMemoryUsage(LGLiveBackdropView *view) {
+    if (!view) return 0;
+    CGSize size = view.bounds.size;
+    if (size.width <= 0 || size.height <= 0) return 0;
+    CGFloat scale = [UIScreen mainScreen].scale;
+    // 估算: 背景层 + 高光层 + 模糊缓存, 按 RGBA 32bpp 计算
+    // 大约是 2.5 倍的单帧像素内存
+    unsigned long long pixels = (unsigned long long)(size.width * scale) * (unsigned long long)(size.height * scale);
+    return pixels * 4 * 2.5; // 4 bytes per pixel, ~2.5 layers
+}
+
+static unsigned long long LGTotalLiveViewMemoryUsage(void) {
+    unsigned long long total = 0;
+    for (LGLiveBackdropView *view in LGLiveViews()) {
+        total += LGEstimateViewMemoryUsage(view);
+    }
+    return total;
+}
+
+static void LGReportMemoryUsageIfNeeded(void) {
+    unsigned long long current = LGTotalLiveViewMemoryUsage();
+    // 变化超过 10% 才更新, 避免频繁写入
+    unsigned long long diff = current > sLGLastReportedCacheBytes
+        ? current - sLGLastReportedCacheBytes
+        : sLGLastReportedCacheBytes - current;
+    if (sLGLastReportedCacheBytes == 0 || diff > sLGLastReportedCacheBytes * 0.1) {
+        sLGLastReportedCacheBytes = current;
+        CFPreferencesSetAppValue(CFSTR("__runtime_cache_usage_bytes"),
+                                 (__bridge CFNumberRef)@(current),
+                                 CFSTR("dylv.liquidass"));
+        CFPreferencesAppSynchronize(CFSTR("dylv.liquidass"));
+    }
+}
+
 @implementation LGLiveBackdropView {
     NSString        *_lgGroupName;
     CAGradientLayer *_specular;
@@ -539,6 +595,7 @@ static const CGFloat kLGSpecularBrightBoostOpacity = 0.70;
     [sLGAllGlasses addObject:self];
     LGEnsureMotionHighlights();
     [sLGMotionGlasses addObject:self];
+    LGRegisterLiveView(self);
     [self applyFilters];
     return self;
 }
@@ -546,6 +603,8 @@ static const CGFloat kLGSpecularBrightBoostOpacity = 0.70;
 - (void)dealloc {
     [sLGAllGlasses removeObject:self];
     [sLGMotionGlasses removeObject:self];
+    LGUnregisterLiveView(self);
+    LGReportMemoryUsageIfNeeded();
     // Re-evaluate motion state after removing this glass
     if (sLGMotionSetup) LGRefreshMotionHighlights();
 }
@@ -607,6 +666,7 @@ static const CGFloat kLGSpecularBrightBoostOpacity = 0.70;
     _lastLayoutCornerRadius = currentRadius;
     [self applyFilters];
     [self updateSpecular];
+    LGReportMemoryUsageIfNeeded();
 }
 
 - (void)updateNativeBlurOverlayWithRadius:(CGFloat)radius filterClass:(Class)filterCls {

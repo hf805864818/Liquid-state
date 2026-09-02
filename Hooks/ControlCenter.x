@@ -40,9 +40,16 @@ static CGFloat ccPillRadius(UIView *v) {
     return fmin(CGRectGetWidth(v.bounds), CGRectGetHeight(v.bounds)) * 0.5;
 }
 
+static BOOL ccIsInControlCenterModule(UIView *mat) {
+    if (hasAncestorOfClassName(mat, @"CCUIContentModuleContainerView")) return YES;
+    // 小圆形 punchout 按钮 (手电筒、计时器、计算器等)
+    if (hasAncestorOfClassName(mat, @"CCUIButtonModuleView")) return YES;
+    return NO;
+}
+
 static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
     if (!isExactClass(mat, @"MTMaterialView")) return -1.0;
-    if (!hasAncestorOfClassName(mat, @"CCUIContentModuleContainerView")) return -1.0;
+    if (!ccIsInControlCenterModule(mat)) return -1.0;
 
     CGFloat w = CGRectGetWidth(mat.bounds), h = CGRectGetHeight(mat.bounds);
     if (w < 30.0 || h < 30.0) return -1.0;
@@ -50,6 +57,11 @@ static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
     if (ccIsInsideSlider(mat)) {
         if (isExactClass(mat.superview, @"MRUContinuousSliderView")) return ccPillRadius(mat);
         // For CCUIContinuousSliderView, also apply glass radius
+        return ccPillRadius(mat);
+    }
+
+    // 小圆形按钮 (punchout): 使用圆形圆角
+    if (hasAncestorOfClassName(mat, @"CCUIButtonModuleView")) {
         return ccPillRadius(mat);
     }
 
