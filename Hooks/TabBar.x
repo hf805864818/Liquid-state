@@ -490,9 +490,31 @@ static BOOL LGClearTabBarButtonShadowsRecursive(UIView *view) {
         if (view.backgroundColor) {
             view.backgroundColor = UIColor.clearColor;
         }
+        // iOS 可能直接设置 layer.backgroundColor 而不经过 view.backgroundColor
+        if (view.layer.backgroundColor) {
+            view.layer.backgroundColor = UIColor.clearColor.CGColor;
+        }
     }
 
     return subtreeHasContent;
+}
+
+// 清除单个 UITabBarButton 的阴影和背景 (不隐藏视图)
+// 按钮自身是 UIControl, 清除其背景不影响子视图渲染
+static void LGClearSingleTabBarButton(UIView *button) {
+    if (!button) return;
+    // 清除按钮自身的 shadow 和背景
+    button.layer.shadowOpacity = 0.0;
+    button.layer.shadowColor = UIColor.clearColor.CGColor;
+    button.layer.shadowRadius = 0.0;
+    button.layer.shadowOffset = CGSizeZero;
+    button.layer.shadowPath = nil;
+    // 按钮自身的背景色: 直接清除 (UIControl 背景不影响子视图)
+    // 递归函数不会清除它 (按钮含内容后代), 但按钮背景正是选中方块阴影的来源
+    button.backgroundColor = UIColor.clearColor;
+    button.layer.backgroundColor = UIColor.clearColor.CGColor;
+    // 递归清除子视图: 阴影全部清除, 背景只清除不含内容的视图
+    LGClearTabBarButtonShadowsRecursive(button);
 }
 
 // 清除 UITabBarButton 内部的阴影和选中背景 (不隐藏视图)
@@ -500,14 +522,7 @@ static void LGHideTabBarButtonInternals(UITabBar *bar) {
     Class buttonClass = objc_getClass("UITabBarButton");
     for (UIView *button in bar.subviews) {
         if (!buttonClass || ![button isKindOfClass:buttonClass]) continue;
-        // 清除按钮自身的 shadow 属性
-        button.layer.shadowOpacity = 0.0;
-        button.layer.shadowColor = UIColor.clearColor.CGColor;
-        button.layer.shadowRadius = 0.0;
-        button.layer.shadowOffset = CGSizeZero;
-        button.layer.shadowPath = nil;
-        // 递归清除子视图: 阴影全部清除, 背景只清除不含内容的视图
-        LGClearTabBarButtonShadowsRecursive(button);
+        LGClearSingleTabBarButton(button);
     }
 }
 
@@ -1287,8 +1302,11 @@ static void LGRefreshTabBarsInView(UIView *view) {
 - (void)layoutSubviews {
     %orig;
     UITabBar *bar = LGTabBarForButton(self);
-    if (lgHostEnabled(@"TabBar") && LGIsStockTabBar(bar))
+    if (lgHostEnabled(@"TabBar") && LGIsStockTabBar(bar)) {
         LGCenterStockTabBarButtonContent(self);
+        // iOS 在按钮布局时设置选中背景 — 此时清除才能去掉方块阴影
+        LGClearSingleTabBarButton(self);
+    }
 }
 
 - (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
