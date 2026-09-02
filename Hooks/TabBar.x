@@ -478,16 +478,36 @@ static void LGUnhideTabBarShadowViews(UITabBar *bar) {
     }
 }
 
+// 每次布局都需重新执行的清理: 隐藏系统背景、清除阴影
+// iOS 在 layoutSubviews 中可能重新恢复 shadow 属性和 _UIBarBackground 可见性
+static void LGReassertTabBarBackgroundHidden(UITabBar *bar) {
+    UIView *stockBackground = nil;
+    Class backgroundClass = objc_getClass("_UIBarBackground");
+    for (UIView *view in bar.subviews) {
+        if (backgroundClass && [view isKindOfClass:backgroundClass]) {
+            stockBackground = view;
+            break;
+        }
+    }
+    if (stockBackground && !stockBackground.hidden) stockBackground.hidden = YES;
+    LGHideTabBarShadowViews(bar);
+}
+
 static void LGStyleStockTabBar(UITabBar *bar) {
     if (!lgHostEnabled(@"TabBar")) {
         LGRemoveTabBarInjection(bar);
         return;
     }
-    if (!LGIsStockTabBar(bar) || !bar.window ||
-        [objc_getAssociatedObject(bar, kLGTabBarStylingKey) boolValue]) return;
+    if (!LGIsStockTabBar(bar) || !bar.window) return;
 
     if (LGTabBarUsesCustomLayout(bar)) {
         LGRemoveTabBarInjection(bar);
+        return;
+    }
+
+    // 已设置过: 只执行每次布局需重复的清理
+    if ([objc_getAssociatedObject(bar, kLGTabBarStylingKey) boolValue]) {
+        LGReassertTabBarBackgroundHidden(bar);
         return;
     }
 
