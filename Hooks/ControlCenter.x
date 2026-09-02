@@ -487,6 +487,10 @@ static void ccStartFullscreenDimSync(UIView *overlayRoot) {
     if (!sCCFullscreenDimDisplayLink) {
         sCCFullscreenDimDisplayLink = [CADisplayLink displayLinkWithTarget:sCCFullscreenDimSyncDriver
                                                                    selector:@selector(tick:)];
+        // 限制帧率: dim sync 只需同步暗化状态，不需要高帧率
+        // 充电时进一步限制到 15fps 减少功耗
+        int targetFPS = LGLiquidIsCharging() ? 15 : 30;
+        sCCFullscreenDimDisplayLink.preferredFramesPerSecond = targetFPS;
         [sCCFullscreenDimDisplayLink addToRunLoop:[NSRunLoop mainRunLoop]
                                            forMode:NSRunLoopCommonModes];
     }

@@ -43,3 +43,8 @@ void LGResyncGlassGeometry(UIView *materialView, const void *assocKey);
 void LGRemoveGlassFromMaterial(UIView *materialView, const void *assocKey);
 
 BOOL LGMaterialHasGlass(UIView *materialView, const void *assocKey);
+
+// 充电/热状态降级接口 — 供各模块查询
+BOOL LGLiquidIsCharging(void);               // 设备是否正在充电
+BOOL LGLiquidIsPerformanceDegraded(void);     // 综合降级状态 (充电+热)
+BOOL LGLiquidShouldSkipRenderFrame(void);    // backboardd 渲染器是否应跳过当前帧

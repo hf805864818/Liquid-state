@@ -557,7 +557,9 @@ static void LGCoverSheetSetDisplayLinkActive(BOOL active) {
         sLGCoverSheetDisplayLink =
             [CADisplayLink displayLinkWithTarget:sLGCoverSheetDisplayLinkTarget
                                          selector:@selector(lg_coverSheetDisplayLinkTick:)];
-        sLGCoverSheetDisplayLink.preferredFramesPerSecond = 30; // geometry sync doesn't need high FPS
+        // 充电时降低到 15fps，正常时 30fps — 几何同步不需要高帧率
+        int targetFPS = LGLiquidIsCharging() ? 15 : 30;
+        sLGCoverSheetDisplayLink.preferredFramesPerSecond = targetFPS;
         [sLGCoverSheetDisplayLink addToRunLoop:NSRunLoop.mainRunLoop
                                        forMode:NSRunLoopCommonModes];
     } else {

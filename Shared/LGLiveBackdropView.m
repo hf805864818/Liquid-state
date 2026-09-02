@@ -1,10 +1,12 @@
 #import "LGLiveBackdropView.h"
 #import "LGHostRegistry.h"
 #import "LGCoverSheetState.h"
+#import "LGSharedSupport.h"
 #import <CoreMotion/CoreMotion.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <notify.h>
 #import <time.h>
 #import <math.h>
 #import <unistd.h>
@@ -143,21 +145,74 @@ static NSUInteger sLGThermalState;        // NSProcessInfoThermalState
 static BOOL sLGThermalThrottling;
 static CFTimeInterval sLGLastMemoryReportTime;
 
+// 充电状态感知: 充电时设备发热更严重，进一步降级
+static BOOL sLGCharging;           // 设备是否正在充电
+static BOOL sLGScreenOn;           // 屏幕是否亮屏
+static BOOL sLGPerformanceDegraded; // 综合判断: 是否需要降级渲染
+
+// 前向声明 — 必须在使用之前
+static void LGApplyMotionHighlightAngle(void);
+static void LGRefreshMotionHighlights(void);
+static void LGEnsureFilterRefreshObserver(void);
+static void LGUpdatePerformanceDegradedState(void);
+static void LGThermalStateChanged(void);
+static void LGBatteryStateDidChange(NSNotification *note);
+static void LGScreenStateChanged(NSNotification *note);
+
+// 私有方法声明 — 供静态函数调用
+@interface LGLiveBackdropView (Private)
+- (void)reapplyFilterForParameterReload;
+@end
+
+// 充电 + 屏幕亮 + 热状态 >= Fair → 综合降级
+static void LGUpdatePerformanceDegradedState(void) {
+    BOOL shouldDegrade = sLGCharging && (sLGThermalState >= 2 || sLGScreenOn);
+    if (shouldDegrade == sLGPerformanceDegraded) return;
+    sLGPerformanceDegraded = shouldDegrade;
+    LGLog(@"performance degraded: %d (charging=%d thermal=%lu screenOn=%d)",
+          shouldDegrade, sLGCharging, (unsigned long)sLGThermalState, sLGScreenOn);
+}
+
 static CGFloat LGThermalScaleFactor(void) {
+    // 基础热状态降采样
+    CGFloat factor;
     switch (sLGThermalState) {
         case 2:  // NSProcessInfoThermalStateFair
-            return 0.75;
+            factor = 0.75;
+            break;
         case 3:  // NSProcessInfoThermalStateSerious
-            return 0.50;
+            factor = 0.50;
+            break;
         case 4:  // NSProcessInfoThermalStateCritical
-            return 0.30;
+            factor = 0.30;
+            break;
         default: // NSProcessInfoThermalStateNominal
-            return 1.0;
+            factor = 1.0;
+            break;
     }
+    // 充电时进一步降低 scale，减少 GPU 模糊计算量
+    if (sLGCharging) factor *= 0.70;
+    return factor;
 }
 
 static BOOL LGThermalShouldDisableMotion(void) {
-    return sLGThermalState >= 3; // Serious or Critical
+    // 充电时也暂停运动传感器 (设备通常静止放置)
+    return sLGThermalState >= 3 || sLGCharging;
+}
+
+// 公开接口: 供 backboardd 渲染器查询是否应跳过当前帧
+BOOL LGLiquidShouldSkipRenderFrame(void) {
+    return sLGPerformanceDegraded && sLGCharging && sLGThermalState >= 2;
+}
+
+// 公开接口: 供各模块查询充电状态
+BOOL LGLiquidIsCharging(void) {
+    return sLGCharging;
+}
+
+// 公开接口: 供各模块查询综合降级状态
+BOOL LGLiquidIsPerformanceDegraded(void) {
+    return sLGPerformanceDegraded;
 }
 
 static void LGThermalStateChanged(void) {
@@ -169,6 +224,19 @@ static void LGThermalStateChanged(void) {
     sLGThermalThrottling = shouldThrottle;
 
     LGLog(@"thermal state changed: %lu throttling=%d", (unsigned long)newState, shouldThrottle);
+
+    // 写入热状态到偏好文件，通知 backboardd 渲染器
+    CFPreferencesSetAppValue((__bridge CFStringRef)@"Thermal.State",
+                             (__bridge CFTypeRef)@(newState),
+                             (__bridge CFStringRef)LGPrefsDomain);
+    CFPreferencesSetAppValue((__bridge CFStringRef)@"Charging.Active",
+                             (__bridge CFTypeRef)@(sLGCharging),
+                             (__bridge CFStringRef)LGPrefsDomain);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+    notify_post(LGPrefsChangedNotificationCString);
+
+    // 重新评估综合降级状态
+    LGUpdatePerformanceDegradedState();
 
     // 热状态变化时重新评估运动传感器
     if (sLGMotionSetup) LGRefreshMotionHighlights();
@@ -183,11 +251,51 @@ static void LGThermalStateChanged(void) {
         [CATransaction commit];
     });
 }
-static CFStringRef const kLGMotionPrefsReloadNotification = CFSTR("dylv.liquidassprefs/Reload");
 
-static void LGApplyMotionHighlightAngle(void);
-static void LGRefreshMotionHighlights(void);
-static void LGEnsureFilterRefreshObserver(void);
+// 充电状态变化回调
+static void LGBatteryStateDidChange(NSNotification *note) {
+    (void)note;
+    UIDeviceBatteryState state = [UIDevice currentDevice].batteryState;
+    BOOL wasCharging = sLGCharging;
+    sLGCharging = (state == UIDeviceBatteryStateCharging || state == UIDeviceBatteryStateFull);
+    if (wasCharging != sLGCharging) {
+        LGLog(@"battery state changed: charging=%d", sLGCharging);
+        // 写入偏好文件，通知 backboardd 渲染器降级
+        CFPreferencesSetAppValue((__bridge CFStringRef)@"Charging.Active",
+                                 (__bridge CFTypeRef)@(sLGCharging),
+                                 (__bridge CFStringRef)LGPrefsDomain);
+        CFPreferencesSetAppValue((__bridge CFStringRef)@"Thermal.State",
+                                 (__bridge CFTypeRef)@(sLGThermalState),
+                                 (__bridge CFStringRef)LGPrefsDomain);
+        CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+        // 发送 Darwin 通知，让 backboardd 重新读取偏好
+        notify_post(LGPrefsChangedNotificationCString);
+        LGUpdatePerformanceDegradedState();
+        if (sLGMotionSetup) LGRefreshMotionHighlights();
+        // 充电状态变化时重新应用所有滤镜
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            for (LGLiveBackdropView *glass in sLGAllGlasses.allObjects) {
+                [glass reapplyFilterForParameterReload];
+            }
+            [CATransaction commit];
+        });
+    }
+}
+
+// 屏幕亮灭状态变化回调
+static void LGScreenStateChanged(NSNotification *note) {
+    (void)note;
+    BOOL wasOn = sLGScreenOn;
+    // 通过屏幕亮度判断屏幕是否亮着
+    sLGScreenOn = [UIScreen mainScreen].brightness > 0.01;
+    if (wasOn != sLGScreenOn) {
+        LGLog(@"screen state changed: on=%d", sLGScreenOn);
+        LGUpdatePerformanceDegradedState();
+    }
+}
+static CFStringRef const kLGMotionPrefsReloadNotification = CFSTR("dylv.liquidassprefs/Reload");
 
 static BOOL LGIsSpringBoardBundle(void) {
     return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"];
@@ -411,12 +519,14 @@ static void LGRefreshMotionHighlights(void) {
         return;
     }
 
-    // 热状态严重时禁用运动传感器 (充电发热保护)
+    // 热状态严重或充电时禁用运动传感器 (充电发热保护)
+    // 充电时设备通常静止放置，运动高光不需要更新
     if (LGThermalShouldDisableMotion()) {
         if (sLGMotionRunning) {
             [sLGMotionManager stopDeviceMotionUpdates];
             sLGMotionRunning = NO;
-            LGLog(@"motion highlights stopped — thermal throttling (state=%lu)", (unsigned long)sLGThermalState);
+            LGLog(@"motion highlights stopped — thermal/charging (state=%lu charging=%d)",
+                  (unsigned long)sLGThermalState, sLGCharging);
         }
         return;
     }
@@ -528,6 +638,25 @@ static void LGEnsureMotionHighlights(void) {
             (void)n;
             LGThermalStateChanged();
         }];
+        // 充电状态监控: 充电时设备发热更严重
+        [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+        sLGCharging = ([UIDevice currentDevice].batteryState == UIDeviceBatteryStateCharging ||
+                       [UIDevice currentDevice].batteryState == UIDeviceBatteryStateFull);
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIDeviceBatteryStateDidChangeNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification * _Nonnull n) {
+            LGBatteryStateDidChange(n);
+        }];
+        // 屏幕亮灭监控
+        sLGScreenOn = [UIScreen mainScreen].brightness > 0.01;
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIScreenBrightnessDidChangeNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification * _Nonnull n) {
+            LGScreenStateChanged(n);
+        }];
+        LGUpdatePerformanceDegradedState();
     }
     LGReloadMotionHighlightPreferences();
     LGRefreshMotionHighlights();
@@ -871,12 +1000,14 @@ static void LGReportMemoryUsageIfNeeded(void) {
         }
 
         CGFloat wantScale;
+        // 充电/热状态时应用额外的降采样，减少 GPU 模糊计算量
+        CGFloat thermalScale = LGThermalScaleFactor();
         switch (LGHostIdentifierForFilterType(_lgFilterType.UTF8String)) {
             case LGHostIdentifierClock:
-                wantScale = kLGClockCaptureScale;
+                wantScale = kLGClockCaptureScale * thermalScale;
                 break;
             case LGHostIdentifierCoverSheet:
-                wantScale = kLGCoverSheetCaptureScale;
+                wantScale = kLGCoverSheetCaptureScale * thermalScale;
                 break;
             default:
                 wantScale = LGUsesPrefsControlCaptureScale(_lgFilterType)

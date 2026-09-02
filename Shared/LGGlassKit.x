@@ -260,8 +260,8 @@ __attribute__((constructor)) static void lgGlassInitEnableObserver(void) {
     %orig(hidden);
 }
 
-- (void)setFrame:(CGRect)frame   { %orig(frame);  LGResyncGlassGeometry((UIView *)self, kGlassKey); }
-- (void)setBounds:(CGRect)bounds { %orig(bounds); LGResyncGlassGeometry((UIView *)self, kGlassKey); }
-- (void)setCenter:(CGPoint)center{ %orig(center); LGResyncGlassGeometry((UIView *)self, kGlassKey); }
+- (void)setFrame:(CGRect)frame   { %orig;  LGResyncGlassGeometry((UIView *)self, kGlassKey); }
+- (void)setBounds:(CGRect)bounds { %orig; LGResyncGlassGeometry((UIView *)self, kGlassKey); }
+- (void)setCenter:(CGPoint)center{ %orig; LGResyncGlassGeometry((UIView *)self, kGlassKey); }
 
 %end

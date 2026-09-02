@@ -350,8 +350,14 @@ static void styleContextMenuListSubviews(UIView *listView) {
 %end
 
 %hook _UIContextMenuCell
-- (void)setHighlighted:(BOOL)highlighted { %orig(lgHostEnabled(@"ContextMenu") ? NO : highlighted); }
-- (void)setSelected:(BOOL)selected { %orig(lgHostEnabled(@"ContextMenu") ? NO : selected); }
+- (void)setHighlighted:(BOOL)highlighted {
+    BOOL value = lgHostEnabled(@"ContextMenu") ? NO : highlighted;
+    %orig(value);
+}
+- (void)setSelected:(BOOL)selected {
+    BOOL value = lgHostEnabled(@"ContextMenu") ? NO : selected;
+    %orig(value);
+}
 %end
 
 %hook _UIContextMenuCellContentView

@@ -178,6 +178,11 @@ static os_unfair_lock g_pipelineLock = OS_UNFAIR_LOCK_INIT;
 static os_unfair_lock g_clockMaskLock = OS_UNFAIR_LOCK_INIT;
 static bool           g_pipelineInit = false;
 
+// 充电/热状态降级: 从偏好文件读取 (SpringBoard 写入)
+static BOOL g_chargingActive = NO;  // 设备是否正在充电
+static NSUInteger g_thermalState = 0; // NSProcessInfoThermalState
+static uint32_t g_frameSkipCounter = 0; // 跳帧计数器
+
 static NSString * const kClockMaskPath =
     @"/var/mobile/Library/Accessibility/liquidglass-clock-mask.bin";
 static CFStringRef const kClockMaskReloadNotification =
@@ -1040,6 +1045,23 @@ static void lgReloadHostPrefs(void) {
         }
     }
 
+    // 充电模式优化: 充电时减少渲染开销 (配合跳帧策略)
+    if (g_chargingActive) {
+        int chargeOverrides = 0;
+        for (int i = 1; i < kHostCount; i++) {
+            // 减少折射强度 (最耗 GPU 的部分)
+            g_hostParams[i].refractionScale *= 0.6f;
+            // 减少色散
+            g_hostParams[i].dispersionStrength *= 0.3f;
+            // 减少 Fresnel 眩光
+            g_hostParams[i].glassThickness *= 0.8f;
+            chargeOverrides++;
+        }
+        g_fresnelGlareStrength *= 0.5f;
+        lglog("charging mode: refraction -40%%, dispersion -70%%, fresnel -50%%, hosts=%d",
+              chargeOverrides);
+    }
+
     // Focus Mode optimization
     if (prefs) {
         NSNumber *focusEnabled = prefs[@"FocusMode.Enabled"];
@@ -1174,6 +1196,20 @@ static void lgReloadHostPrefs(void) {
 
     g_hostParamsInit = true;
 
+    // 读取充电/热状态 (SpringBoard 写入，用于渲染降级)
+    if (prefs) {
+        NSNumber *chargingNum = prefs[@"Charging.Active"];
+        NSNumber *thermalNum = prefs[@"Thermal.State"];
+        if ([chargingNum isKindOfClass:[NSNumber class]]) {
+            g_chargingActive = chargingNum.boolValue;
+        }
+        if ([thermalNum isKindOfClass:[NSNumber class]]) {
+            g_thermalState = thermalNum.unsignedIntegerValue;
+        }
+        lglog("thermal/charging state: charging=%d thermal=%lu",
+              g_chargingActive, (unsigned long)g_thermalState);
+    }
+
     lglog("lgReloadHostPrefs: %s (%d hosts, %d overrides) banner.bezel=%.3f refr=%.2f",
           prefs ? "loaded prefs" : "defaults", kHostCount, overrides,
           g_hostParams[4].bezelRatio, g_hostParams[4].refractionScale);
@@ -1202,6 +1238,29 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
 {
     static uint64_t tsum_stop = 0, tsum_ours = 0, tsum_gauss = 0, tcount = 0;
     uint64_t t_start = mach_absolute_time();
+
+    // 充电 + 热状态≥Fair 时隔帧渲染，GPU 负载减半
+    // 跳帧时调用原始 Gaussian 渲染，保持基础模糊效果
+    BOOL shouldSkipThisFrame = NO;
+    if (g_chargingActive && g_thermalState >= 2) {
+        g_frameSkipCounter++;
+        shouldSkipThisFrame = (g_frameSkipCounter % 2 == 0);
+    } else if (g_thermalState >= 3) {
+        // 热状态≥Serious 时无论是否充电都跳帧
+        g_frameSkipCounter++;
+        shouldSkipThisFrame = (g_frameSkipCounter % 2 == 0);
+    }
+    if (shouldSkipThisFrame) {
+        // 跳过此帧 — 调用原始 Gaussian 渲染保持基础模糊
+        if (g_inLegacyRender && g_origGaussR14) {
+            g_origGaussR14(self, filter, layer, ctx, opacity, surface, scale,
+                           g_legacyRenderOffset, cm, shape, out);
+        } else if (g_origGaussR13) {
+            g_origGaussR13(self, filter, layer, ctx, opacity, surface, scale,
+                           flag, cm, shape, out);
+        }
+        return;
+    }
 
     // trace only the first calls so render logs stay usable
     static uint64_t g_traceCalls = 0;
