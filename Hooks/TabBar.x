@@ -1207,20 +1207,6 @@ static void LGAppendTabBarViewTree(NSMutableString *output, UIView *view,
                               "highlighted=%d label=%@\n",
             indent, (unsigned long)control.state, control.enabled, control.selected,
             control.highlighted, control.accessibilityLabel ?: @"nil"];
-        // Check backgroundImage for normal and selected states
-        @try {
-            UIImage *normalBg = [control backgroundImageForState:UIControlStateNormal];
-            UIImage *selectedBg = [control backgroundImageForState:UIControlStateSelected];
-            UIImage *highlightedBg = [control backgroundImageForState:UIControlStateHighlighted];
-            UIImage *disabledBg = [control backgroundImageForState:UIControlStateDisabled];
-            [output appendFormat:
-                @"%@  bgImages: normal=%@ selected=%@ highlighted=%@ disabled=%@\n",
-                indent,
-                normalBg ? normalBg.description ?: @"yes" : @"nil",
-                selectedBg ? selectedBg.description ?: @"yes" : @"nil",
-                highlightedBg ? highlightedBg.description ?: @"yes" : @"nil",
-                disabledBg ? disabledBg.description ?: @"yes" : @"nil"];
-        } @catch (__unused NSException *e) {}
     }
 
     for (UIView *subview in view.subviews) {
