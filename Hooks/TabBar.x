@@ -313,9 +313,9 @@ static void LGCollectTabBarContentViews(UIView *root,
                                         NSUInteger depth) {
     if (!root || depth > 5) return;
     for (UIView *view in root.subviews) {
-        NSString *className = NSStringFromClass(view.class);
-        if ([className isEqualToString:@"UITabBarSwappableImageView"] ||
-            [className isEqualToString:@"UITabBarButtonLabel"]) {
+        // 使用 isKindOfClass: 兼容第三方 App 的自定义 UILabel/UIImageView 子类
+        if ([view isKindOfClass:[UILabel class]] ||
+            [view isKindOfClass:NSClassFromString(@"UITabBarSwappableImageView")]) {
             [content addObject:view];
         }
         LGCollectTabBarContentViews(view, content, depth + 1);
@@ -456,19 +456,20 @@ static BOOL LGIsInjectedTabBarView(UIView *view, UITabBar *bar) {
 }
 
 // 后序遍历: 先处理子视图, 再根据子树是否包含内容来决定是否清除背景色
-// 返回 YES 表示该视图或其后代包含内容视图 (UITabBarSwappableImageView / UITabBarButtonLabel)
+// 返回 YES 表示该视图或其后代包含内容视图
 // — 阴影属性: 对所有视图清除 (安全, 不影响渲染)
 // — 背景色: 只清除「不包含内容后代」的视图 (如选中背景、阴影视图)
 //   保留「包含内容后代」的视图背景 (如内容容器), 避免破坏 iOS 渲染管线
-// — 选中指示器图片: 清除非内容 UIImageView 的 image (iOS 选中指示器是一个
-//   普通 UIImageView, 有图片内容, 方形, 就是用户看到的"方块阴影")
+// — 选中指示器: 已由 UITabBarAppearance.selectionIndicatorImage = nil 处理,
+//   不再递归清除 UIImageView 的 image, 避免误伤第三方 App 的自定义图标
 static BOOL LGClearTabBarButtonShadowsRecursive(UIView *view) {
     if (!view) return NO;
 
-    NSString *cn = NSStringFromClass(view.class);
+    // 使用 isKindOfClass: 而非精确类名匹配, 以兼容第三方 App 的自定义子类
+    // (如小红书可能用自定义 UILabel 子类代替 UITabBarButtonLabel)
     BOOL isContent =
-        [cn isEqualToString:@"UITabBarSwappableImageView"] ||
-        [cn isEqualToString:@"UITabBarButtonLabel"];
+        [view isKindOfClass:[UILabel class]] ||
+        [view isKindOfClass:NSClassFromString(@"UITabBarSwappableImageView")];
 
     // 先处理子视图 (后序遍历)
     BOOL subtreeHasContent = isContent;
@@ -498,20 +499,9 @@ static BOOL LGClearTabBarButtonShadowsRecursive(UIView *view) {
         }
     }
 
-    // 选中指示器 UIImageView: 清除图片内容
-    // iOS 的选中指示器是一个普通 UIImageView(非 UITabBarSwappableImageView),
-    // 有 image 内容, 方形(cornerRadius=0), 选中时出现在按钮内部.
-    // 它不含内容后代, 也不是内容视图本身.
-    if (!isContent && !subtreeHasContent &&
-        [view isKindOfClass:[UIImageView class]]) {
-        UIImageView *imgView = (UIImageView *)view;
-        if (imgView.image) {
-            imgView.image = nil;
-        }
-        if (imgView.highlightedImage) {
-            imgView.highlightedImage = nil;
-        }
-    }
+    // 选中指示器已由 UITabBarAppearance.selectionIndicatorImage = nil 处理,
+    // 不再递归清除 UIImageView 图片, 避免误伤第三方 App 自定义图标
+
 
     return subtreeHasContent;
 }

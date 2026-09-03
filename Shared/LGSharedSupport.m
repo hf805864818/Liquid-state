@@ -338,14 +338,8 @@ BOOL LG_globalEnabled(void) {
 }
 
 BOOL LG_currentAppIsExcluded(void) {
-    static BOOL sChecked = NO;
-    static BOOL sExcluded = NO;
-    if (sChecked) return sExcluded;
-
     // SpringBoard and Preferences processes are never excluded
     if (LGIsSpringBoardProcess() || LGIsPreferencesProcess()) {
-        sChecked = YES;
-        sExcluded = NO;
         return NO;
     }
 
@@ -353,8 +347,6 @@ BOOL LG_currentAppIsExcluded(void) {
     NSString *exclusions = [stored isKindOfClass:NSString.class]
         ? (NSString *)stored : @"";
     if (!exclusions.length) {
-        sChecked = YES;
-        sExcluded = NO;
         return NO;
     }
 
@@ -369,12 +361,10 @@ BOOL LG_currentAppIsExcluded(void) {
         if (!entry.length || [entry hasPrefix:@"#"]) continue;
         if ([entry isEqualToString:bundleID] || [entry isEqualToString:executable] ||
             [entry isEqualToString:processName]) {
-            sExcluded = YES;
-            break;
+            return YES;
         }
     }
-    sChecked = YES;
-    return sExcluded;
+    return NO;
 }
 
 #pragma mark - Separate Light/Dark Appearance Mode
