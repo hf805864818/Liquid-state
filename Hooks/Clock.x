@@ -2463,15 +2463,40 @@ static void LGApplyClockReplacement(UIView *host) {
         NSString *lastReason = objc_getAssociatedObject(host, kLGClockLastBailReasonKey);
         if (![lastReason isEqualToString:reason]) {
             objc_setAssociatedObject(host, kLGClockLastBailReasonKey, reason, OBJC_ASSOCIATION_COPY_NONATOMIC);
-            LGClockLog(@"clock skip kind=%@ reason=%@ detail=%@ host=%@ frame=%@ labels=%lu eligible=%d blocking=%d",
-                       LGClockHostKind(host),
-                       reason,
-                       !overlayEligible ? LGClockHostIneligibilityReason(host) : @"",
-                       NSStringFromClass(host.class),
-                       NSStringFromCGRect(host.frame),
-                       (unsigned long)LGClockSourceLabelsForHost(host).count,
-                       overlayEligible,
-                       blocking);
+            // When no source label is found, dump all UILabels in the host for debugging
+            if (!sourceLabel) {
+                NSMutableString *labelDump = [NSMutableString string];
+                LGTraverseViews(host, ^(UIView *view) {
+                    if ([view isKindOfClass:[UILabel class]]) {
+                        UILabel *l = (UILabel *)view;
+                        [labelDump appendFormat:@"\n  cls=%@ fontSize=%.1f text=%@ hidden=%d alpha=%.2f",
+                         NSStringFromClass(l.class),
+                         l.font.pointSize,
+                         l.text.length > 20 ? [[l.text substringToIndex:20] stringByAppendingString:@"..."] : l.text ?: @"(nil)",
+                         l.hidden, l.alpha];
+                    }
+                });
+                LGClockLog(@"clock skip kind=%@ reason=%@ detail=%@ host=%@ frame=%@ labels=%lu eligible=%d blocking=%d allLabels:%@",
+                           LGClockHostKind(host),
+                           reason,
+                           !overlayEligible ? LGClockHostIneligibilityReason(host) : @"",
+                           NSStringFromClass(host.class),
+                           NSStringFromCGRect(host.frame),
+                           (unsigned long)LGClockSourceLabelsForHost(host).count,
+                           overlayEligible,
+                           blocking,
+                           labelDump.length > 0 ? labelDump : @" (none)");
+            } else {
+                LGClockLog(@"clock skip kind=%@ reason=%@ detail=%@ host=%@ frame=%@ labels=%lu eligible=%d blocking=%d",
+                           LGClockHostKind(host),
+                           reason,
+                           !overlayEligible ? LGClockHostIneligibilityReason(host) : @"",
+                           NSStringFromClass(host.class),
+                           NSStringFromCGRect(host.frame),
+                           (unsigned long)LGClockSourceLabelsForHost(host).count,
+                           overlayEligible,
+                           blocking);
+            }
         }
         if (overlay) {
             LGClockLog(@"clock cleanup kind=%@ reason=%@ host=%@ frame=%@",
@@ -2519,6 +2544,12 @@ static void LGApplyClockReplacement(UIView *host) {
         overlay = [[LGClockGlassView alloc] initWithFrame:sourceLabel.frame];
         objc_setAssociatedObject(host, kLGClockOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [overlayContainer addSubview:overlay];
+        LGClockLog(@"clock glass CREATED kind=%@ host=%@ frame=%@ label=%@ font=%@",
+                   LGClockHostKind(host),
+                   NSStringFromClass(host.class),
+                   NSStringFromCGRect(overlay.frame),
+                   sourceLabel.text ?: @"(nil)",
+                   NSStringFromClass(sourceLabel.font.class));
     } else if (overlay.superview != overlayContainer) {
         [overlay removeFromSuperview];
         [overlayContainer addSubview:overlay];
@@ -2672,6 +2703,8 @@ static void LGRefreshAllClockHosts(void) {
 - (void)didMoveToWindow {
     %orig;
     UIView *self_ = (UIView *)self;
+    LGClockLog(@"CSProminentTimeView didMoveToWindow (hasWindow=%d frame=%@)",
+               self_.window != nil, NSStringFromCGRect(self_.frame));
     if (self_.window) LGScheduleClockApply(self_, YES, 0.0);
     else LGApplyClockReplacement(self_);
 }
@@ -2897,6 +2930,11 @@ static void LGRefreshAllClockHosts(void) {
 %ctor {
     if (!LGIsSpringBoardProcess()) return;
     lgObservePreferenceReload(^{ LGRefreshAllClockHosts(); });
-    LGClockLog(@"ctor: init LGClockSpringBoard, fontPath=%@", LGClockVariableFontPath() ?: @"(none)");
+    BOOL cspExists = NSClassFromString(@"CSProminentTimeView") != nil;
+    BOOL sbfExists = NSClassFromString(@"SBFLockScreenDateView") != nil;
+    LGClockLog(@"ctor: init LGClockSpringBoard, CSProminentTimeView=%@, SBFLockScreenDateView=%@, fontPath=%@",
+               cspExists ? @"FOUND" : @"NOT FOUND",
+               sbfExists ? @"FOUND" : @"NOT FOUND",
+               LGClockVariableFontPath() ?: @"(none)");
     %init(LGClockSpringBoard);
 }

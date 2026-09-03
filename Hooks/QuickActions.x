@@ -10,6 +10,14 @@ static void *kQABackdropAlphaKey = &kQABackdropAlphaKey;
 static NSHashTable<UIVisualEffectView *> *sQuickActionHosts;
 static void removeQuickActionsGlass(UIVisualEffectView *fx);
 
+static void LGQALog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
+static void LGQALog(NSString *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    LGLog(@"[QA] %@", s);
+}
+
 static UIView *qaBackdropView(UIView *effectView) {
     for (UIView *sub in effectView.subviews) {
         if ([sub isKindOfClass:[LGLiveBackdropView class]]) continue;
@@ -40,8 +48,18 @@ static BOOL isQuickActionsHost(UIView *view) {
     // safe area 可能尚未设置,导致误判为非快捷操作。
     // CSQuickActionsButton 祖先检查已足够精确 (SpringBoard 专属类)。
     Class qaCls = NSClassFromString(@"CSQuickActionsButton");
+    if (!qaCls) {
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            LGQALog(@"CSQuickActionsButton class NOT FOUND — QA detection will fail");
+        });
+        return NO;
+    }
     for (UIView *a = view.superview; a; a = a.superview) {
-        if (qaCls && [a isKindOfClass:qaCls]) return YES;
+        if (qaCls && [a isKindOfClass:qaCls]) {
+            LGQALog(@"host detected via ancestor: %@", NSStringFromClass(a.class));
+            return YES;
+        }
         if ([a isKindOfClass:[UIVisualEffectView class]]) return NO;
     }
     return NO;
@@ -50,11 +68,25 @@ static BOOL isQuickActionsHost(UIView *view) {
 // 在 CSQuickActionsButton 子视图树中查找 UIVisualEffectView (最多 3 层)
 static UIVisualEffectView *qaFindEffectView(UIView *view) {
     for (UIView *sub in view.subviews) {
-        if ([sub isKindOfClass:[UIVisualEffectView class]]) return (UIVisualEffectView *)sub;
+        if ([sub isKindOfClass:[UIVisualEffectView class]]) {
+            LGQALog(@"findEffectView: found at level 1: %@ bounds=%@",
+                    NSStringFromClass(sub.class),
+                    NSStringFromCGRect(((UIVisualEffectView *)sub).bounds));
+            return (UIVisualEffectView *)sub;
+        }
         for (UIView *inner in sub.subviews) {
-            if ([inner isKindOfClass:[UIVisualEffectView class]]) return (UIVisualEffectView *)inner;
+            if ([inner isKindOfClass:[UIVisualEffectView class]]) {
+                LGQALog(@"findEffectView: found at level 2 in %@: %@ bounds=%@",
+                        NSStringFromClass(sub.class),
+                        NSStringFromClass(inner.class),
+                        NSStringFromCGRect(((UIVisualEffectView *)inner).bounds));
+                return (UIVisualEffectView *)inner;
+            }
         }
     }
+    LGQALog(@"findEffectView: NOT found in %@ (subviews=%lu)",
+            NSStringFromClass(view.class),
+            (unsigned long)view.subviews.count);
     return nil;
 }
 
@@ -76,7 +108,12 @@ static void injectQuickActionsGlass(UIVisualEffectView *fx) {
     LGLiveBackdropView *glass = objc_getAssociatedObject(fx, kQAGlassKey);
     if (!glass) {
         glass = LGCreateRegisteredGlass(container.bounds, nil, @"QuickActions");
-        if (!glass) return;
+        if (!glass) {
+            LGQALog(@"inject FAILED — glass creation returned nil (bounds=%@)",
+                    NSStringFromCGRect(container.bounds));
+            return;
+        }
+        LGQALog(@"inject: created new glass bounds=%@", NSStringFromCGRect(container.bounds));
         glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [container insertSubview:glass atIndex:0];
         objc_setAssociatedObject(fx, kQAGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -138,6 +175,8 @@ static void LGReconcileQuickActionHosts(void) {
 - (void)didMoveToWindow {
     %orig;
     UIView *btn = (UIView *)self;
+    LGQALog(@"CSQuickActionsButton didMoveToWindow (hasWindow=%d class=%@)",
+            btn.window != nil, NSStringFromClass(btn.class));
     UIVisualEffectView *fx = qaFindEffectView(btn);
     if (!fx) return;
     if (!btn.window) {
@@ -156,5 +195,7 @@ static void LGReconcileQuickActionHosts(void) {
 %end
 
 %ctor {
+    LGQALog(@"QuickActions module loaded — CSQuickActionsButton class %@",
+            NSClassFromString(@"CSQuickActionsButton") ? @"FOUND" : @"NOT FOUND");
     lgObservePreferenceReload(^{ LGReconcileQuickActionHosts(); });
 }
