@@ -18,14 +18,22 @@ static NSString * const kCCBgBackgroundModeKey = @"BackgroundMode"; // 0=全屏,
 static NSString * const kCCBgConnectModuleEnabledKey = @"ConnectModuleBgEnabled";
 static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 
-// PSSpecifier private method declarations
-@interface PSSpecifier (Private)
-+ (PSSpecifier *)groupSpecifierWithProperties:(NSDictionary *)properties;
+// MARK: - Preferences framework additions
+//
+// IMPORTANT — iOS 17 crash fix:
+//   +[PSSpecifier groupSpecifierWithProperties:]  -> does NOT exist on any iOS,
+//   -[PSListController specifierForIndexPath:]    -> does NOT exist on any iOS.
+// Calling them threw "unrecognized selector" the moment the page opened.
+// Use the real, stable private APIs instead (present on iOS 9 - 18):
+//   +[PSSpecifier groupSpecifierWithName:]
+//   -[PSListController specifierAtIndexPath:]
+// Declared here because the Theos headers do not always expose them.
+@interface PSSpecifier (CCBgExtras)
++ (id)groupSpecifierWithName:(id)name;
 @end
 
-// PSListController private method declarations
-@interface PSListController (Private)
-- (PSSpecifier *)specifierForIndexPath:(NSIndexPath *)indexPath;
+@interface PSListController (CCBgExtras)
+- (id)specifierAtIndexPath:(id)indexPath;
 @end
 
 // PHPickerFilter runtime class method declarations (iOS 14+)
@@ -398,7 +406,8 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 #pragma mark - UITableViewDelegate（自定义缩略图 cell）
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    PSSpecifier *specifier = [self specifierForIndexPath:indexPath];
+    // specifierAtIndexPath: is the real API; specifierForIndexPath: does not exist.
+    PSSpecifier *specifier = [self specifierAtIndexPath:indexPath];
     NSString *actionName = [specifier propertyForKey:@"action"];
 
     // 如果是缩略图按钮 cell
@@ -420,7 +429,8 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    PSSpecifier *specifier = [self specifierForIndexPath:indexPath];
+    // specifierAtIndexPath: is the real API; specifierForIndexPath: does not exist.
+    PSSpecifier *specifier = [self specifierAtIndexPath:indexPath];
     NSString *actionName = [specifier propertyForKey:@"action"];
 
     // 缩略图按钮点击
@@ -436,11 +446,15 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 #pragma mark - Helper
 
 - (PSSpecifier *)groupSpecifierWithName:(NSString *)name footerText:(NSString *)footer {
-    NSMutableDictionary *props = [NSMutableDictionary dictionaryWithObject:(name ?: @"") forKey:@"name"];
+    // groupSpecifierWithName: is the real API present on every iOS version.
+    // (The old groupSpecifierWithProperties: never existed and crashed on load.)
+    PSSpecifier *spec = [PSSpecifier groupSpecifierWithName:name];
     if (footer.length) {
-        props[@"footerText"] = footer;
+        // PSListController renders the section footer from the group specifier's
+        // "footerText" property — the same key plist-based preference bundles use.
+        [spec setProperty:footer forKey:@"footerText"];
     }
-    return [PSSpecifier groupSpecifierWithProperties:props];
+    return spec;
 }
 
 - (PSSpecifier *)switchSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue {
