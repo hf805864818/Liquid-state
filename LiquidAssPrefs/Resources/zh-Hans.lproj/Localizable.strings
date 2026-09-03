@@ -138,6 +138,8 @@
 "prefs.section.slider_display.subtitle" = "音量和亮度滑块的显示选项。";
 "prefs.control.slider_percent" = "显示百分比";
 "prefs.subtitle.slider_percent" = "在音量和亮度滑块上方显示当前百分比值。";
+"prefs.control.slider_random_color" = "随机颜色";
+"prefs.subtitle.slider_random_color" = "百分比文字使用随机鲜艳颜色,每次数值变化时切换颜色。";
 "prefs.control.slider_corner_radius" = "滑块圆角半径";
 "prefs.subtitle.slider_corner_radius" = "自定义滑块填充的圆角大小（-1 为默认值）。";
 "prefs.control.slider_haptics" = "滑块振动";

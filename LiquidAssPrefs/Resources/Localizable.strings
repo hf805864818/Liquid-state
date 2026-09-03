@@ -306,6 +306,8 @@
 "prefs.section.slider_display.subtitle" = "Display options for volume and brightness sliders.";
 "prefs.control.slider_percent" = "Show Percentage";
 "prefs.subtitle.slider_percent" = "Show the current percentage value above the volume and brightness sliders.";
+"prefs.control.slider_random_color" = "Random Color";
+"prefs.subtitle.slider_random_color" = "Display percentage text in random vibrant colors, switching on each value change.";
 "prefs.control.slider_corner_radius" = "Slider Corner Radius";
 "prefs.subtitle.slider_corner_radius" = "Customize the corner radius of slider fills (-1 for default).";
 "prefs.control.slider_haptics" = "Slider Haptics";

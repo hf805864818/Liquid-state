@@ -631,6 +631,44 @@ static BOOL ccSliderPercentEnabled(void) {
     return LG_prefBool(@"ControlCenter.SliderPercent.Enabled", YES);
 }
 
+static BOOL ccSliderRandomColorEnabled(void) {
+    return LG_prefBool(@"ControlCenter.SliderPercent.RandomColor", NO);
+}
+
+// 生成随机鲜艳颜色 (HSL: 高饱和度, 中等亮度, 随机色相)
+static UIColor *ccRandomVibrantColor(void) {
+    CGFloat hue = (CGFloat)(arc4random_uniform(360)) / 360.0;
+    CGFloat saturation = 0.85 + (CGFloat)(arc4random_uniform(15)) / 100.0; // 0.85~1.0
+    CGFloat brightness = 0.90 + (CGFloat)(arc4random_uniform(10)) / 100.0; // 0.90~1.0
+    return [UIColor colorWithHue:hue saturation:saturation brightness:brightness alpha:1.0];
+}
+
+// 预定义的鲜艳色板,确保可读性
+static NSArray<UIColor *> *ccVibrantColorPalette(void) {
+    static NSArray *palette = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        palette = @[
+            [UIColor colorWithRed:1.00 green:0.27 blue:0.27 alpha:1.0], // 红
+            [UIColor colorWithRed:1.00 green:0.60 blue:0.20 alpha:1.0], // 橙
+            [UIColor colorWithRed:1.00 green:0.83 blue:0.20 alpha:1.0], // 金黄
+            [UIColor colorWithRed:0.30 green:0.85 blue:0.39 alpha:1.0], // 绿
+            [UIColor colorWithRed:0.20 green:0.68 blue:1.00 alpha:1.0], // 天蓝
+            [UIColor colorWithRed:0.39 green:0.62 blue:1.00 alpha:1.0], // 蓝
+            [UIColor colorWithRed:0.68 green:0.40 blue:1.00 alpha:1.0], // 紫
+            [UIColor colorWithRed:1.00 green:0.35 blue:0.79 alpha:1.0], // 粉
+            [UIColor colorWithRed:0.00 green:0.97 blue:0.93 alpha:1.0], // 青
+            [UIColor colorWithRed:1.00 green:0.58 blue:0.98 alpha:1.0], // 粉紫
+        ];
+    });
+    return palette;
+}
+
+static UIColor *ccPickRandomPaletteColor(void) {
+    NSArray *palette = ccVibrantColorPalette();
+    return palette[arc4random_uniform((uint32_t)palette.count)];
+}
+
 static UILabel *ccSliderGetOrCreatePercentLabel(UIView *slider) {
     UILabel *label = objc_getAssociatedObject(slider, kCCSliderPercentLabelKey);
     if (!label) {
@@ -671,6 +709,8 @@ static CGFloat ccSliderGetNormalizedValue(UIView *slider) {
     return 0.5;
 }
 
+static void *kCCSliderLastColorPercentKey = &kCCSliderLastColorPercentKey;
+
 static void ccSliderUpdatePercentLabel(UIView *slider) {
     if (!ccSliderPercentEnabled()) {
         UILabel *label = objc_getAssociatedObject(slider, kCCSliderPercentLabelKey);
@@ -680,8 +720,40 @@ static void ccSliderUpdatePercentLabel(UIView *slider) {
     CGFloat value = ccSliderGetNormalizedValue(slider);
     NSInteger percent = (NSInteger)round(value * 100.0);
     UILabel *label = ccSliderGetOrCreatePercentLabel(slider);
-    label.text = [NSString stringWithFormat:@"%ld%%", (long)percent];
+    NSString *percentText = [NSString stringWithFormat:@"%ld%%", (long)percent];
+    label.text = percentText;
     label.hidden = NO;
+
+    // 随机颜色: 百分比值变化时换一个新颜色, 平滑过渡
+    if (ccSliderRandomColorEnabled()) {
+        NSString *lastPercent = objc_getAssociatedObject(slider, kCCSliderLastColorPercentKey);
+        if (lastPercent && ![percentText isEqualToString:lastPercent]) {
+            // 百分比变了 → 换新颜色, 带平滑动画
+            UIColor *newColor = ccPickRandomPaletteColor();
+            // 确保不和上一个颜色重复
+            if ([newColor isEqual:label.textColor]) {
+                newColor = ccPickRandomPaletteColor();
+            }
+            [UIView animateWithDuration:0.3
+                                  delay:0.0
+                                options:UIViewAnimationOptionCurveEaseInOut
+                             animations:^{
+                label.textColor = newColor;
+            }];
+        } else if (!lastPercent) {
+            // 首次显示: 直接设随机色
+            label.textColor = ccPickRandomPaletteColor();
+        }
+        objc_setAssociatedObject(slider, kCCSliderLastColorPercentKey,
+                                 percentText, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else {
+        // 随机颜色关闭: 恢复白色
+        if (![label.textColor isEqual:[UIColor whiteColor]]) {
+            [UIView animateWithDuration:0.2 animations:^{
+                label.textColor = [UIColor whiteColor];
+            }];
+        }
+    }
 
     // Size to fit text
     [label sizeToFit];
