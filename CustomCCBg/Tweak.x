@@ -1147,6 +1147,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     UIView *superview = moduleView.superview;
     if (!superview) return;
 
+    // 背景 frame 是模块在父视图中的 frame（模块后面，尺寸位置与模块一致）
+    CGRect moduleFrameInSuperview = moduleView.frame;
+
     if (!bg) {
         bg = [[CCBgModuleBackground alloc] init];
         // 背景用 CALayer 插到模块 layer 下面，避免成为兄弟 UIView 导致动画系统崩溃
@@ -1164,8 +1167,6 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
     }
 
-    // 背景 frame 是模块在父视图中的 frame（模块后面，尺寸位置与模块一致）
-    CGRect moduleFrameInSuperview = moduleView.frame;
     CGFloat cornerRadius = moduleView.layer.cornerRadius;
     if (cornerRadius <= 0) {
         CGFloat minDim = fmin(CGRectGetWidth(moduleView.bounds), CGRectGetHeight(moduleView.bounds));
