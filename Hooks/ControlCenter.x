@@ -755,10 +755,13 @@ static void ccSliderUpdatePercentLabel(UIView *slider) {
     CGFloat sliderHeight = CGRectGetHeight(slider.bounds);
 
     // Center the label. Apply a small right offset only for the fine/narrow
-    // volume HUD slider (SBElastic hierarchy, width < 120pt) to prevent text
-    // cutoff. Control Center sliders and wide volume HUD stay centered.
+    // volume HUD slider — the extremely thin vertical slider used in precise
+    // volume mode. We distinguish it by aspect ratio (width << height) rather
+    // than absolute width, since both wide and narrow volume HUD sliders can
+    // be under 120pt. Control Center sliders and wide volume HUD stay centered.
     BOOL isVolumeHUD = ancestorNameContains(slider, @"SBElastic");
-    CGFloat rightOffset = (isVolumeHUD && sliderWidth < 120) ? 10.0 : 0.0;
+    CGFloat aspectRatio = sliderHeight > 0.0 ? sliderWidth / sliderHeight : 1.0;
+    CGFloat rightOffset = (isVolumeHUD && aspectRatio < 0.25) ? 10.0 : 0.0;
     CGFloat labelX = (sliderWidth - labelWidth) / 2.0 + rightOffset;
     CGFloat labelY = (sliderHeight - labelHeight) / 2.0;
     label.frame = CGRectMake(labelX, labelY, labelWidth, labelHeight);
