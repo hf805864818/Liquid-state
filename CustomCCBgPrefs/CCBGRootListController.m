@@ -105,8 +105,8 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // 页面出现时刷新缩略图
-    [self.tableView reloadData];
+    // 页面出现时刷新缩略图 (PSListController exposes `table`, not `tableView`)
+    [self.table reloadData];
 }
 
 #pragma mark - 偏好读写
@@ -192,7 +192,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         [[CCBGMediaManager sharedManager] clearAllMedia];
         [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
-        [self.tableView reloadData];
+        [self.table reloadData];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -399,7 +399,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
         CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
 
         [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
-        [self.tableView reloadData];
+        [self.table reloadData];
     }
 }
 
