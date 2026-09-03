@@ -473,9 +473,12 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
             @"/var/jb/usr/lib/PreferenceBundles/CustomCCBgPrefs.bundle",
         ];
         for (NSString *path in searchPaths) {
+            BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:path];
             NSBundle *bundle = [NSBundle bundleWithPath:path];
+            NSLog(@"[LiquidAss] CCBg: path=%@ exists=%d bundle=%d", path, exists, bundle != nil);
             if (bundle && [bundle load]) {
                 controllerClass = NSClassFromString(@"CCBGRootListController");
+                NSLog(@"[LiquidAss] CCBg: bundle loaded, classFound=%d", controllerClass != nil);
                 if (controllerClass) break;
             }
         }

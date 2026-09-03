@@ -17,3 +17,6 @@ CustomCCBgPrefs_INSTALL_PATH = /Library/PreferenceBundles
 CustomCCBgPrefs_RESOURCE_DIRS = Resources
 
 include $(THEOS)/makefiles/bundle.mk
+
+after-stage::
+	ldid -S $(THEOS_STAGING_DIR)/Library/PreferenceBundles/CustomCCBgPrefs.bundle/CustomCCBgPrefs
