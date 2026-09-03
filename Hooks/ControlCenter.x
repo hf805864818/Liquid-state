@@ -635,14 +635,6 @@ static BOOL ccSliderRandomColorEnabled(void) {
     return LG_prefBool(@"ControlCenter.SliderPercent.RandomColor", NO);
 }
 
-// 生成随机鲜艳颜色 (HSL: 高饱和度, 中等亮度, 随机色相)
-static UIColor *ccRandomVibrantColor(void) {
-    CGFloat hue = (CGFloat)(arc4random_uniform(360)) / 360.0;
-    CGFloat saturation = 0.85 + (CGFloat)(arc4random_uniform(15)) / 100.0; // 0.85~1.0
-    CGFloat brightness = 0.90 + (CGFloat)(arc4random_uniform(10)) / 100.0; // 0.90~1.0
-    return [UIColor colorWithHue:hue saturation:saturation brightness:brightness alpha:1.0];
-}
-
 // 预定义的鲜艳色板,确保可读性
 static NSArray<UIColor *> *ccVibrantColorPalette(void) {
     static NSArray *palette = nil;
