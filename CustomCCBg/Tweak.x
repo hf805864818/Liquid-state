@@ -40,10 +40,6 @@ static const NSInteger kCCBgTargetVideoFPS = 30;
 // 视频静音（默认静音，避免与系统媒体音量冲突）
 static const BOOL kCCBgVideoMuted = YES;
 
-// 模块级视频降分辨率优化
-static const BOOL kCCBgModuleVideoDownscaleEnabled = YES;
-static const NSInteger kCCBgModuleVideoMaxWidth = 480;
-
 // 控制中心收起动画时长（用于延迟恢复系统背景）
 static const NSTimeInterval kCCBgCCDismissAnimationDuration = 0.35;
 
@@ -126,20 +122,6 @@ static BOOL ccbgIsMediaModule(UIView *view) {
         }
     }
     return NO;
-}
-
-// 判断模块是否处于展开态（通过尺寸判断）
-static const CGFloat kCCBgExpandModuleMinSizeRatio = 0.6;
-
-static BOOL ccbgIsModuleExpanded(UIView *moduleView) {
-    if (!moduleView || !moduleView.window) return NO;
-    UIView *rootView = moduleView.window.rootViewController.view;
-    if (!rootView) return NO;
-    CGFloat moduleWidth = CGRectGetWidth(moduleView.bounds);
-    CGFloat rootWidth = CGRectGetWidth(rootView.bounds);
-    if (rootWidth <= 0) return NO;
-    // 模块宽度超过屏幕宽度的 60%，认为是展开态
-    return (moduleWidth / rootWidth) > kCCBgExpandModuleMinSizeRatio;
 }
 
 // MARK: - 图片预渲染模糊工具
