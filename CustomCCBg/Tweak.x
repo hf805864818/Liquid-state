@@ -403,8 +403,15 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
         _imageLayer.contentsGravity = kCAGravityResizeAspectFill;
         [_containerLayer insertSublayer:_imageLayer atIndex:0];
     }
-    if (blurredImage && _imageLayer.contents != (id)blurredImage.CGImage) {
-        _imageLayer.contents = (id)blurredImage.CGImage;
+    // 有模糊图时显示,无模糊图(blur=0)时清空底层,让视频直接呈现
+    if (blurredImage) {
+        if (_imageLayer.contents != (id)blurredImage.CGImage) {
+            _imageLayer.contents = (id)blurredImage.CGImage;
+        }
+        _imageLayer.hidden = NO;
+    } else {
+        _imageLayer.contents = nil;
+        _imageLayer.hidden = YES;
     }
     _imageLayer.frame = _containerLayer.bounds;
 
@@ -536,7 +543,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kCCBgPreferencesDomain];
     self.isEnabled = [defaults boolForKey:kCCBgEnabledKey];
     self.blurAlpha = [defaults floatForKey:kCCBgBlurAlphaKey];
-    if (self.blurAlpha <= 0) self.blurAlpha = 0.3;
+    // blurAlpha 允许为 0,此时显示清晰原图,不做模糊处理
     NSInteger mode = [defaults integerForKey:kCCBgBackgroundModeKey];
     self.connectModuleBgEnabled = [defaults boolForKey:kCCBgConnectModuleEnabledKey];
     self.mediaModuleBgEnabled = [defaults boolForKey:kCCBgMediaModuleEnabledKey];
@@ -608,6 +615,13 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 - (UIImage *)getCachedBlurredImage {
     [self ensureMediaCacheValid];
     if (!self.cachedHasImage) return nil;
+
+    // 模糊度为 0 时直接返回 nil,调用方会显示清晰原图
+    if (self.blurAlpha <= 0.001) {
+        self.cachedBlurredImage = nil;
+        self.cachedBlurRadius = 0.0;
+        return nil;
+    }
 
     CGFloat targetRadius = self.blurAlpha * 20.0; // 最大 20px 模糊
 
@@ -1072,6 +1086,26 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             [self.moduleBackgrounds removeObjectForKey:key];
         }
         return;
+    }
+
+    // 白名单模式: 如果连接模块或媒体模块开关打开,只对匹配的模块显示背景
+    BOOL hasWhitelist = self.connectModuleBgEnabled || self.mediaModuleBgEnabled;
+    if (hasWhitelist) {
+        BOOL isConnect = ccbgIsConnectModule(moduleView);
+        BOOL isMedia = ccbgIsMediaModule(moduleView);
+        BOOL whitelisted =
+            (self.connectModuleBgEnabled && isConnect) ||
+            (self.mediaModuleBgEnabled && isMedia);
+        if (!whitelisted) {
+            // 不在白名单中,清理已有背景
+            NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
+            CCBgModuleBackground *bg = self.moduleBackgrounds[key];
+            if (bg) {
+                [bg cleanup];
+                [self.moduleBackgrounds removeObjectForKey:key];
+            }
+            return;
+        }
     }
 
     [self ensureMediaCacheValid];
