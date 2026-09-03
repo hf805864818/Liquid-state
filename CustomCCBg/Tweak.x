@@ -46,6 +46,16 @@ static void ccbg_log(NSString *format, ...) {
     }
 }
 
+// 调试用: 已记录的模块类名集合 (用于去重日志)
+NSMutableSet *sCCBgLoggedModules(void) {
+    static NSMutableSet *sSet = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sSet = [NSMutableSet set];
+    });
+    return sSet;
+}
+
 // Darwin 通知回调 — 设置变更时跨进程通知 SpringBoard 重新加载
 // 使用 performSelector 避免前向声明的方法签名问题
 static void ccbgDarwinReloadCallback(CFNotificationCenterRef center,
@@ -564,6 +574,13 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     self.cachedImage = nil;
     self.cachedBlurredImage = nil; // 模糊缓存也失效
     self.cachedVideoURL = nil;
+
+    // 重置模块检测日志集合,下次打开控制中心会重新 dump 模块类名
+    extern NSMutableSet *sCCBgLoggedModules(void);
+    NSMutableSet *logged = sCCBgLoggedModules();
+    @synchronized(logged) {
+        [logged removeAllObjects];
+    }
 
     // 如果切换了模式,需要清理旧模式的资源
     if (oldMode != self.backgroundMode) {
@@ -1104,6 +1121,21 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
                 [bg cleanup];
                 [self.moduleBackgrounds removeObjectForKey:key];
             }
+            // 调试: 记录被跳过的模块类名,帮助排查检测失败的情况
+            NSMutableSet *loggedModules = sCCBgLoggedModules();
+            NSString *clsName = NSStringFromClass([moduleView class]);
+            @synchronized(loggedModules) {
+                if (![loggedModules containsObject:clsName]) {
+                    [loggedModules addObject:clsName];
+                    ccbg_log(@"whitelist skip: class=%@ isConnect=%d isMedia=%d (connectEnabled=%d mediaEnabled=%d)",
+                          clsName, isConnect, isMedia,
+                          self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
+                    // Dump 前 3 层子视图类名,帮助识别模块内容
+                    NSMutableString *tree = [NSMutableString string];
+                    ccbgDumpSubviewTree(moduleView, @"  ", tree);
+                    ccbg_log(@"  module subtree:\n%@", tree);
+                }
+            }
             return;
         }
     }
@@ -1120,6 +1152,10 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         // 背景用 CALayer 插到模块 layer 下面，避免成为兄弟 UIView 导致动画系统崩溃
         [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
         self.moduleBackgrounds[key] = bg;
+        ccbg_log(@"module bg CREATED: class=%@ frame=%@ hasVideo=%d blurAlpha=%.2f",
+              NSStringFromClass([moduleView class]),
+              NSStringFromCGRect(moduleFrameInSuperview),
+              self.cachedHasVideo, self.blurAlpha);
     }
 
     // 如果父视图变了，重新挂载
