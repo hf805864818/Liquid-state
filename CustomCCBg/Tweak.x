@@ -46,11 +46,14 @@ static void ccbg_log(NSString *format, ...) {
     }
 }
 
+// 前向声明 — CustomCCBgManager 在后面定义,但 Darwin 回调需要提前使用
+@class CustomCCBgManager;
+
 // Darwin 通知回调 — 设置变更时跨进程通知 SpringBoard 重新加载
 static void ccbgDarwinReloadCallback(CFNotificationCenterRef center,
                                       void *observer,
                                       CFStringRef name,
-                                      void *object,
+                                      const void *object,
                                       CFDictionaryRef userInfo) {
     @autoreleasepool {
         ccbg_log(@"Darwin notification: reload preferences");
