@@ -24,7 +24,19 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 + (PSSpecifier *)groupSpecifierWithProperties:(NSDictionary *)properties;
 @end
 
-@interface CCBGRootListController : PSListController
+// PSListController private method declarations
+@interface PSListController (Private)
+- (PSSpecifier *)specifierForIndexPath:(NSIndexPath *)indexPath;
+@end
+
+// PHPickerFilter runtime class method declarations (iOS 14+)
+@interface PHPickerFilter : NSObject
++ (instancetype)imagesFilter;
++ (instancetype)videosFilter;
++ (instancetype)anyFilterMatchingSubfilters:(NSArray<PHPickerFilter *> *)subfilters;
+@end
+
+@interface CCBGRootListController : PSListController <UINavigationControllerDelegate, UIImagePickerControllerDelegate>
 - (PSSpecifier *)groupSpecifierWithName:(NSString *)name footerText:(NSString *)footer;
 - (PSSpecifier *)switchSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue;
 - (PSSpecifier *)sliderSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue min:(id)min max:(id)max;
@@ -242,9 +254,9 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     }
 
     // 先判断类型
-    if ([provider hasItemConformingToTypeIdentifier:(NSString *)kUTTypeMovie]) {
+    if ([provider hasItemConformingToTypeIdentifier:@"public.movie"]) {
         // 视频
-        [provider loadFileRepresentationForTypeIdentifier:(NSString *)kUTTypeMovie
+        [provider loadFileRepresentationForTypeIdentifier:@"public.movie"
                                         completionHandler:^(NSURL * _Nullable url, NSError * _Nullable error) {
             if (url && !error) {
                 // 先复制到临时目录（loadFileRepresentation 的 URL 是临时的，结束后会删除）
@@ -266,7 +278,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
                 });
             }
         }];
-    } else if ([provider hasItemConformingToTypeIdentifier:(NSString *)kUTTypeImage]) {
+    } else if ([provider hasItemConformingToTypeIdentifier:@"public.image"]) {
         // 图片
         [provider loadObjectOfClass:[UIImage class]
                   completionHandler:^(id<NSItemProviderReading>  _Nullable object, NSError * _Nullable error) {

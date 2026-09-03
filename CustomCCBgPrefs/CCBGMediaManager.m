@@ -177,7 +177,6 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
     CGSize targetSize = CGSizeMake(kCCBgThumbSize, kCCBgThumbSize);
 
     UIGraphicsBeginImageContextWithOptions(targetSize, YES, [UIScreen mainScreen].scale);
-    CGContextRef context = UIGraphicsGetCurrentContext();
 
     // 裁剪并缩放
     CGRect drawRect = CGRectMake(-cropRect.origin.x * scale,
