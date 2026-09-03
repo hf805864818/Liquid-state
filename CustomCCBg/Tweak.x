@@ -46,10 +46,8 @@ static void ccbg_log(NSString *format, ...) {
     }
 }
 
-// 前向声明 — CustomCCBgManager 在后面定义,但 Darwin 回调需要提前使用
-@class CustomCCBgManager;
-
 // Darwin 通知回调 — 设置变更时跨进程通知 SpringBoard 重新加载
+// 使用 performSelector 避免前向声明的方法签名问题
 static void ccbgDarwinReloadCallback(CFNotificationCenterRef center,
                                       void *observer,
                                       CFStringRef name,
@@ -57,7 +55,11 @@ static void ccbgDarwinReloadCallback(CFNotificationCenterRef center,
                                       CFDictionaryRef userInfo) {
     @autoreleasepool {
         ccbg_log(@"Darwin notification: reload preferences");
-        [[CustomCCBgManager sharedInstance] reloadPreferences];
+        Class mgrCls = NSClassFromString(@"CustomCCBgManager");
+        if (mgrCls) {
+            id mgr = [mgrCls performSelector:@selector(sharedInstance)];
+            if (mgr) [mgr performSelector:@selector(reloadPreferences)];
+        }
     }
 }
 
