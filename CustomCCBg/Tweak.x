@@ -15,6 +15,37 @@
 #import <CoreImage/CoreImage.h>
 #import "../Shared/LGSharedSupport.h"
 
+// MARK: - 文件日志（可在 Filza 中查看）
+static NSString * const kCCBgLogFile = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media/debug.log";
+
+static void ccbg_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
+static void ccbg_log(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    [fmt setDateFormat:@"HH:mm:ss.SSS"];
+    NSString *timestamp = [fmt stringFromDate:[NSDate date]];
+    NSString *logLine = [NSString stringWithFormat:@"[%@] %@\n", timestamp, message];
+
+    NSLog(@"[CCBg] %@", message);
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dir = [kCCBgLogFile stringByDeletingLastPathComponent];
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    if (![fm fileExistsAtPath:kCCBgLogFile]) {
+        [logLine writeToFile:kCCBgLogFile atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } else {
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:kCCBgLogFile];
+        [handle seekToEndOfFile];
+        [handle writeData:[logLine dataUsingEncoding:NSUTF8StringEncoding]];
+        [handle closeFile];
+    }
+}
+
 // MARK: - 常量
 
 static NSString * const kCCBgPreferencesDomain = @"dylv.Deepliquid.ccbg";
@@ -451,6 +482,11 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     NSLog(@"[CCBg] reloadPrefs: enabled=%d fullscreen=%d mode=%ld connect=%d media=%d",
           self.isEnabled, fullscreenEnabled, (long)self.backgroundMode,
           self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
+    ccbg_log(@"reloadPrefs: enabled=%d fullscreen=%d mode=%ld connect=%d media=%d hasImage=%d hasVideo=%d",
+          self.isEnabled, fullscreenEnabled, (long)self.backgroundMode,
+          self.connectModuleBgEnabled, self.mediaModuleBgEnabled,
+          [[NSFileManager defaultManager] fileExistsAtPath:[kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgImageFileName]],
+          [[NSFileManager defaultManager] fileExistsAtPath:[kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgVideoFileName]]);
     CCBgMode oldMode = self.backgroundMode;
     self.backgroundMode = (mode == kCCBgModePerModule) ? kCCBgModePerModule : kCCBgModeFullscreen;
 
@@ -740,9 +776,15 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
     self.bgContainerView.frame = self.hostView.bounds;
 
+    // 功能关闭 → 隐藏并清理媒体
     if (!self.isEnabled) {
         self.bgContainerView.hidden = YES;
         [self detachMediaViews];
+        return;
+    }
+    // 控制中心不可见（收起动画中）→ 仅隐藏不清理，防止 layoutSubviews 重新显示
+    if (!self.isControlCenterVisible) {
+        self.bgContainerView.hidden = YES;
         return;
     }
     self.bgContainerView.hidden = NO;
@@ -826,10 +868,13 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     if (self.backgroundMode == kCCBgModePerModule) return NO;
 
     NSString *cls = NSStringFromClass([moduleView class]);
+    NSString *superCls = moduleView.superview ? NSStringFromClass([moduleView.superview class]) : @"nil";
     BOOL isConnect = ccbgIsConnectModule(moduleView);
     BOOL isMedia = ccbgIsMediaModule(moduleView);
     NSLog(@"[CCBg] module check: class=%@ isConnect=%d isMedia=%d connectEnabled=%d mediaEnabled=%d",
           cls, isConnect, isMedia, self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
+    ccbg_log(@"module check: class=%@ super=%@ isConnect=%d isMedia=%d connectEnabled=%d mediaEnabled=%d",
+          cls, superCls, isConnect, isMedia, self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
 
     // 检查特定模块开关
     if (self.connectModuleBgEnabled && isConnect) return YES;
@@ -1057,6 +1102,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
+    ccbg_log(@"CC overlay viewWillAppear");
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:YES];
     UIView *root = ((UIViewController *)self).view;
     [[CustomCCBgManager sharedInstance] attachToHostView:root];
@@ -1064,16 +1110,19 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
+    ccbg_log(@"CC overlay viewDidAppear");
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:YES];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     %orig;
+    ccbg_log(@"CC overlay viewWillDisappear");
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:NO];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
     %orig;
+    ccbg_log(@"CC overlay viewDidDisappear");
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:NO];
 }
 
@@ -1105,6 +1154,10 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)layoutSubviews {
     %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIContentModuleContainerView layoutSubviews, actual class=%@", NSStringFromClass([self class]));
+    });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if (mgr.backgroundMode == kCCBgModePerModule) {
         [mgr attachToModuleView:(UIView *)self];
@@ -1116,6 +1169,10 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)didMoveToWindow {
     %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIContentModuleContainerView didMoveToWindow, actual class=%@", NSStringFromClass([self class]));
+    });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if (mgr.backgroundMode == kCCBgModePerModule && [(UIView *)self window]) {
         [mgr attachToModuleView:(UIView *)self];

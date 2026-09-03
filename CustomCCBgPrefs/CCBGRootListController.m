@@ -6,6 +6,37 @@
 #import "CCBGMediaManager.h"
 #import "CCBGThumbnailButtonCell.h"
 
+// MARK: - 文件日志（可在 Filza 中查看）
+static NSString * const kCCBgLogFile = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media/debug.log";
+
+static void ccbg_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
+static void ccbg_log(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    [fmt setDateFormat:@"HH:mm:ss.SSS"];
+    NSString *timestamp = [fmt stringFromDate:[NSDate date]];
+    NSString *logLine = [NSString stringWithFormat:@"[%@] %@\n", timestamp, message];
+
+    NSLog(@"[CCBg] %@", message);
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dir = [kCCBgLogFile stringByDeletingLastPathComponent];
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    if (![fm fileExistsAtPath:kCCBgLogFile]) {
+        [logLine writeToFile:kCCBgLogFile atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } else {
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:kCCBgLogFile];
+        [handle seekToEndOfFile];
+        [handle writeData:[logLine dataUsingEncoding:NSUTF8StringEncoding]];
+        [handle closeFile];
+    }
+}
+
 // MARK: - 常量
 
 static NSString * const kCCBgPrefsDomain = @"dylv.Deepliquid.ccbg";
@@ -133,18 +164,21 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     if ([value isKindOfClass:[NSNumber class]] && [value boolValue]) {
         if ([key isEqualToString:kCCBgFullscreenEnabledKey]) {
             // 全屏 ON → 关闭模块开关，开启 Enabled，模式=0
+            ccbg_log(@"switch: fullscreen ON → enabled=YES, connect=NO, media=NO");
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgConnectModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgMediaModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey, kCFBooleanTrue, (__bridge CFStringRef)kCCBgPrefsDomain);
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0), (__bridge CFStringRef)kCCBgPrefsDomain);
         } else if ([key isEqualToString:kCCBgConnectModuleEnabledKey]) {
             // 连接模块 ON → 关闭其它，关闭 Enabled（特定模块模式不需要 Enabled），模式=0
+            ccbg_log(@"switch: connect ON → enabled=NO, fullscreen=NO, media=NO");
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgFullscreenEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgMediaModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0), (__bridge CFStringRef)kCCBgPrefsDomain);
         } else if ([key isEqualToString:kCCBgMediaModuleEnabledKey]) {
             // 播放模块 ON → 关闭其它，关闭 Enabled，模式=0
+            ccbg_log(@"switch: media ON → enabled=NO, fullscreen=NO, connect=NO");
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgFullscreenEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgConnectModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
             CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
@@ -166,13 +200,9 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 #pragma mark - Actions
 
 - (void)chooseMedia:(PSSpecifier *)specifier {
-    // 直接打开 PHPicker（图片和视频都可以选）
-    if (@available(iOS 14, *)) {
-        [self presentPHPicker];
-    } else {
-        // iOS 13 及以下降级：先弹窗选类型
-        [self presentLegacyPickerWithActionSheet];
-    }
+    // 使用 UIImagePickerController — 比 PHPicker 更可靠地处理视频
+    // PHPicker 在 iOS 17 上不报告视频 UTI，导致视频被误判为图片
+    [self presentUnifiedImagePicker];
 }
 
 - (void)chooseBackgroundMode:(PSSpecifier *)specifier {
@@ -219,6 +249,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 }
 
 - (void)clearMedia:(PSSpecifier *)specifier {
+    ccbg_log(@"clearMedia requested");
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"清除背景"
                                                                    message:@"确定要清除当前设置的控制中心背景吗？"
                                                             preferredStyle:UIAlertControllerStyleAlert];
@@ -234,18 +265,50 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 - (void)openFilzaPath:(PSSpecifier *)specifier {
     NSString *path = [@"filza://" stringByAppendingString:[CCBGMediaManager sharedManager].mediaDirectory];
     NSURL *url = [NSURL URLWithString:path];
-    if ([[UIApplication sharedApplication] canOpenURL:url]) {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-    } else {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法打开 Filza"
-                                                                       message:@"请确认已安装 Filza 文件管理器"
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
-    }
+    ccbg_log(@"openFilzaPath: url=%@", path);
+    // iOS 9+ canOpenURL: requires LSApplicationQueriesSchemes — skip it and just try opening.
+    // The completion handler tells us if it actually worked.
+    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
+        if (!success) {
+            ccbg_log(@"openFilzaPath: failed to open (Filza not installed?)");
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"无法打开 Filza"
+                                                                               message:@"请确认已安装 Filza 文件管理器"
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            });
+        }
+    }];
 }
 
-#pragma mark - PHPicker (iOS 14+)
+#pragma mark - 统一图片/视频选择器 (UIImagePickerController)
+
+- (void)presentUnifiedImagePicker {
+    [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (status != PHAuthorizationStatusAuthorized) {
+                UIAlertController *alert = [UIAlertController
+                    alertControllerWithTitle:@"无法访问相册"
+                                     message:@"请在「设置 → 隐私 → 照片」中允许此设备访问相册"
+                              preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+                ccbg_log(@"photo permission denied");
+                return;
+            }
+            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+            picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
+            picker.mediaTypes = @[@"public.image", @"public.movie"];
+            picker.delegate = self;
+            picker.allowsEditing = NO;
+            [self presentViewController:picker animated:YES completion:nil];
+            ccbg_log(@"UIImagePickerController presented (image+video)");
+        });
+    }];
+}
+
+#pragma mark - PHPicker (iOS 14+) — 备用，不再首选
 
 - (void)presentPHPicker API_AVAILABLE(ios(14)) {
     // PHPicker 不需要权限申请，用户自己选择
@@ -312,6 +375,8 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     }
     NSLog(@"[CCBg] provider registeredTypeIdentifiers: %@", provider.registeredTypeIdentifiers);
     NSLog(@"[CCBg] detected videoType: %@", videoType);
+    ccbg_log(@"PHPicker provider UTIs: %@", provider.registeredTypeIdentifiers);
+    ccbg_log(@"PHPicker detected videoType: %@", videoType);
 
     if (videoType) {
         // 视频
@@ -420,20 +485,29 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     [picker dismissViewControllerAnimated:YES completion:nil];
 
     NSString *mediaType = info[UIImagePickerControllerMediaType];
+    ccbg_log(@"picker returned mediaType=%@", mediaType);
 
     // 显示处理中 HUD
     [CCBGProgressHUD showInView:self.view text:@"处理中..."];
 
     if ([mediaType isEqualToString:@"public.image"]) {
         UIImage *image = info[UIImagePickerControllerOriginalImage];
+        ccbg_log(@"image picked, size=%.0fx%.0f", image.size.width, image.size.height);
         [[CCBGMediaManager sharedManager] saveImage:image completion:^(BOOL success) {
+            ccbg_log(@"image save result: %d", success);
             [self didFinishSavingMedia:success];
         }];
     } else if ([mediaType isEqualToString:@"public.movie"]) {
         NSURL *videoURL = info[UIImagePickerControllerMediaURL];
+        ccbg_log(@"video picked, url=%@", videoURL);
         [[CCBGMediaManager sharedManager] saveVideoFromURL:videoURL completion:^(BOOL success) {
+            ccbg_log(@"video save result: %d", success);
             [self didFinishSavingMedia:success];
         }];
+    } else {
+        ccbg_log(@"unknown media type: %@", mediaType);
+        [CCBGProgressHUD dismissFromView:self.view];
+        [self showSaveResultAlertWithSuccess:NO message:@"不支持的媒体类型"];
     }
 }
 
@@ -445,6 +519,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 
 - (void)didFinishSavingMedia:(BOOL)success {
     [CCBGProgressHUD dismissFromView:self.view];
+    ccbg_log(@"didFinishSavingMedia: success=%d", success);
 
     if (success) {
         // 自动开启全屏背景模式（默认模式），关闭其它模式
