@@ -739,7 +739,7 @@ static void ccSliderUpdatePercentLabel(UIView *slider) {
                                 options:UIViewAnimationOptionCurveEaseInOut
                              animations:^{
                 label.textColor = newColor;
-            }];
+            } completion:nil];
         } else if (!lastPercent) {
             // 首次显示: 直接设随机色
             label.textColor = ccPickRandomPaletteColor();
