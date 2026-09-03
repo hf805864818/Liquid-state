@@ -8,6 +8,7 @@
 #import "../Shared/LGSharedSupport.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
+#import <dlfcn.h>
 #import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
@@ -464,33 +465,72 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 }
 
 - (void)openCustomCCBgSettings {
-    // Load the CustomCCBgPrefs preference bundle and push its controller
+    // Load the CustomCCBgPrefs preference bundle and push its controller.
     Class controllerClass = NSClassFromString(@"CCBGRootListController");
+    NSString *diagnostics = nil;
+
     if (!controllerClass) {
-        NSArray *searchPaths = @[
+        NSMutableArray<NSString *> *searchPaths = [NSMutableArray array];
+
+        // 1. Sibling directory of the currently loaded LiquidAssPrefs bundle.
+        //    Resolves correctly on rootful / rootless / roothide jailbreaks
+        //    without hard-coding the jailbreak root path.
+        NSString *selfBundlePath = [[NSBundle bundleForClass:[self class]] bundlePath];
+        [searchPaths addObject:[[selfBundlePath stringByDeletingLastPathComponent]
+                                   stringByAppendingPathComponent:@"CustomCCBgPrefs.bundle"]];
+
+        // 2. Hard-coded fallbacks for common layouts.
+        [searchPaths addObjectsFromArray:@[
             @"/var/jb/Library/PreferenceBundles/CustomCCBgPrefs.bundle",
             @"/Library/PreferenceBundles/CustomCCBgPrefs.bundle",
             @"/var/jb/usr/lib/PreferenceBundles/CustomCCBgPrefs.bundle",
-        ];
+        ]];
+
+        NSMutableString *diag = [NSMutableString string];
         for (NSString *path in searchPaths) {
             BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:path];
+            NSLog(@"[LiquidAss] CCBg: probe path=%@ exists=%d", path, exists);
+            if (!exists) {
+                [diag appendFormat:@"· 路径不存在: %@\n", path];
+                continue;
+            }
             NSBundle *bundle = [NSBundle bundleWithPath:path];
-            NSLog(@"[LiquidAss] CCBg: path=%@ exists=%d bundle=%d", path, exists, bundle != nil);
             if (bundle && [bundle load]) {
                 controllerClass = NSClassFromString(@"CCBGRootListController");
                 NSLog(@"[LiquidAss] CCBg: bundle loaded, classFound=%d", controllerClass != nil);
                 if (controllerClass) break;
+                [diag appendFormat:@"· 已加载但找不到类: %@\n", path];
+                continue;
+            }
+            // NSBundle load failed – fall back to dlopen to capture the real dyld error.
+            NSString *binaryPath = [path stringByAppendingPathComponent:@"CustomCCBgPrefs"];
+            void *handle = dlopen(binaryPath.fileSystemRepresentation, RTLD_NOW);
+            if (handle) {
+                controllerClass = NSClassFromString(@"CCBGRootListController");
+                NSLog(@"[LiquidAss] CCBg: dlopen OK, classFound=%d", controllerClass != nil);
+                if (controllerClass) break;
+                [diag appendFormat:@"· dlopen 成功但找不到类: %@\n", path];
+            } else {
+                const char *reason = dlerror();
+                NSLog(@"[LiquidAss] CCBg: dlopen failed: %s", reason ? reason : "unknown");
+                [diag appendFormat:@"· 加载失败: %@\n  原因: %s\n", path, reason ? reason : "unknown"];
             }
         }
+        diagnostics = diag;
     }
+
     if (controllerClass) {
         UIViewController *vc = [[controllerClass alloc] init];
         [self.navigationController pushViewController:vc animated:YES];
     } else {
-        // Bundle not found – show error instead of falling back to old ActionSheet
+        // Bundle not found – show error with diagnostics to help debugging.
+        NSString *message = @"设置页面加载失败，请重新安装 tweak 后重试。";
+        if (diagnostics.length) {
+            message = [message stringByAppendingFormat:@"\n\n—— 诊断信息 ——\n%@", diagnostics];
+        }
         UIAlertController *alert = [UIAlertController
             alertControllerWithTitle:LGLocalized(@"prefs.control_center_custom_bg.title")
-                             message:@"设置页面加载失败，请重新安装 tweak 后重试。"
+                             message:message
                       preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction
             actionWithTitle:@"好的"

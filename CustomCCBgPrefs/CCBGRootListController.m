@@ -2,7 +2,6 @@
 #import <Preferences/Preferences.h>
 #import <Photos/Photos.h>
 #import <AVFoundation/AVFoundation.h>
-#import <MobileCoreServices/MobileCoreServices.h>
 #import "CCBGProgressHUD.h"
 #import "CCBGMediaManager.h"
 #import "CCBGThumbnailButtonCell.h"

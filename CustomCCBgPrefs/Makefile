@@ -11,7 +11,10 @@ CustomCCBgPrefs_FILES = CCBGRootListController.m \
                         CCBGThumbnailButtonCell.m
 
 CustomCCBgPrefs_CFLAGS = -fobjc-arc
-CustomCCBgPrefs_FRAMEWORKS = UIKit Foundation Photos MobileCoreServices AVFoundation
+# NOTE: MobileCoreServices removed — it was linked but never used, and the
+# framework is deprecated/absent on newer iOS versions, which would make
+# dyld refuse to load the bundle ("Library not loaded").
+CustomCCBgPrefs_FRAMEWORKS = UIKit Foundation Photos AVFoundation
 CustomCCBgPrefs_PRIVATE_FRAMEWORKS = Preferences
 CustomCCBgPrefs_INSTALL_PATH = /Library/PreferenceBundles
 CustomCCBgPrefs_RESOURCE_DIRS = Resources
