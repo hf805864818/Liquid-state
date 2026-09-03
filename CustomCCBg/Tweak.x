@@ -46,6 +46,18 @@ static void ccbg_log(NSString *format, ...) {
     }
 }
 
+// Darwin 通知回调 — 设置变更时跨进程通知 SpringBoard 重新加载
+static void ccbgDarwinReloadCallback(CFNotificationCenterRef center,
+                                      void *observer,
+                                      CFStringRef name,
+                                      void *object,
+                                      CFDictionaryRef userInfo) {
+    @autoreleasepool {
+        ccbg_log(@"Darwin notification: reload preferences");
+        [[CustomCCBgManager sharedInstance] reloadPreferences];
+    }
+}
+
 // MARK: - 常量
 
 static NSString * const kCCBgPreferencesDomain = @"dylv.Deepliquid.ccbg";
@@ -114,48 +126,84 @@ static NSArray *ccbgMediaModuleKeywords() {
     return keywords;
 }
 
-// 判断是否为连接模块（通过类名匹配）
-static BOOL ccbgIsConnectModule(UIView *view) {
-    if (!view) return NO;
+// 递归检查视图树中是否包含关键词（最多 depth 层）
+static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInteger depth) {
+    if (!view || depth < 0) return NO;
     NSString *className = NSStringFromClass([view class]);
-    for (NSString *keyword in ccbgConnectModuleKeywords()) {
+    for (NSString *keyword in keywords) {
         if ([className rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
             return YES;
         }
     }
-    // 也检查父视图类名
-    UIView *superview = view.superview;
-    if (superview) {
-        NSString *superClassName = NSStringFromClass([superview class]);
-        for (NSString *keyword in ccbgConnectModuleKeywords()) {
-            if ([superClassName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
-                return YES;
-            }
+    for (UIView *subview in view.subviews) {
+        if (ccbgCheckViewTreeForKeywords(subview, keywords, depth - 1)) {
+            return YES;
         }
     }
     return NO;
 }
 
-// 判断是否为播放控制模块（通过类名匹配）
-static BOOL ccbgIsMediaModule(UIView *view) {
+// 递归 dump 子视图类名（调试用）
+static void ccbgDumpSubviewTree(UIView *view, NSString *indent, NSMutableString *output) {
+    if (!view) return;
+    [output appendFormat:@"%@%@\n", indent, NSStringFromClass([view class])];
+    if (view.subviews.count > 0 && indent.length < 8) {
+        for (UIView *sub in view.subviews) {
+            ccbgDumpSubviewTree(sub, [indent stringByAppendingString:@"  "], output);
+        }
+    }
+}
+
+// 判断是否为连接模块（递归检查子视图类名）
+static BOOL ccbgIsConnectModule(UIView *view) {
     if (!view) return NO;
+    NSArray *keywords = ccbgConnectModuleKeywords();
+
+    // 检查自身类名
     NSString *className = NSStringFromClass([view class]);
-    for (NSString *keyword in ccbgMediaModuleKeywords()) {
+    for (NSString *keyword in keywords) {
         if ([className rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
             return YES;
         }
     }
-    // 也检查父视图类名
+    // 检查父视图类名
     UIView *superview = view.superview;
     if (superview) {
         NSString *superClassName = NSStringFromClass([superview class]);
-        for (NSString *keyword in ccbgMediaModuleKeywords()) {
+        for (NSString *keyword in keywords) {
             if ([superClassName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
                 return YES;
             }
         }
     }
-    return NO;
+    // 递归检查子视图（最多 4 层）—— iOS 17 模块容器类名相同，内容视图在子视图中
+    return ccbgCheckViewTreeForKeywords(view, keywords, 4);
+}
+
+// 判断是否为播放控制模块（递归检查子视图类名）
+static BOOL ccbgIsMediaModule(UIView *view) {
+    if (!view) return NO;
+    NSArray *keywords = ccbgMediaModuleKeywords();
+
+    // 检查自身类名
+    NSString *className = NSStringFromClass([view class]);
+    for (NSString *keyword in keywords) {
+        if ([className rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return YES;
+        }
+    }
+    // 检查父视图类名
+    UIView *superview = view.superview;
+    if (superview) {
+        NSString *superClassName = NSStringFromClass([superview class]);
+        for (NSString *keyword in keywords) {
+            if ([superClassName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                return YES;
+            }
+        }
+    }
+    // 递归检查子视图（最多 4 层）
+    return ccbgCheckViewTreeForKeywords(view, keywords, 4);
 }
 
 // MARK: - 图片预渲染模糊工具
@@ -405,6 +453,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 @property (nonatomic, strong) UIView *bgContainerView;
 @property (nonatomic, strong) UIImageView *imageView;
 @property (nonatomic, strong) CustomCCBgVideoView *videoView;
+@property (nonatomic, strong) UIVisualEffectView *videoBlurView; // 视频背景模糊叠加层
 @property (nonatomic, weak) UIView *originalMaterialView; // 系统原毛玻璃背景（隐藏用）
 
 // 模块级模式属性
@@ -459,6 +508,14 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
                                                  selector:@selector(reloadPreferences)
                                                      name:kCCBgReloadNotification
                                                    object:nil];
+        // 注册 Darwin 通知 — 接收来自 Preferences 的跨进程设置变更通知
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge void *)self,
+            ccbgDarwinReloadCallback,
+            CFSTR("dylv.Deepliquid.ccbg.reload"),
+            NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
         _moduleBackgrounds = [NSMutableDictionary dictionary];
         _isControlCenterVisible = NO;
         [self reloadPreferences];
@@ -482,9 +539,9 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     NSLog(@"[CCBg] reloadPrefs: enabled=%d fullscreen=%d mode=%ld connect=%d media=%d",
           self.isEnabled, fullscreenEnabled, (long)self.backgroundMode,
           self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
-    ccbg_log(@"reloadPrefs: enabled=%d fullscreen=%d mode=%ld connect=%d media=%d hasImage=%d hasVideo=%d",
+    ccbg_log(@"reloadPrefs: enabled=%d fullscreen=%d mode=%ld connect=%d media=%d blurAlpha=%.2f hasImage=%d hasVideo=%d",
           self.isEnabled, fullscreenEnabled, (long)self.backgroundMode,
-          self.connectModuleBgEnabled, self.mediaModuleBgEnabled,
+          self.connectModuleBgEnabled, self.mediaModuleBgEnabled, self.blurAlpha,
           [[NSFileManager defaultManager] fileExistsAtPath:[kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgImageFileName]],
           [[NSFileManager defaultManager] fileExistsAtPath:[kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgVideoFileName]]);
     CCBgMode oldMode = self.backgroundMode;
@@ -803,6 +860,22 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         if (self.isControlCenterVisible) {
             [self.videoView play];
         }
+
+        // 视频模糊叠加层（blurAlpha > 0 时添加）
+        if (self.blurAlpha > 0.01) {
+            if (!self.videoBlurView) {
+                UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+                self.videoBlurView = [[UIVisualEffectView alloc] initWithEffect:blur];
+                self.videoBlurView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                self.videoBlurView.userInteractionEnabled = NO;
+                [self.bgContainerView insertSubview:self.videoBlurView aboveSubview:self.videoView];
+            }
+            self.videoBlurView.frame = self.bgContainerView.bounds;
+            self.videoBlurView.alpha = self.blurAlpha;
+        } else if (self.videoBlurView) {
+            [self.videoBlurView removeFromSuperview];
+            self.videoBlurView = nil;
+        }
     } else if (self.cachedHasImage) {
         [self detachVideoView];
         if (!self.imageView) {
@@ -848,6 +921,10 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         [self.videoView removeFromSuperview];
         self.videoView = nil;
     }
+    if (self.videoBlurView) {
+        [self.videoBlurView removeFromSuperview];
+        self.videoBlurView = nil;
+    }
 }
 
 - (void)detachImageView {
@@ -875,6 +952,14 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
           cls, isConnect, isMedia, self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
     ccbg_log(@"module check: class=%@ super=%@ isConnect=%d isMedia=%d connectEnabled=%d mediaEnabled=%d",
           cls, superCls, isConnect, isMedia, self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
+
+    // 一次性 dump 子视图树（帮助识别 iOS 17 模块内容类名）
+    static dispatch_once_t dumpOnce;
+    dispatch_once(&dumpOnce, ^{
+        NSMutableString *tree = [NSMutableString string];
+        ccbgDumpSubviewTree(moduleView, @"", tree);
+        ccbg_log(@"=== First module subview tree ===\n%@", tree);
+    });
 
     // 检查特定模块开关
     if (self.connectModuleBgEnabled && isConnect) return YES;
@@ -1179,6 +1264,19 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     } else if ([(UIView *)self window]) {
         // 特定模块背景
         [mgr attachToSpecificModuleView:(UIView *)self];
+    }
+}
+
+- (void)willMoveToWindow:(UIWindow *)newWindow {
+    %orig;
+    // 模块视图即将从窗口移除 → 控制中心正在关闭
+    // 比 viewWillDisappear: 更早触发，能立即隐藏背景
+    if (!newWindow) {
+        CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+        if (mgr.isControlCenterVisible) {
+            ccbg_log(@"willMoveToWindow:nil → CC closing, hide bg immediately");
+            [mgr setControlCenterVisible:NO];
+        }
     }
 }
 

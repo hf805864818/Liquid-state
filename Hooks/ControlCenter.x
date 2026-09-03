@@ -690,8 +690,9 @@ static void ccSliderUpdatePercentLabel(UIView *slider) {
     CGFloat sliderWidth = CGRectGetWidth(slider.bounds);
     CGFloat sliderHeight = CGRectGetHeight(slider.bounds);
 
-    // Always center the label both horizontally and vertically
-    CGFloat labelX = (sliderWidth - labelWidth) / 2.0;
+    // Center the label, with a small right offset for narrow sliders (fine volume UI)
+    CGFloat rightOffset = (sliderWidth < 120) ? 10.0 : 0.0;
+    CGFloat labelX = (sliderWidth - labelWidth) / 2.0 + rightOffset;
     CGFloat labelY = (sliderHeight - labelHeight) / 2.0;
     label.frame = CGRectMake(labelX, labelY, labelWidth, labelHeight);
 }

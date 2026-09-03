@@ -42,6 +42,15 @@ static void ccbg_log(NSString *format, ...) {
 static NSString * const kCCBgPrefsDomain = @"dylv.Deepliquid.ccbg";
 static NSString * const kCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadPrefs";
 
+// 发送跨进程通知（NSNotification + Darwin 通知）
+static void ccbgPostReloadNotification(void) {
+    [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR("dylv.Deepliquid.ccbg.reload"),
+        NULL, NULL, TRUE);
+}
+
 // 偏好设置 key
 static NSString * const kCCBgEnabledKey = @"Enabled";
 static NSString * const kCCBgBlurAlphaKey = @"BlurAlpha";
@@ -187,7 +196,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     }
 
     CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
-    [[NSNotificationCenter defaultCenter] postNotificationName:(id)kCCBgReloadNotification object:nil];
+    ccbgPostReloadNotification();
 
     // 互斥开关变更后刷新 UI 以反映自动关闭的状态
     if ([key isEqualToString:kCCBgFullscreenEnabledKey] ||
@@ -224,7 +233,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
         CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0),
                                 (__bridge CFStringRef)kCCBgPrefsDomain);
         CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
-        [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
+        ccbgPostReloadNotification();
         [self reloadSpecifiers];
     }]];
 
@@ -234,7 +243,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
         CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(1),
                                 (__bridge CFStringRef)kCCBgPrefsDomain);
         CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
-        [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
+        ccbgPostReloadNotification();
         [self reloadSpecifiers];
     }]];
 
@@ -256,7 +265,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         [[CCBGMediaManager sharedManager] clearAllMedia];
-        [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
+        ccbgPostReloadNotification();
         [self.table reloadData];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -540,7 +549,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
                                  (__bridge CFStringRef)kCCBgPrefsDomain);
         CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
 
-        [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
+        ccbgPostReloadNotification();
         [self.table reloadData];
     }
 
