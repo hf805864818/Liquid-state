@@ -36,13 +36,26 @@ static void qaSetBackdropHidden(UIVisualEffectView *effectView) {
 
 static BOOL isQuickActionsHost(UIView *view) {
     if (![view isKindOfClass:[UIVisualEffectView class]] || !view.window) return NO;
-    if (view.window.safeAreaInsets.bottom <= 0.0) return NO;
+    // 移除 safeAreaInsets.bottom 检查 — iOS 17 上 didMoveToWindow 触发时
+    // safe area 可能尚未设置,导致误判为非快捷操作。
+    // CSQuickActionsButton 祖先检查已足够精确 (SpringBoard 专属类)。
     Class qaCls = NSClassFromString(@"CSQuickActionsButton");
     for (UIView *a = view.superview; a; a = a.superview) {
         if (qaCls && [a isKindOfClass:qaCls]) return YES;
         if ([a isKindOfClass:[UIVisualEffectView class]]) return NO;
     }
     return NO;
+}
+
+// 在 CSQuickActionsButton 子视图树中查找 UIVisualEffectView (最多 3 层)
+static UIVisualEffectView *qaFindEffectView(UIView *view) {
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:[UIVisualEffectView class]]) return (UIVisualEffectView *)sub;
+        for (UIView *inner in sub.subviews) {
+            if ([inner isKindOfClass:[UIVisualEffectView class]]) return (UIVisualEffectView *)inner;
+        }
+    }
+    return nil;
 }
 
 static void injectQuickActionsGlass(UIVisualEffectView *fx) {
@@ -115,6 +128,28 @@ static void LGReconcileQuickActionHosts(void) {
     %orig;
     UIView *self_ = (UIView *)self;
     if (isQuickActionsHost(self_)) injectQuickActionsGlass((UIVisualEffectView *)self_);
+}
+%end
+
+// 直接 Hook CSQuickActionsButton — 当按钮本身移动到窗口或布局变化时重新注入玻璃。
+// 解决 iOS 17 上 UIVisualEffectView 不触发 didMoveToWindow 的问题。
+// 这些方法只在锁屏显示/隐藏时触发,无定时器、无轮询,不影响耗电和温度。
+%hook CSQuickActionsButton
+- (void)didMoveToWindow {
+    %orig;
+    UIVisualEffectView *fx = qaFindEffectView(self);
+    if (!fx) return;
+    if (!self.window) {
+        removeQuickActionsGlass(fx);
+    } else {
+        injectQuickActionsGlass(fx);
+    }
+}
+- (void)layoutSubviews {
+    %orig;
+    if (!self.window) return;
+    UIVisualEffectView *fx = qaFindEffectView(self);
+    if (fx) injectQuickActionsGlass(fx);
 }
 %end
 
