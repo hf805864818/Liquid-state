@@ -855,12 +855,11 @@ static const LGHostParams *lgHostParamsForAtom(uint32_t atom, bool *dark) {
 }
 
 static NSString *lgPrefsPath(void) {
-    static NSString *cached = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        cached = jbroot(@"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist");
-    });
-    return cached;
+    // 偏好设置文件始终位于系统标准路径,不受越狱类型影响。
+    // jbroot() 在 roothide 上会加上 .jbroot-XXXXXXXX 前缀,
+    // 导致路径变为 .../.jbroot-XXXX/var/mobile/... 从而找不到文件。
+    // 偏好设置不由越狱管理,直接使用绝对路径即可。
+    return @"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist";
 }
 static NSString * const kLGPrefsReloadNote = @"dylv.liquidassprefs/Reload";
 static CFStringRef const kLGParametersReloadedNote =
