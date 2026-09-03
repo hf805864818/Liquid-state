@@ -137,7 +137,10 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
                                                defaultValue:@(NO)]];
 
         // 分组5：高级选项
-        [specs addObject:[self groupSpecifierWithName:@"高级选项" footerText:nil]];
+        [specs addObject:[self groupSpecifierWithName:@"高级选项"
+                                            footerText:@"模块级背景会让每个独立模块都显示背景"]];
+        [specs addObject:[self buttonSpecifierWithTitle:@"背景模式选择"
+                                                   action:@selector(chooseBackgroundMode:)]];
         [specs addObject:[self buttonSpecifierWithTitle:@"跳转 Filza 路径"
                                                    action:@selector(openFilzaPath:)]];
 
