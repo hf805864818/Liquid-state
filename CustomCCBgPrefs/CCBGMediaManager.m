@@ -1,6 +1,6 @@
 #import "CCBGMediaManager.h"
 
-static NSString * const kCCBgMediaDirectory = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media";
+static NSString * const kCCBgBaseMediaDirectory = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media";
 static NSString * const kCCBgImageFileName = @"background.jpg";
 static NSString * const kCCBgVideoFileName = @"background.mp4";
 static NSString * const kCCBgThumbFileName = @"thumb.jpg";
@@ -23,36 +23,82 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _mediaDirectory = [kCCBgMediaDirectory copy];
-        _imagePath = [[kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgImageFileName] copy];
-        _videoPath = [[kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgVideoFileName] copy];
-        _thumbPath = [[kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgThumbFileName] copy];
-        [self ensureDirectoryExists];
+        _baseMediaDirectory = [kCCBgBaseMediaDirectory copy];
+        [self ensureBaseDirectoryExists];
     }
     return self;
 }
 
-- (void)ensureDirectoryExists {
+- (void)ensureBaseDirectoryExists {
     NSFileManager *fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:_mediaDirectory]) {
+    if (![fm fileExistsAtPath:_baseMediaDirectory]) {
         NSError *error = nil;
-        [fm createDirectoryAtPath:_mediaDirectory
+        [fm createDirectoryAtPath:_baseMediaDirectory
       withIntermediateDirectories:YES
                        attributes:nil
                             error:&error];
         if (error) {
-            NSLog(@"[CCBg] ERROR: Failed to create media directory '%@': %@", _mediaDirectory, error);
+            NSLog(@"[CCBg] ERROR: Failed to create base media directory '%@': %@", _baseMediaDirectory, error);
+        }
+    }
+    // 确保三个子目录都存在
+    for (NSInteger i = 0; i <= 2; i++) {
+        [self ensureDirectoryExistsForType:(CCBgMediaType)i];
+    }
+}
+
+- (void)ensureDirectoryExistsForType:(CCBgMediaType)type {
+    NSString *dir = [self mediaDirectoryForType:type];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:dir]) {
+        NSError *error = nil;
+        [fm createDirectoryAtPath:dir
+      withIntermediateDirectories:YES
+                       attributes:nil
+                            error:&error];
+        if (error) {
+            NSLog(@"[CCBg] ERROR: Failed to create media directory '%@': %@", dir, error);
         }
     }
 }
 
+- (NSString *)typeNameForType:(CCBgMediaType)type {
+    switch (type) {
+        case CCBgMediaTypeFullscreen: return @"fullscreen";
+        case CCBgMediaTypeConnect:    return @"connect";
+        case CCBgMediaTypeMedia:      return @"media";
+    }
+    return @"unknown";
+}
+
+- (NSString *)mediaDirectoryForType:(CCBgMediaType)type {
+    return [_baseMediaDirectory stringByAppendingPathComponent:[self typeNameForType:type]];
+}
+
+- (NSString *)imagePathForType:(CCBgMediaType)type {
+    return [[self mediaDirectoryForType:type] stringByAppendingPathComponent:kCCBgImageFileName];
+}
+
+- (NSString *)videoPathForType:(CCBgMediaType)type {
+    return [[self mediaDirectoryForType:type] stringByAppendingPathComponent:kCCBgVideoFileName];
+}
+
+- (NSString *)thumbPathForType:(CCBgMediaType)type {
+    return [[self mediaDirectoryForType:type] stringByAppendingPathComponent:kCCBgThumbFileName];
+}
+
 #pragma mark - 保存图片
 
-- (void)saveImage:(UIImage *)image completion:(void (^)(BOOL))completion {
+- (void)saveImage:(UIImage *)image forType:(CCBgMediaType)type completion:(void (^)(BOOL))completion {
     if (!image) {
         if (completion) completion(NO);
         return;
     }
+
+    NSString *imagePath = [self imagePathForType:type];
+    NSString *videoPath = [self videoPathForType:type];
+    NSString *thumbPath = [self thumbPathForType:type];
+    [self ensureDirectoryExistsForType:type];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         @autoreleasepool {
@@ -61,8 +107,8 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
             BOOL success = YES;
 
             // 先清除旧视频
-            if ([fm fileExistsAtPath:self.videoPath]) {
-                [fm removeItemAtPath:self.videoPath error:&error];
+            if ([fm fileExistsAtPath:videoPath]) {
+                [fm removeItemAtPath:videoPath error:&error];
             }
 
             // 保存原图
@@ -72,9 +118,9 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
                 success = NO;
             } else {
                 NSError *writeError = nil;
-                success = [imageData writeToFile:self.imagePath options:NSDataWritingAtomic error:&writeError];
+                success = [imageData writeToFile:imagePath options:NSDataWritingAtomic error:&writeError];
                 if (writeError) {
-                    NSLog(@"[CCBg] ERROR: Failed to write image to '%@': %@", self.imagePath, writeError);
+                    NSLog(@"[CCBg] ERROR: Failed to write image to '%@': %@", imagePath, writeError);
                 }
             }
 
@@ -83,7 +129,7 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
                 UIImage *thumb = [self generateThumbnailFromImage:image];
                 if (thumb) {
                     NSData *thumbData = UIImageJPEGRepresentation(thumb, kCCBgImageQuality);
-                    [thumbData writeToFile:self.thumbPath atomically:YES];
+                    [thumbData writeToFile:thumbPath atomically:YES];
                 }
             }
 
@@ -96,11 +142,16 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
 
 #pragma mark - 保存视频
 
-- (void)saveVideoFromURL:(NSURL *)videoURL completion:(void (^)(BOOL))completion {
+- (void)saveVideoFromURL:(NSURL *)videoURL forType:(CCBgMediaType)type completion:(void (^)(BOOL))completion {
     if (!videoURL) {
         if (completion) completion(NO);
         return;
     }
+
+    NSString *imagePath = [self imagePathForType:type];
+    NSString *videoPath = [self videoPathForType:type];
+    NSString *thumbPath = [self thumbPathForType:type];
+    [self ensureDirectoryExistsForType:type];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         @autoreleasepool {
@@ -109,25 +160,25 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
             BOOL success = YES;
 
             // 先清除旧图片
-            if ([fm fileExistsAtPath:self.imagePath]) {
-                [fm removeItemAtPath:self.imagePath error:&error];
+            if ([fm fileExistsAtPath:imagePath]) {
+                [fm removeItemAtPath:imagePath error:&error];
             }
 
             // 复制视频
-            if ([fm fileExistsAtPath:self.videoPath]) {
-                [fm removeItemAtPath:self.videoPath error:nil];
+            if ([fm fileExistsAtPath:videoPath]) {
+                [fm removeItemAtPath:videoPath error:nil];
             }
-            success = [fm copyItemAtPath:videoURL.path toPath:self.videoPath error:&error];
+            success = [fm copyItemAtPath:videoURL.path toPath:videoPath error:&error];
             if (!success && error) {
-                NSLog(@"[CCBg] ERROR: Failed to copy video from '%@' to '%@': %@", videoURL.path, self.videoPath, error);
+                NSLog(@"[CCBg] ERROR: Failed to copy video from '%@' to '%@': %@", videoURL.path, videoPath, error);
             }
 
             // 生成视频首帧缩略图
             if (success) {
-                UIImage *thumb = [self generateThumbnailFromVideoURL:[NSURL fileURLWithPath:self.videoPath]];
+                UIImage *thumb = [self generateThumbnailFromVideoURL:[NSURL fileURLWithPath:videoPath]];
                 if (thumb) {
                     NSData *thumbData = UIImageJPEGRepresentation(thumb, kCCBgImageQuality);
-                    [thumbData writeToFile:self.thumbPath atomically:YES];
+                    [thumbData writeToFile:thumbPath atomically:YES];
                 }
             }
 
@@ -140,31 +191,43 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
 
 #pragma mark - 清除
 
-- (void)clearAllMedia {
+- (void)clearMediaForType:(CCBgMediaType)type {
     NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *path in @[self.imagePath, self.videoPath, self.thumbPath]) {
+    NSArray *paths = @[
+        [self imagePathForType:type],
+        [self videoPathForType:type],
+        [self thumbPathForType:type]
+    ];
+    for (NSString *path in paths) {
         if ([fm fileExistsAtPath:path]) {
             [fm removeItemAtPath:path error:nil];
         }
     }
 }
 
+- (void)clearAllMedia {
+    for (NSInteger i = 0; i <= 2; i++) {
+        [self clearMediaForType:(CCBgMediaType)i];
+    }
+}
+
 #pragma mark - 查询
 
-- (UIImage *)currentThumbnail {
+- (UIImage *)thumbnailForType:(CCBgMediaType)type {
+    NSString *thumbPath = [self thumbPathForType:type];
     NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:_thumbPath]) {
-        return [UIImage imageWithContentsOfFile:_thumbPath];
+    if ([fm fileExistsAtPath:thumbPath]) {
+        return [UIImage imageWithContentsOfFile:thumbPath];
     }
     return nil;
 }
 
-- (BOOL)hasImageBackground {
-    return [[NSFileManager defaultManager] fileExistsAtPath:_imagePath];
+- (BOOL)hasImageForType:(CCBgMediaType)type {
+    return [[NSFileManager defaultManager] fileExistsAtPath:[self imagePathForType:type]];
 }
 
-- (BOOL)hasVideoBackground {
-    return [[NSFileManager defaultManager] fileExistsAtPath:_videoPath];
+- (BOOL)hasVideoForType:(CCBgMediaType)type {
+    return [[NSFileManager defaultManager] fileExistsAtPath:[self videoPathForType:type]];
 }
 
 #pragma mark - 缩略图生成

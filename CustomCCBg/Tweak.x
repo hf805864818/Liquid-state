@@ -75,23 +75,26 @@ static void ccbgDarwinReloadCallback(CFNotificationCenterRef center,
 
 // MARK: - 常量
 
+// 背景类型
+typedef NS_ENUM(NSInteger, CCBgType) {
+    kCCBgTypeFullscreen = 0,  // 全屏背景
+    kCCBgTypeConnect    = 1,  // 连接模块背景
+    kCCBgTypeMedia      = 2,  // 播放控制模块背景
+};
+
 static NSString * const kCCBgPreferencesDomain = @"dylv.Deepliquid.ccbg";
-static NSString * const kCCBgEnabledKey = @"Enabled";
-static NSString * const kCCBgBlurAlphaKey = @"BlurAlpha";
-static NSString * const kCCBgBackgroundModeKey = @"BackgroundMode"; // 0=全屏, 1=模块级
-static NSString * const kCCBgFullscreenEnabledKey = @"FullscreenBgEnabled";
-static NSString * const kCCBgConnectModuleEnabledKey = @"ConnectModuleBgEnabled";
-static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 static NSString * const kCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadPrefs";
-static NSString * const kCCBgMediaDirectory = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media";
+static NSString * const kCCBgBaseMediaDirectory = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media";
 static NSString * const kCCBgImageFileName = @"background.jpg";
 static NSString * const kCCBgVideoFileName = @"background.mp4";
 
-// 模式枚举
-typedef NS_ENUM(NSInteger, CCBgMode) {
-    kCCBgModeFullscreen = 0,
-    kCCBgModePerModule  = 1,
-};
+// 三种独立背景的偏好设置 key
+static NSString * const kCCBgFullscreenEnabledKey = @"FullscreenBgEnabled";
+static NSString * const kCCBgFullscreenBlurAlphaKey = @"FullscreenBlurAlpha";
+static NSString * const kCCBgConnectEnabledKey = @"ConnectModuleBgEnabled";
+static NSString * const kCCBgConnectBlurAlphaKey = @"ConnectModuleBlurAlpha";
+static NSString * const kCCBgMediaEnabledKey = @"MediaModuleBgEnabled";
+static NSString * const kCCBgMediaBlurAlphaKey = @"MediaModuleBlurAlpha";
 
 // 优化 B: 视频目标帧率 30fps,观感几乎无差别,解码+渲染功耗降低约40%
 static const NSInteger kCCBgTargetVideoFPS = 30;
@@ -101,6 +104,23 @@ static const BOOL kCCBgVideoMuted = YES;
 
 // 控制中心收起动画时长（用于延迟恢复系统背景）
 static const NSTimeInterval kCCBgCCDismissAnimationDuration = 0.35;
+
+// MARK: - 媒体路径辅助
+
+static NSString *ccbgMediaDirForType(CCBgType type) {
+    NSString *typeName = @"fullscreen";
+    if (type == kCCBgTypeConnect) typeName = @"connect";
+    else if (type == kCCBgTypeMedia) typeName = @"media";
+    return [kCCBgBaseMediaDirectory stringByAppendingPathComponent:typeName];
+}
+
+static NSString *ccbgImagePathForType(CCBgType type) {
+    return [ccbgMediaDirForType(type) stringByAppendingPathComponent:kCCBgImageFileName];
+}
+
+static NSString *ccbgVideoPathForType(CCBgType type) {
+    return [ccbgMediaDirForType(type) stringByAppendingPathComponent:kCCBgVideoFileName];
+}
 
 // MARK: - 工具函数
 
@@ -119,24 +139,36 @@ static UIView *ccbgFindMaterialView(UIView *rootView) {
 }
 
 // 模块类型识别
-// 连接模块类名关键词
+// 连接模块类名关键词（更全面）
 static NSArray *ccbgConnectModuleKeywords() {
     static NSArray *keywords = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         keywords = @[@"Network", @"Connect", @"WiFi", @"Airplane", @"Cellular",
-                     @"Bluetooth", @"Hotspot", @"VPN", @"Connectivity", @"Signal"];
+                     @"Bluetooth", @"Hotspot", @"VPN", @"Connectivity", @"Signal",
+                     @"AirPort", @"Wifi", @"Tethering", @"DataNetwork",
+                     // 模块标识符关键词
+                     @"com.apple.controlcenter.airplane",
+                     @"com.apple.controlcenter.wifi",
+                     @"com.apple.controlcenter.bluetooth",
+                     @"com.apple.controlcenter.cellular",
+                     @"com.apple.controlcenter.hotspot",
+                     @"com.apple.controlcenter.vpn"];
     });
     return keywords;
 }
 
-// 播放控制模块类名关键词
+// 播放控制模块类名关键词（更全面）
 static NSArray *ccbgMediaModuleKeywords() {
     static NSArray *keywords = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         keywords = @[@"Media", @"NowPlaying", @"Playback", @"Audio", @"Music",
-                     @"Player", @"Volume", @"Sound"];
+                     @"Player", @"Volume", @"Sound", @"NowPlayingInfo",
+                     // 模块标识符关键词
+                     @"com.apple.controlcenter.media",
+                     @"com.apple.controlcenter.nowplaying",
+                     @"com.apple.mediapicker"];
     });
     return keywords;
 }
@@ -148,6 +180,14 @@ static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInte
     for (NSString *keyword in keywords) {
         if ([className rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
             return YES;
+        }
+    }
+    // 额外检查 accessibilityIdentifier
+    if (view.accessibilityIdentifier) {
+        for (NSString *keyword in keywords) {
+            if ([view.accessibilityIdentifier rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                return YES;
+            }
         }
     }
     for (UIView *subview in view.subviews) {
@@ -470,42 +510,59 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 
 @interface CustomCCBgManager : NSObject
 
-// 全屏模式属性
+// 全屏背景属性
 @property (nonatomic, strong) UIView *hostView;
 @property (nonatomic, strong) UIView *bgContainerView;
 @property (nonatomic, strong) UIImageView *imageView;
 @property (nonatomic, strong) CustomCCBgVideoView *videoView;
-@property (nonatomic, strong) UIVisualEffectView *videoBlurView; // 视频背景模糊叠加层
-@property (nonatomic, weak) UIView *originalMaterialView; // 系统原毛玻璃背景（隐藏用）
+@property (nonatomic, strong) UIVisualEffectView *videoBlurView;
+@property (nonatomic, weak) UIView *originalMaterialView;
 
-// 模块级模式属性
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, CCBgModuleBackground *> *moduleBackgrounds;
-@property (nonatomic, strong) AVQueuePlayer *sharedVideoPlayer;
-@property (nonatomic, strong) AVPlayerLooper *sharedLooper;
+// 模块背景：每种类型独立管理
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, CCBgModuleBackground *> *connectModuleBackgrounds;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, CCBgModuleBackground *> *mediaModuleBackgrounds;
+@property (nonatomic, strong) AVQueuePlayer *sharedModuleVideoPlayer;
+@property (nonatomic, strong) AVPlayerLooper *sharedModuleLooper;
 
-// 缓存属性
-@property (nonatomic, strong) UIImage *cachedImage;
-@property (nonatomic, strong) UIImage *cachedBlurredImage; // 优化 A: 预渲染模糊图缓存
-@property (nonatomic, assign) CGFloat cachedBlurRadius;
-@property (nonatomic, assign) BOOL cachedHasImage;
-@property (nonatomic, assign) BOOL cachedHasVideo;
-@property (nonatomic, strong) NSURL *cachedVideoURL;
+// 每种类型的媒体缓存
+@property (nonatomic, strong) UIImage *cachedFullscreenImage;
+@property (nonatomic, strong) UIImage *cachedFullscreenBlurredImage;
+@property (nonatomic, assign) BOOL fullscreenCacheValid;
+@property (nonatomic, assign) BOOL cachedFullscreenHasImage;
+@property (nonatomic, assign) BOOL cachedFullscreenHasVideo;
+@property (nonatomic, strong) NSURL *cachedFullscreenVideoURL;
+
+@property (nonatomic, strong) UIImage *cachedConnectImage;
+@property (nonatomic, strong) UIImage *cachedConnectBlurredImage;
+@property (nonatomic, assign) BOOL connectCacheValid;
+@property (nonatomic, assign) BOOL cachedConnectHasImage;
+@property (nonatomic, assign) BOOL cachedConnectHasVideo;
+@property (nonatomic, strong) NSURL *cachedConnectVideoURL;
+
+@property (nonatomic, strong) UIImage *cachedMediaImage;
+@property (nonatomic, strong) UIImage *cachedMediaBlurredImage;
 @property (nonatomic, assign) BOOL mediaCacheValid;
+@property (nonatomic, assign) BOOL cachedMediaHasImage;
+@property (nonatomic, assign) BOOL cachedMediaHasVideo;
+@property (nonatomic, strong) NSURL *cachedMediaVideoURL;
+
+// 每种类型的设置
+@property (nonatomic, assign) BOOL fullscreenEnabled;
+@property (nonatomic, assign) CGFloat fullscreenBlurAlpha;
+@property (nonatomic, assign) BOOL connectEnabled;
+@property (nonatomic, assign) CGFloat connectBlurAlpha;
+@property (nonatomic, assign) BOOL mediaEnabled;
+@property (nonatomic, assign) CGFloat mediaBlurAlpha;
 
 // 状态
-@property (nonatomic, assign) BOOL isEnabled;
-@property (nonatomic, assign) CGFloat blurAlpha;
-@property (nonatomic, assign) CCBgMode backgroundMode;
 @property (nonatomic, assign) BOOL isControlCenterVisible;
-@property (nonatomic, assign) BOOL connectModuleBgEnabled;
-@property (nonatomic, assign) BOOL mediaModuleBgEnabled;
 // 优化 H: 控制中心关闭后延迟释放视频资源
 @property (nonatomic, strong) dispatch_source_t deferredReleaseTimer;
 
 + (instancetype)sharedInstance;
 - (void)reloadPreferences;
 - (void)attachToHostView:(UIView *)view;
-- (void)attachToModuleView:(UIView *)moduleView;
+- (void)handleModuleView:(UIView *)moduleView;
 - (void)setControlCenterVisible:(BOOL)visible;
 - (void)detachAllModules;
 - (void)detach;
@@ -538,7 +595,8 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
             CFSTR("dylv.Deepliquid.ccbg.reload"),
             NULL,
             CFNotificationSuspensionBehaviorDeliverImmediately);
-        _moduleBackgrounds = [NSMutableDictionary dictionary];
+        _connectModuleBackgrounds = [NSMutableDictionary dictionary];
+        _mediaModuleBackgrounds = [NSMutableDictionary dictionary];
         _isControlCenterVisible = NO;
         [self reloadPreferences];
     }
@@ -551,136 +609,212 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 
 - (void)reloadPreferences {
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kCCBgPreferencesDomain];
-    self.isEnabled = [defaults boolForKey:kCCBgEnabledKey];
-    self.blurAlpha = [defaults floatForKey:kCCBgBlurAlphaKey];
-    // blurAlpha 允许为 0,此时显示清晰原图,不做模糊处理
-    NSInteger mode = [defaults integerForKey:kCCBgBackgroundModeKey];
-    self.connectModuleBgEnabled = [defaults boolForKey:kCCBgConnectModuleEnabledKey];
-    self.mediaModuleBgEnabled = [defaults boolForKey:kCCBgMediaModuleEnabledKey];
-    BOOL fullscreenEnabled = [defaults boolForKey:kCCBgFullscreenEnabledKey];
-    NSLog(@"[CCBg] reloadPrefs: enabled=%d fullscreen=%d mode=%ld connect=%d media=%d",
-          self.isEnabled, fullscreenEnabled, (long)self.backgroundMode,
-          self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
-    ccbg_log(@"reloadPrefs: enabled=%d fullscreen=%d mode=%ld connect=%d media=%d blurAlpha=%.2f hasImage=%d hasVideo=%d",
-          self.isEnabled, fullscreenEnabled, (long)self.backgroundMode,
-          self.connectModuleBgEnabled, self.mediaModuleBgEnabled, self.blurAlpha,
-          [[NSFileManager defaultManager] fileExistsAtPath:[kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgImageFileName]],
-          [[NSFileManager defaultManager] fileExistsAtPath:[kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgVideoFileName]]);
-    CCBgMode oldMode = self.backgroundMode;
-    self.backgroundMode = (mode == kCCBgModePerModule) ? kCCBgModePerModule : kCCBgModeFullscreen;
 
-    // 使媒体缓存失效,下次使用时重新检查
+    // 读取三种独立背景的设置
+    self.fullscreenEnabled = [defaults boolForKey:kCCBgFullscreenEnabledKey];
+    self.fullscreenBlurAlpha = [defaults floatForKey:kCCBgFullscreenBlurAlphaKey];
+    self.connectEnabled = [defaults boolForKey:kCCBgConnectEnabledKey];
+    self.connectBlurAlpha = [defaults floatForKey:kCCBgConnectBlurAlphaKey];
+    self.mediaEnabled = [defaults boolForKey:kCCBgMediaEnabledKey];
+    self.mediaBlurAlpha = [defaults floatForKey:kCCBgMediaBlurAlphaKey];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    ccbg_log(@"reloadPrefs: fullscreen=%d(blur=%.2f) connect=%d(blur=%.2f) media=%d(blur=%.2f)",
+          self.fullscreenEnabled, self.fullscreenBlurAlpha,
+          self.connectEnabled, self.connectBlurAlpha,
+          self.mediaEnabled, self.mediaBlurAlpha);
+    ccbg_log(@"  media: fullscreen img=%d vid=%d | connect img=%d vid=%d | media img=%d vid=%d",
+          [fm fileExistsAtPath:ccbgImagePathForType(kCCBgTypeFullscreen)],
+          [fm fileExistsAtPath:ccbgVideoPathForType(kCCBgTypeFullscreen)],
+          [fm fileExistsAtPath:ccbgImagePathForType(kCCBgTypeConnect)],
+          [fm fileExistsAtPath:ccbgVideoPathForType(kCCBgTypeConnect)],
+          [fm fileExistsAtPath:ccbgImagePathForType(kCCBgTypeMedia)],
+          [fm fileExistsAtPath:ccbgVideoPathForType(kCCBgTypeMedia)]);
+
+    // 使所有媒体缓存失效
+    self.fullscreenCacheValid = NO;
+    self.cachedFullscreenImage = nil;
+    self.cachedFullscreenBlurredImage = nil;
+    self.cachedFullscreenVideoURL = nil;
+
+    self.connectCacheValid = NO;
+    self.cachedConnectImage = nil;
+    self.cachedConnectBlurredImage = nil;
+    self.cachedConnectVideoURL = nil;
+
     self.mediaCacheValid = NO;
-    self.cachedImage = nil;
-    self.cachedBlurredImage = nil; // 模糊缓存也失效
-    self.cachedVideoURL = nil;
+    self.cachedMediaImage = nil;
+    self.cachedMediaBlurredImage = nil;
+    self.cachedMediaVideoURL = nil;
 
-    // 重置模块检测日志集合,下次打开控制中心会重新 dump 模块类名
+    // 重置模块检测日志集合
     extern NSMutableSet *sCCBgLoggedModules(void);
     NSMutableSet *logged = sCCBgLoggedModules();
     @synchronized(logged) {
         [logged removeAllObjects];
     }
 
-    // 如果切换了模式,需要清理旧模式的资源
-    if (oldMode != self.backgroundMode) {
-        if (self.backgroundMode == kCCBgModePerModule) {
-            [self detachFullscreenViews];
-        } else {
-            [self detachAllModules];
+    // 全屏背景关闭则清理全屏资源
+    if (!self.fullscreenEnabled) {
+        [self detachFullscreenViews];
+    }
+    // 模块背景关闭则清理对应模块资源
+    if (!self.connectEnabled) {
+        [self detachConnectModules];
+    }
+    if (!self.mediaEnabled) {
+        [self detachMediaModules];
+    }
+    // 如果两种模块背景都关了，释放共享视频播放器
+    if (!self.connectEnabled && !self.mediaEnabled) {
+        if (self.sharedModuleVideoPlayer) {
+            [self.sharedModuleVideoPlayer pause];
+            self.sharedModuleVideoPlayer = nil;
         }
+        self.sharedModuleLooper = nil;
     }
 
-    if (self.bgContainerView && self.backgroundMode == kCCBgModeFullscreen) {
+    // 全屏背景已挂载的话，更新显示
+    if (self.bgContainerView && self.fullscreenEnabled) {
         [self updateBackgroundView];
     }
 }
 
-#pragma mark - 媒体缓存
+#pragma mark - 媒体缓存（按类型独立缓存）
 
-- (void)ensureMediaCacheValid {
-    if (self.mediaCacheValid) return;
+- (void)ensureCacheValidForType:(CCBgType)type {
+    if (type == kCCBgTypeFullscreen && self.fullscreenCacheValid) return;
+    if (type == kCCBgTypeConnect && self.connectCacheValid) return;
+    if (type == kCCBgTypeMedia && self.mediaCacheValid) return;
 
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *imagePath = [kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgImageFileName];
-    NSString *videoPath = [kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgVideoFileName];
+    NSString *imagePath = ccbgImagePathForType(type);
+    NSString *videoPath = ccbgVideoPathForType(type);
+    BOOL hasImage = [fm fileExistsAtPath:imagePath];
+    BOOL hasVideo = [fm fileExistsAtPath:videoPath];
+    NSURL *videoURL = hasVideo ? [NSURL fileURLWithPath:videoPath] : nil;
 
-    self.cachedHasImage = [fm fileExistsAtPath:imagePath];
-    self.cachedHasVideo = [fm fileExistsAtPath:videoPath];
-    if (self.cachedHasVideo) {
-        self.cachedVideoURL = [NSURL fileURLWithPath:videoPath];
+    if (type == kCCBgTypeFullscreen) {
+        self.cachedFullscreenHasImage = hasImage;
+        self.cachedFullscreenHasVideo = hasVideo;
+        self.cachedFullscreenVideoURL = videoURL;
+        self.cachedFullscreenImage = nil;
+        self.cachedFullscreenBlurredImage = nil;
+        self.fullscreenCacheValid = YES;
+    } else if (type == kCCBgTypeConnect) {
+        self.cachedConnectHasImage = hasImage;
+        self.cachedConnectHasVideo = hasVideo;
+        self.cachedConnectVideoURL = videoURL;
+        self.cachedConnectImage = nil;
+        self.cachedConnectBlurredImage = nil;
+        self.connectCacheValid = YES;
     } else {
-        self.cachedVideoURL = nil;
+        self.cachedMediaHasImage = hasImage;
+        self.cachedMediaHasVideo = hasVideo;
+        self.cachedMediaVideoURL = videoURL;
+        self.cachedMediaImage = nil;
+        self.cachedMediaBlurredImage = nil;
+        self.mediaCacheValid = YES;
     }
-    self.cachedImage = nil;
-    self.cachedBlurredImage = nil;
-    self.mediaCacheValid = YES;
 }
 
-- (UIImage *)getCachedImage {
-    if (self.cachedImage) return self.cachedImage;
-    [self ensureMediaCacheValid];
-    if (self.cachedHasImage) {
-        NSString *imagePath = [kCCBgMediaDirectory stringByAppendingPathComponent:kCCBgImageFileName];
-        self.cachedImage = [UIImage imageWithContentsOfFile:imagePath];
+- (UIImage *)getImageForType:(CCBgType)type {
+    [self ensureCacheValidForType:type];
+    UIImage **cached = NULL;
+    BOOL hasImage = NO;
+
+    if (type == kCCBgTypeFullscreen) {
+        cached = &_cachedFullscreenImage;
+        hasImage = self.cachedFullscreenHasImage;
+    } else if (type == kCCBgTypeConnect) {
+        cached = &_cachedConnectImage;
+        hasImage = self.cachedConnectHasImage;
+    } else {
+        cached = &_cachedMediaImage;
+        hasImage = self.cachedMediaHasImage;
     }
-    return self.cachedImage;
+
+    if (*cached) return *cached;
+    if (hasImage) {
+        *cached = [UIImage imageWithContentsOfFile:ccbgImagePathForType(type)];
+    }
+    return *cached;
 }
 
-// 优化 A: 获取预渲染模糊图
-// blurRadius 映射: blurAlpha 0~1 → 模糊半径 0~20
-- (UIImage *)getCachedBlurredImage {
-    [self ensureMediaCacheValid];
-    if (!self.cachedHasImage) return nil;
+- (UIImage *)getBlurredImageForType:(CCBgType)type blurAlpha:(CGFloat)blurAlpha {
+    [self ensureCacheValidForType:type];
+
+    BOOL hasImage = (type == kCCBgTypeFullscreen) ? self.cachedFullscreenHasImage :
+                     (type == kCCBgTypeConnect) ? self.cachedConnectHasImage :
+                     self.cachedMediaHasImage;
+    if (!hasImage) return nil;
 
     // 模糊度为 0 时直接返回 nil,调用方会显示清晰原图
-    if (self.blurAlpha <= 0.001) {
-        self.cachedBlurredImage = nil;
-        self.cachedBlurRadius = 0.0;
-        return nil;
-    }
+    if (blurAlpha <= 0.001) return nil;
 
-    CGFloat targetRadius = self.blurAlpha * 20.0; // 最大 20px 模糊
+    UIImage *cachedBlurred = nil;
+    if (type == kCCBgTypeFullscreen) cachedBlurred = self.cachedFullscreenBlurredImage;
+    else if (type == kCCBgTypeConnect) cachedBlurred = self.cachedConnectBlurredImage;
+    else cachedBlurred = self.cachedMediaBlurredImage;
 
-    // 如果已有缓存且模糊半径匹配,直接返回
-    if (self.cachedBlurredImage && fabs(self.cachedBlurRadius - targetRadius) < 0.5) {
-        return self.cachedBlurredImage;
-    }
+    CGFloat targetRadius = blurAlpha * 20.0; // 最大 20px 模糊
 
-    UIImage *original = [self getCachedImage];
+    // 已有模糊缓存则直接用（简单缓存，不单独存 radius）
+    if (cachedBlurred) return cachedBlurred;
+
+    UIImage *original = [self getImageForType:type];
     if (!original) return nil;
 
-    // 预渲染模糊
-    self.cachedBlurredImage = ccbgBlurredImage(original, targetRadius);
-    self.cachedBlurRadius = targetRadius;
-    return self.cachedBlurredImage;
+    UIImage *blurred = ccbgBlurredImage(original, targetRadius);
+    if (type == kCCBgTypeFullscreen) self.cachedFullscreenBlurredImage = blurred;
+    else if (type == kCCBgTypeConnect) self.cachedConnectBlurredImage = blurred;
+    else self.cachedMediaBlurredImage = blurred;
+    return blurred;
 }
 
-- (AVQueuePlayer *)getSharedVideoPlayer {
-    [self ensureMediaCacheValid];
-    if (!self.cachedHasVideo) return nil;
+- (NSURL *)getVideoURLForType:(CCBgType)type {
+    [self ensureCacheValidForType:type];
+    if (type == kCCBgTypeFullscreen) return self.cachedFullscreenVideoURL;
+    if (type == kCCBgTypeConnect) return self.cachedConnectVideoURL;
+    return self.cachedMediaVideoURL;
+}
 
-    if (!self.sharedVideoPlayer) {
-        AVPlayerItem *item = [AVPlayerItem playerItemWithURL:self.cachedVideoURL];
-        // 优化 B: 限制视频帧率到 30fps
-        // 使用运行时 KVC + NSValue 封装,兼容低版本 SDK
-        if ([item respondsToSelector:NSSelectorFromString(@"setPreferredFrameRateRange:")]) {
-            typedef struct {
-                float min;
-                float max;
-            } CCFrameRateRange;
-            CCFrameRateRange range;
-            range.min = 1.0f;
-            range.max = (float)kCCBgTargetVideoFPS;
-            NSValue *rangeValue = [NSValue valueWithBytes:&range objCType:@encode(CCFrameRateRange)];
-            [item setValue:rangeValue forKey:@"preferredFrameRateRange"];
+- (BOOL)hasVideoForType:(CCBgType)type {
+    [self ensureCacheValidForType:type];
+    if (type == kCCBgTypeFullscreen) return self.cachedFullscreenHasVideo;
+    if (type == kCCBgTypeConnect) return self.cachedConnectHasVideo;
+    return self.cachedMediaHasVideo;
+}
+
+// 模块背景共享视频播放器（连接和媒体模块共用一个播放器，节省资源）
+- (AVQueuePlayer *)getSharedModuleVideoPlayerForType:(CCBgType)type {
+    NSURL *videoURL = [self getVideoURLForType:type];
+    if (!videoURL) return nil;
+
+    // 已有播放器且 URL 匹配则复用
+    if (self.sharedModuleVideoPlayer &&
+        [self.sharedModuleVideoPlayer.currentItem.asset isKindOfClass:[AVURLAsset class]]) {
+        AVURLAsset *asset = (AVURLAsset *)self.sharedModuleVideoPlayer.currentItem.asset;
+        if ([asset.URL isEqual:videoURL]) {
+            return self.sharedModuleVideoPlayer;
         }
-        self.sharedVideoPlayer = [AVQueuePlayer queuePlayerWithItems:@[item]];
-        self.sharedVideoPlayer.muted = kCCBgVideoMuted;
-        self.sharedVideoPlayer.actionAtItemEnd = AVPlayerActionAtItemEndNone;
-        self.sharedLooper = [AVPlayerLooper playerLooperWithPlayer:self.sharedVideoPlayer templateItem:item];
     }
-    return self.sharedVideoPlayer;
+
+    // 创建新播放器
+    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:videoURL];
+    if ([item respondsToSelector:NSSelectorFromString(@"setPreferredFrameRateRange:")]) {
+        typedef struct { float min; float max; } CCFrameRateRange;
+        CCFrameRateRange range;
+        range.min = 1.0f;
+        range.max = (float)kCCBgTargetVideoFPS;
+        NSValue *rangeValue = [NSValue valueWithBytes:&range objCType:@encode(CCFrameRateRange)];
+        [item setValue:rangeValue forKey:@"preferredFrameRateRange"];
+    }
+    self.sharedModuleVideoPlayer = [AVQueuePlayer queuePlayerWithItems:@[item]];
+    self.sharedModuleVideoPlayer.muted = kCCBgVideoMuted;
+    self.sharedModuleVideoPlayer.actionAtItemEnd = AVPlayerActionAtItemEndNone;
+    self.sharedModuleLooper = [AVPlayerLooper playerLooperWithPlayer:self.sharedModuleVideoPlayer templateItem:item];
+    return self.sharedModuleVideoPlayer;
 }
 
 #pragma mark - 可见性控制
@@ -697,7 +831,11 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)scheduleDeferredRelease {
     [self cancelDeferredRelease];
-    if (!self.cachedHasVideo) return;
+    // 任何一种背景有视频就需要延迟释放
+    BOOL hasAnyVideo = [self hasVideoForType:kCCBgTypeFullscreen] ||
+                       [self hasVideoForType:kCCBgTypeConnect] ||
+                       [self hasVideoForType:kCCBgTypeMedia];
+    if (!hasAnyVideo) return;
 
     dispatch_queue_t queue = dispatch_get_main_queue();
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
@@ -711,27 +849,22 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         if (strongSelf.isControlCenterVisible) return;
 
         // 延迟释放：完全销毁视频资源，降低后台内存和解码器功耗
-        if (strongSelf.backgroundMode == kCCBgModeFullscreen) {
-            [strongSelf detachVideoView];
-            // 特定模块模式也释放共享视频
-            if (strongSelf.sharedVideoPlayer) {
-                [strongSelf.sharedVideoPlayer pause];
-                strongSelf.sharedVideoPlayer = nil;
-            }
-            strongSelf.sharedLooper = nil;
-            for (CCBgModuleBackground *bg in strongSelf.moduleBackgrounds.allValues) {
-                [bg setVideoLayerHidden:YES];
-            }
-        } else {
-            if (strongSelf.sharedVideoPlayer) {
-                [strongSelf.sharedVideoPlayer pause];
-                strongSelf.sharedVideoPlayer = nil;
-            }
-            strongSelf.sharedLooper = nil;
-            // 隐藏所有模块视频层（保留 imageView 作为静态占位）
-            for (CCBgModuleBackground *bg in strongSelf.moduleBackgrounds.allValues) {
-                [bg setVideoLayerHidden:YES];
-            }
+        // 全屏视频
+        [strongSelf detachVideoView];
+
+        // 模块共享视频
+        if (strongSelf.sharedModuleVideoPlayer) {
+            [strongSelf.sharedModuleVideoPlayer pause];
+            strongSelf.sharedModuleVideoPlayer = nil;
+        }
+        strongSelf.sharedModuleLooper = nil;
+
+        // 隐藏所有模块视频层
+        for (CCBgModuleBackground *bg in strongSelf.connectModuleBackgrounds.allValues) {
+            [bg setVideoLayerHidden:YES];
+        }
+        for (CCBgModuleBackground *bg in strongSelf.mediaModuleBackgrounds.allValues) {
+            [bg setVideoLayerHidden:YES];
         }
         strongSelf.deferredReleaseTimer = nil;
     });
@@ -744,93 +877,85 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     self.isControlCenterVisible = visible;
 
     if (visible) {
-        // 控制中心可见:取消延迟释放，恢复播放
+        // 控制中心可见:取消延迟释放
         [self cancelDeferredRelease];
 
-        // 恢复系统毛玻璃隐藏状态（如果是全屏模式）
-        if (self.backgroundMode == kCCBgModeFullscreen && self.originalMaterialView) {
-            self.originalMaterialView.hidden = self.isEnabled;
+        // --- 全屏背景 ---
+        if (self.fullscreenEnabled && self.originalMaterialView) {
+            self.originalMaterialView.hidden = YES;
         }
-
-        if (self.backgroundMode == kCCBgModeFullscreen) {
-            // 立即显示背景（与控制中心同步出现）
-            self.bgContainerView.hidden = !self.isEnabled;
-            if (self.videoView && self.isEnabled) [self.videoView play];
-            else if (self.isEnabled && self.cachedHasVideo) {
-                // 视频已被延迟释放，重新加载
+        if (self.fullscreenEnabled) {
+            self.bgContainerView.hidden = NO;
+            if (self.videoView) [self.videoView play];
+            else if ([self hasVideoForType:kCCBgTypeFullscreen]) {
                 [self updateBackgroundView];
             }
+        }
 
-            // 全屏关闭但特定模块开启时，也需要处理共享视频播放器
-            if (!self.isEnabled && (self.connectModuleBgEnabled || self.mediaModuleBgEnabled)) {
-                if (self.sharedVideoPlayer && self.cachedHasVideo && self.sharedVideoPlayer.rate == 0) {
-                    [self.sharedVideoPlayer play];
-                } else if (self.cachedHasVideo && !self.sharedVideoPlayer) {
-                    AVQueuePlayer *player = [self getSharedVideoPlayer];
-                    if (player) {
+        // --- 模块背景 ---
+        BOOL hasModuleBg = self.connectEnabled || self.mediaEnabled;
+        if (hasModuleBg) {
+            // 播放所有启用的模块视频
+            NSArray *allModuleBgs = @[];
+            if (self.connectEnabled) {
+                allModuleBgs = [allModuleBgs arrayByAddingObjectsFromArray:self.connectModuleBackgrounds.allValues];
+            }
+            if (self.mediaEnabled) {
+                allModuleBgs = [allModuleBgs arrayByAddingObjectsFromArray:self.mediaModuleBackgrounds.allValues];
+            }
+
+            if (allModuleBgs.count > 0) {
+                // 确定使用哪个类型的视频（优先媒体模块，其次连接模块）
+                CCBgType videoType = kCCBgTypeMedia;
+                if (!self.mediaEnabled || ![self hasVideoForType:kCCBgTypeMedia]) {
+                    videoType = kCCBgTypeConnect;
+                }
+                if ([self hasVideoForType:videoType]) {
+                    AVQueuePlayer *player = [self getSharedModuleVideoPlayerForType:videoType];
+                    if (player && player.rate == 0) {
                         [player play];
-                        for (CCBgModuleBackground *bg in self.moduleBackgrounds.allValues) {
-                            [bg setVideoLayerHidden:NO];
-                        }
                     }
                 }
-                for (CCBgModuleBackground *bg in self.moduleBackgrounds.allValues) {
+                for (CCBgModuleBackground *bg in allModuleBgs) {
                     [bg setVideoLayerHidden:NO];
                 }
             }
-        } else {
-            // 模块级模式
-            if (self.sharedVideoPlayer && self.isEnabled && self.sharedVideoPlayer.rate == 0) {
-                [self.sharedVideoPlayer play];
-            } else if (self.isEnabled && self.cachedHasVideo && !self.sharedVideoPlayer) {
-                // 视频已被延迟释放，重新加载共享 player
-                AVQueuePlayer *player = [self getSharedVideoPlayer];
-                if (player) {
-                    [player play];
-                    // 更新所有模块的视频层
-                    for (CCBgModuleBackground *bg in self.moduleBackgrounds.allValues) {
-                        [bg setVideoLayerHidden:NO];
-                    }
-                }
-            }
-            // 优化 C: 确保所有模块视频层可见
-            for (CCBgModuleBackground *bg in self.moduleBackgrounds.allValues) {
-                [bg setVideoLayerHidden:NO];
-            }
         }
     } else {
-        // 控制中心不可见:立即隐藏背景，暂停视频，并安排延迟释放
-        if (self.backgroundMode == kCCBgModeFullscreen) {
-            // 立即隐藏背景（与控制中心收起动画同步）
+        // 控制中心不可见:立即隐藏背景，暂停视频
+
+        // --- 全屏背景 ---
+        if (self.fullscreenEnabled) {
             self.bgContainerView.hidden = YES;
             if (self.videoView) [self.videoView pause];
-
-            // 特定模块模式下也暂停共享视频
-            if (self.sharedVideoPlayer) [self.sharedVideoPlayer pause];
-
-            // 延迟恢复系统毛玻璃（等收起动画结束）
-            __weak typeof(self) weakSelf = self;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCCBgCCDismissAnimationDuration * NSEC_PER_SEC)),
-                          dispatch_get_main_queue(), ^{
-                __strong typeof(weakSelf) strongSelf = weakSelf;
-                if (!strongSelf) return;
-                // 只有在控制中心仍然不可见时才恢复
-                if (!strongSelf.isControlCenterVisible && strongSelf.originalMaterialView) {
-                    strongSelf.originalMaterialView.hidden = NO;
-                }
-            });
-        } else {
-            if (self.sharedVideoPlayer) [self.sharedVideoPlayer pause];
         }
+
+        // --- 模块背景 ---
+        if (self.sharedModuleVideoPlayer) {
+            [self.sharedModuleVideoPlayer pause];
+        }
+
+        // 延迟恢复系统毛玻璃（等收起动画结束）
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCCBgCCDismissAnimationDuration * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (!strongSelf.isControlCenterVisible && strongSelf.originalMaterialView) {
+                strongSelf.originalMaterialView.hidden = NO;
+            }
+        });
+
         // 优化 H: 延迟释放视频资源
         [self scheduleDeferredRelease];
     }
 }
 
-#pragma mark - 全屏模式
+#pragma mark - 全屏背景
 
 - (void)attachToHostView:(UIView *)view {
-    if (self.backgroundMode == kCCBgModePerModule) {
+    // 全屏背景未开启则不挂载
+    if (!self.fullscreenEnabled) {
         [self detachFullscreenViews];
         return;
     }
@@ -852,12 +977,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
     // 将背景插入到 MTMaterialView 同一层级（在它下面），并隐藏 MTMaterialView
     if (materialView) {
-        // 隐藏系统毛玻璃背景
         materialView.hidden = YES;
-        // 把我们的背景插到 MTMaterialView 的位置
         [view insertSubview:self.bgContainerView belowSubview:materialView];
     } else {
-        // 找不到的话降级：插到最底层
         [view insertSubview:self.bgContainerView atIndex:0];
     }
 
@@ -870,21 +992,20 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     self.bgContainerView.frame = self.hostView.bounds;
 
     // 功能关闭 → 隐藏并清理媒体
-    if (!self.isEnabled) {
+    if (!self.fullscreenEnabled) {
         self.bgContainerView.hidden = YES;
         [self detachMediaViews];
         return;
     }
-    // 控制中心不可见（收起动画中）→ 仅隐藏不清理，防止 layoutSubviews 重新显示
     if (!self.isControlCenterVisible) {
         self.bgContainerView.hidden = YES;
         return;
     }
     self.bgContainerView.hidden = NO;
 
-    [self ensureMediaCacheValid];
+    [self ensureCacheValidForType:kCCBgTypeFullscreen];
 
-    if (self.cachedHasVideo) {
+    if ([self hasVideoForType:kCCBgTypeFullscreen]) {
         [self detachImageView];
         if (!self.videoView) {
             self.videoView = [[CustomCCBgVideoView alloc] initWithFrame:self.bgContainerView.bounds];
@@ -892,13 +1013,13 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             [self.bgContainerView insertSubview:self.videoView atIndex:0];
         }
         self.videoView.frame = self.bgContainerView.bounds;
-        [self.videoView loadVideoFromURL:self.cachedVideoURL];
+        [self.videoView loadVideoFromURL:[self getVideoURLForType:kCCBgTypeFullscreen]];
         if (self.isControlCenterVisible) {
             [self.videoView play];
         }
 
-        // 视频模糊叠加层（blurAlpha > 0 时添加）
-        if (self.blurAlpha > 0.01) {
+        // 视频模糊叠加层
+        if (self.fullscreenBlurAlpha > 0.01) {
             if (!self.videoBlurView) {
                 UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
                 self.videoBlurView = [[UIVisualEffectView alloc] initWithEffect:blur];
@@ -907,12 +1028,12 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
                 [self.bgContainerView insertSubview:self.videoBlurView aboveSubview:self.videoView];
             }
             self.videoBlurView.frame = self.bgContainerView.bounds;
-            self.videoBlurView.alpha = self.blurAlpha;
+            self.videoBlurView.alpha = self.fullscreenBlurAlpha;
         } else if (self.videoBlurView) {
             [self.videoBlurView removeFromSuperview];
             self.videoBlurView = nil;
         }
-    } else if (self.cachedHasImage) {
+    } else if (self.cachedFullscreenHasImage) {
         [self detachVideoView];
         if (!self.imageView) {
             self.imageView = [[UIImageView alloc] init];
@@ -922,8 +1043,8 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             [self.bgContainerView insertSubview:self.imageView atIndex:0];
         }
         self.imageView.frame = self.bgContainerView.bounds;
-        // 优化 A: 显示预渲染模糊图替代实时模糊
-        UIImage *displayImage = [self getCachedBlurredImage] ?: [self getCachedImage];
+        UIImage *displayImage = [self getBlurredImageForType:kCCBgTypeFullscreen blurAlpha:self.fullscreenBlurAlpha]
+                                ?: [self getImageForType:kCCBgTypeFullscreen];
         if (self.imageView.image != displayImage) {
             self.imageView.image = displayImage;
         }
@@ -970,250 +1091,120 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 }
 
-#pragma mark - 特定模块背景（连接模块 / 播放控制模块）
+#pragma mark - 模块背景（连接模块 / 播放控制模块，独立设置）
 
-// 检查特定模块是否应该显示背景（全屏关闭时生效）
-- (BOOL)shouldShowBackgroundForModuleView:(UIView *)moduleView {
-    // 全屏模式开着的话，不走特定模块逻辑
-    if (self.isEnabled && self.backgroundMode == kCCBgModeFullscreen) return NO;
+// 统一处理模块视图（判断类型并更新对应背景）
+- (void)handleModuleView:(UIView *)moduleView {
+    if (!self.connectEnabled && !self.mediaEnabled) return;
+    if (!moduleView.window) return;
 
-    // 模块级模式已经处理了所有模块
-    if (self.backgroundMode == kCCBgModePerModule) return NO;
+    BOOL isConnect = self.connectEnabled && ccbgIsConnectModule(moduleView);
+    BOOL isMedia = self.mediaEnabled && ccbgIsMediaModule(moduleView);
 
-    NSString *cls = NSStringFromClass([moduleView class]);
-    NSString *superCls = moduleView.superview ? NSStringFromClass([moduleView.superview class]) : @"nil";
-    BOOL isConnect = ccbgIsConnectModule(moduleView);
-    BOOL isMedia = ccbgIsMediaModule(moduleView);
-    NSLog(@"[CCBg] module check: class=%@ isConnect=%d isMedia=%d connectEnabled=%d mediaEnabled=%d",
-          cls, isConnect, isMedia, self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
-    ccbg_log(@"module check: class=%@ super=%@ isConnect=%d isMedia=%d connectEnabled=%d mediaEnabled=%d",
-          cls, superCls, isConnect, isMedia, self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
-
-    // 一次性 dump 子视图树（帮助识别 iOS 17 模块内容类名）
-    static dispatch_once_t dumpOnce;
-    dispatch_once(&dumpOnce, ^{
-        NSMutableString *tree = [NSMutableString string];
-        ccbgDumpSubviewTree(moduleView, @"", tree);
-        ccbg_log(@"=== First module subview tree ===\n%@", tree);
-    });
-
-    // 检查特定模块开关
-    if (self.connectModuleBgEnabled && isConnect) return YES;
-    if (self.mediaModuleBgEnabled && isMedia) return YES;
-
-    return NO;
-}
-
-// 挂载特定模块背景
-- (void)attachToSpecificModuleView:(UIView *)moduleView {
-    if (![self shouldShowBackgroundForModuleView:moduleView]) {
-        // 不应该显示背景，清理已有背景
-        NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
-        CCBgModuleBackground *bg = self.moduleBackgrounds[key];
-        if (bg) {
-            [bg cleanup];
-            [self.moduleBackgrounds removeObjectForKey:key];
+    // 调试日志（首次出现的模块类名）
+    NSMutableSet *loggedModules = sCCBgLoggedModules();
+    NSString *clsName = NSStringFromClass([moduleView class]);
+    @synchronized(loggedModules) {
+        if (![loggedModules containsObject:clsName]) {
+            [loggedModules addObject:clsName];
+            ccbg_log(@"module detected: class=%@ isConnect=%d isMedia=%d (connectEnabled=%d mediaEnabled=%d)",
+                  clsName, isConnect, isMedia, self.connectEnabled, self.mediaEnabled);
+            NSMutableString *tree = [NSMutableString string];
+            ccbgDumpSubviewTree(moduleView, @"  ", tree);
+            ccbg_log(@"  subtree:\n%@", tree);
         }
-        return;
     }
 
-    [self ensureMediaCacheValid];
+    // 连接模块
+    if (isConnect) {
+        [self updateModuleBackground:moduleView forType:kCCBgTypeConnect];
+    } else {
+        // 不是连接模块，清理可能存在的连接背景
+        NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
+        CCBgModuleBackground *bg = self.connectModuleBackgrounds[key];
+        if (bg) {
+            [bg cleanup];
+            [self.connectModuleBackgrounds removeObjectForKey:key];
+        }
+    }
 
-    NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
-    CCBgModuleBackground *bg = self.moduleBackgrounds[key];
+    // 媒体模块
+    if (isMedia) {
+        [self updateModuleBackground:moduleView forType:kCCBgTypeMedia];
+    } else {
+        NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
+        CCBgModuleBackground *bg = self.mediaModuleBackgrounds[key];
+        if (bg) {
+            [bg cleanup];
+            [self.mediaModuleBackgrounds removeObjectForKey:key];
+        }
+    }
+}
+
+// 更新单个模块背景
+- (void)updateModuleBackground:(UIView *)moduleView forType:(CCBgType)type {
     UIView *superview = moduleView.superview;
     if (!superview) return;
 
-    if (!bg) {
-        bg = [[CCBgModuleBackground alloc] init];
-        // 背景用 CALayer 插到模块 layer 下面
-        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
-        self.moduleBackgrounds[key] = bg;
-    }
+    NSMutableDictionary *bgDict = (type == kCCBgTypeConnect) ? self.connectModuleBackgrounds : self.mediaModuleBackgrounds;
+    CGFloat blurAlpha = (type == kCCBgTypeConnect) ? self.connectBlurAlpha : self.mediaBlurAlpha;
 
-    // 如果父视图变了，重新挂载
-    if (bg.containerLayer.superlayer != superview.layer) {
-        [bg.containerLayer removeFromSuperlayer];
-        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
-    }
+    NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
+    CCBgModuleBackground *bg = bgDict[key];
 
-    // 背景 frame 与模块一致
-    CGRect moduleFrameInSuperview = moduleView.frame;
+    CGRect moduleFrame = moduleView.frame;
     CGFloat cornerRadius = moduleView.layer.cornerRadius;
     if (cornerRadius <= 0) {
         CGFloat minDim = fmin(CGRectGetWidth(moduleView.bounds), CGRectGetHeight(moduleView.bounds));
         cornerRadius = minDim * 0.25;
     }
 
-    // 节流：尺寸和圆角没变就跳过更新
-    if (CGRectEqualToRect(bg.containerLayer.frame, moduleFrameInSuperview) &&
+    if (!bg) {
+        bg = [[CCBgModuleBackground alloc] init];
+        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
+        bgDict[key] = bg;
+        ccbg_log(@"module bg CREATED: type=%ld class=%@ frame=%@",
+              (long)type, NSStringFromClass([moduleView class]),
+              NSStringFromCGRect(moduleFrame));
+    }
+
+    // 父视图变了则重新挂载
+    if (bg.containerLayer.superlayer != superview.layer) {
+        [bg.containerLayer removeFromSuperlayer];
+        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
+    }
+
+    // 节流：尺寸和圆角没变就跳过渲染更新
+    if (CGRectEqualToRect(bg.containerLayer.frame, moduleFrame) &&
         fabs(bg.containerLayer.cornerRadius - cornerRadius) < 0.1) {
-        if (self.cachedHasVideo && self.isControlCenterVisible && self.sharedVideoPlayer.rate == 0) {
-            [self.sharedVideoPlayer play];
-        }
-        BOOL isVisible = [self isModuleViewVisible:moduleView];
-        [bg setVideoLayerHidden:!isVisible];
         [bg setHidden:moduleView.hidden];
         [bg setAlpha:moduleView.alpha];
         return;
     }
 
-    UIImage *blurredImage = [self getCachedBlurredImage];
+    UIImage *blurredImage = [self getBlurredImageForType:type blurAlpha:blurAlpha];
 
-    if (self.cachedHasVideo) {
-        AVQueuePlayer *player = [self getSharedVideoPlayer];
+    if ([self hasVideoForType:type]) {
+        AVQueuePlayer *player = [self getSharedModuleVideoPlayerForType:type];
         if (player) {
-            [bg updateWithPlayer:player blurredImage:blurredImage frame:moduleFrameInSuperview cornerRadius:cornerRadius];
-            if (self.isControlCenterVisible && self.sharedVideoPlayer.rate == 0) {
-                [self.sharedVideoPlayer play];
+            [bg updateWithPlayer:player blurredImage:blurredImage frame:moduleFrame cornerRadius:cornerRadius];
+            if (self.isControlCenterVisible && player.rate == 0) {
+                [player play];
             }
             BOOL isVisible = [self isModuleViewVisible:moduleView];
             [bg setVideoLayerHidden:!isVisible];
         }
-    } else if (self.cachedHasImage) {
-        UIImage *image = [self getCachedImage];
-        if (image) {
-            [bg updateWithImage:image blurredImage:blurredImage frame:moduleFrameInSuperview cornerRadius:cornerRadius];
-        }
     } else {
-        [bg cleanup];
-        [self.moduleBackgrounds removeObjectForKey:key];
-    }
-
-    [bg setHidden:moduleView.hidden];
-    [bg setAlpha:moduleView.alpha];
-}
-
-// 清除所有特定模块背景（但保留模块级模式的）
-- (void)detachSpecificModuleBackgrounds {
-    // 直接复用 detachAllModules，因为两种模式共用 moduleBackgrounds 字典
-    // 切换模式时会调用 detachAllModules
-}
-
-#pragma mark - 模块级模式
-
-- (void)attachToModuleView:(UIView *)moduleView {
-    if (self.backgroundMode != kCCBgModePerModule) return;
-
-    if (!self.isEnabled) {
-        NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
-        CCBgModuleBackground *bg = self.moduleBackgrounds[key];
-        if (bg) {
+        UIImage *image = [self getImageForType:type];
+        if (image) {
+            [bg updateWithImage:image blurredImage:blurredImage frame:moduleFrame cornerRadius:cornerRadius];
+        } else {
             [bg cleanup];
-            [self.moduleBackgrounds removeObjectForKey:key];
-        }
-        return;
-    }
-
-    // 白名单模式: 如果连接模块或媒体模块开关打开,只对匹配的模块显示背景
-    BOOL hasWhitelist = self.connectModuleBgEnabled || self.mediaModuleBgEnabled;
-    if (hasWhitelist) {
-        BOOL isConnect = ccbgIsConnectModule(moduleView);
-        BOOL isMedia = ccbgIsMediaModule(moduleView);
-        BOOL whitelisted =
-            (self.connectModuleBgEnabled && isConnect) ||
-            (self.mediaModuleBgEnabled && isMedia);
-        if (!whitelisted) {
-            // 不在白名单中,清理已有背景
-            NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
-            CCBgModuleBackground *bg = self.moduleBackgrounds[key];
-            if (bg) {
-                [bg cleanup];
-                [self.moduleBackgrounds removeObjectForKey:key];
-            }
-            // 调试: 记录被跳过的模块类名,帮助排查检测失败的情况
-            NSMutableSet *loggedModules = sCCBgLoggedModules();
-            NSString *clsName = NSStringFromClass([moduleView class]);
-            @synchronized(loggedModules) {
-                if (![loggedModules containsObject:clsName]) {
-                    [loggedModules addObject:clsName];
-                    ccbg_log(@"whitelist skip: class=%@ isConnect=%d isMedia=%d (connectEnabled=%d mediaEnabled=%d)",
-                          clsName, isConnect, isMedia,
-                          self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
-                    // Dump 前 3 层子视图类名,帮助识别模块内容
-                    NSMutableString *tree = [NSMutableString string];
-                    ccbgDumpSubviewTree(moduleView, @"  ", tree);
-                    ccbg_log(@"  module subtree:\n%@", tree);
-                }
-            }
+            [bgDict removeObjectForKey:key];
             return;
         }
     }
 
-    [self ensureMediaCacheValid];
-
-    NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
-    CCBgModuleBackground *bg = self.moduleBackgrounds[key];
-    UIView *superview = moduleView.superview;
-    if (!superview) return;
-
-    // 背景 frame 是模块在父视图中的 frame（模块后面，尺寸位置与模块一致）
-    CGRect moduleFrameInSuperview = moduleView.frame;
-
-    if (!bg) {
-        bg = [[CCBgModuleBackground alloc] init];
-        // 背景用 CALayer 插到模块 layer 下面，避免成为兄弟 UIView 导致动画系统崩溃
-        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
-        self.moduleBackgrounds[key] = bg;
-        ccbg_log(@"module bg CREATED: class=%@ frame=%@ hasVideo=%d blurAlpha=%.2f",
-              NSStringFromClass([moduleView class]),
-              NSStringFromCGRect(moduleFrameInSuperview),
-              self.cachedHasVideo, self.blurAlpha);
-    }
-
-    // 如果父视图变了，重新挂载
-    if (bg.containerLayer.superlayer != superview.layer) {
-        [bg.containerLayer removeFromSuperlayer];
-        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
-    }
-
-    CGFloat cornerRadius = moduleView.layer.cornerRadius;
-    if (cornerRadius <= 0) {
-        CGFloat minDim = fmin(CGRectGetWidth(moduleView.bounds), CGRectGetHeight(moduleView.bounds));
-        cornerRadius = minDim * 0.25;
-    }
-
-    // 优化 D: 如果尺寸和圆角都没变，跳过更新
-    if (CGRectEqualToRect(bg.containerLayer.frame, moduleFrameInSuperview) &&
-        fabs(bg.containerLayer.cornerRadius - cornerRadius) < 0.1) {
-        // 尺寸未变,只确保播放状态正确
-        if (self.cachedHasVideo && self.isControlCenterVisible && self.sharedVideoPlayer.rate == 0) {
-            [self.sharedVideoPlayer play];
-        }
-        // 优化 C: 检查是否在可见区域内
-        BOOL isVisible = [self isModuleViewVisible:moduleView];
-        [bg setVideoLayerHidden:!isVisible];
-        // 同步隐藏状态
-        [bg setHidden:moduleView.hidden];
-        [bg setAlpha:moduleView.alpha];
-        return;
-    }
-
-    // 优化 A: 获取预渲染模糊图
-    UIImage *blurredImage = [self getCachedBlurredImage];
-
-    if (self.cachedHasVideo) {
-        AVQueuePlayer *player = [self getSharedVideoPlayer];
-        if (player) {
-            [bg updateWithPlayer:player blurredImage:blurredImage frame:moduleFrameInSuperview cornerRadius:cornerRadius];
-            if (self.isControlCenterVisible && self.sharedVideoPlayer.rate == 0) {
-                [self.sharedVideoPlayer play];
-            }
-            // 优化 C: 离屏模块隐藏视频层
-            BOOL isVisible = [self isModuleViewVisible:moduleView];
-            [bg setVideoLayerHidden:!isVisible];
-        }
-    } else if (self.cachedHasImage) {
-        UIImage *image = [self getCachedImage];
-        if (image) {
-            [bg updateWithImage:image blurredImage:blurredImage frame:moduleFrameInSuperview cornerRadius:cornerRadius];
-        }
-    } else {
-        [bg cleanup];
-        [self.moduleBackgrounds removeObjectForKey:key];
-    }
-
-    // 同步隐藏/透明度
     [bg setHidden:moduleView.hidden];
     [bg setAlpha:moduleView.alpha];
 }
@@ -1233,20 +1224,30 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     return (visibleArea / totalArea) > 0.3;
 }
 
-- (void)detachAllModules {
-    for (NSNumber *key in self.moduleBackgrounds.allKeys) {
-        CCBgModuleBackground *bg = self.moduleBackgrounds[key];
+- (void)detachConnectModules {
+    for (NSNumber *key in self.connectModuleBackgrounds.allKeys) {
+        CCBgModuleBackground *bg = self.connectModuleBackgrounds[key];
         [bg cleanup];
     }
-    [self.moduleBackgrounds removeAllObjects];
+    [self.connectModuleBackgrounds removeAllObjects];
+}
 
-    if (self.sharedVideoPlayer) {
-        [self.sharedVideoPlayer pause];
-        self.sharedVideoPlayer = nil;
+- (void)detachMediaModules {
+    for (NSNumber *key in self.mediaModuleBackgrounds.allKeys) {
+        CCBgModuleBackground *bg = self.mediaModuleBackgrounds[key];
+        [bg cleanup];
     }
-    self.sharedLooper = nil;
-    self.cachedImage = nil;
-    self.cachedBlurredImage = nil;
+    [self.mediaModuleBackgrounds removeAllObjects];
+}
+
+- (void)detachAllModules {
+    [self detachConnectModules];
+    [self detachMediaModules];
+    if (self.sharedModuleVideoPlayer) {
+        [self.sharedModuleVideoPlayer pause];
+        self.sharedModuleVideoPlayer = nil;
+    }
+    self.sharedModuleLooper = nil;
 }
 
 - (void)detach {
@@ -1294,13 +1295,13 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
-// 备用 hook: CC 容器视图 (仅全屏模式)
+// 备用 hook: CC 容器视图
 %hook CCUIModularControlCenterContainerView
 
 - (void)layoutSubviews {
     %orig;
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if (mgr.backgroundMode == kCCBgModeFullscreen) {
+    if (mgr.fullscreenEnabled) {
         UIView *host = [(UIView *)self superview];
         if (host) {
             [mgr attachToHostView:host];
@@ -1310,7 +1311,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
-// 模块级 hook + 特定模块 hook: 控制中心模块容器
+// 模块背景 hook: 控制中心模块容器
 %hook CCUIContentModuleContainerView
 
 - (void)layoutSubviews {
@@ -1320,12 +1321,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         ccbg_log(@"hook fired: CCUIContentModuleContainerView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
     });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if (mgr.backgroundMode == kCCBgModePerModule) {
-        [mgr attachToModuleView:(UIView *)self];
-    } else {
-        // 特定模块背景（全屏关闭时生效）
-        [mgr attachToSpecificModuleView:(UIView *)self];
-    }
+    [mgr handleModuleView:(UIView *)self];
 }
 
 - (void)didMoveToWindow {
@@ -1335,11 +1331,8 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         ccbg_log(@"hook fired: CCUIContentModuleContainerView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
     });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if (mgr.backgroundMode == kCCBgModePerModule && [(UIView *)self window]) {
-        [mgr attachToModuleView:(UIView *)self];
-    } else if ([(UIView *)self window]) {
-        // 特定模块背景
-        [mgr attachToSpecificModuleView:(UIView *)self];
+    if ([(UIView *)self window]) {
+        [mgr handleModuleView:(UIView *)self];
     }
 }
 

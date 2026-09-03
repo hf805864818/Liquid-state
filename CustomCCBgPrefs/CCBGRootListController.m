@@ -52,12 +52,12 @@ static void ccbgPostReloadNotification(void) {
 }
 
 // 偏好设置 key
-static NSString * const kCCBgEnabledKey = @"Enabled";
-static NSString * const kCCBgBlurAlphaKey = @"BlurAlpha";
-static NSString * const kCCBgBackgroundModeKey = @"BackgroundMode"; // 0=全屏, 1=模块级
 static NSString * const kCCBgFullscreenEnabledKey = @"FullscreenBgEnabled";
-static NSString * const kCCBgConnectModuleEnabledKey = @"ConnectModuleBgEnabled";
-static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
+static NSString * const kCCBgFullscreenBlurAlphaKey = @"FullscreenBlurAlpha";
+static NSString * const kCCBgConnectEnabledKey = @"ConnectModuleBgEnabled";
+static NSString * const kCCBgConnectBlurAlphaKey = @"ConnectModuleBlurAlpha";
+static NSString * const kCCBgMediaEnabledKey = @"MediaModuleBgEnabled";
+static NSString * const kCCBgMediaBlurAlphaKey = @"MediaModuleBlurAlpha";
 
 // MARK: - Preferences framework additions
 //
@@ -86,6 +86,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 @end
 
 @interface CCBGRootListController : PSListController <UINavigationControllerDelegate, UIImagePickerControllerDelegate>
+@property (nonatomic, assign) CCBgMediaType currentEditingType;
 - (PSSpecifier *)groupSpecifierWithName:(NSString *)name footerText:(NSString *)footer;
 - (PSSpecifier *)switchSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue;
 - (PSSpecifier *)sliderSpecifierWithKey:(NSString *)key title:(NSString *)title defaultValue:(id)defaultValue min:(id)min max:(id)max;
@@ -101,46 +102,57 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     if (!_specifiers) {
         NSMutableArray *specs = [NSMutableArray array];
 
-        // 分组1：全局开关
-        [specs addObject:[self groupSpecifierWithName:@"全局开关" footerText:nil]];
-        [specs addObject:[self switchSpecifierWithKey:kCCBgEnabledKey
-                                                  title:@"开启自定义控制中心背景"
+        // 分组1：全屏背景
+        [specs addObject:[self groupSpecifierWithName:@"全屏背景"
+                                            footerText:@"为整个控制中心设置自定义背景"]];
+        [specs addObject:[self switchSpecifierWithKey:kCCBgFullscreenEnabledKey
+                                                  title:@"开启全屏背景"
                                                defaultValue:@(NO)]];
-
-        // 分组2：背景设置
-        [specs addObject:[self groupSpecifierWithName:@"背景设置" footerText:nil]];
-        [specs addObject:[self thumbnailButtonSpecifierWithTitle:@"选择控制中心背景 (图片/视频)"
-                                                            action:@selector(chooseMedia:)]];
-        [specs addObject:[self buttonSpecifierWithTitle:@"清除背景"
-                                                   action:@selector(clearMedia:)]];
-
-        // 分组3：背景模糊度调节
-        [specs addObject:[self groupSpecifierWithName:@"背景模糊度调节"
-                                            footerText:@"调整控制中心背景的毛玻璃强度"]];
-        [specs addObject:[self sliderSpecifierWithKey:kCCBgBlurAlphaKey
-                                                   title:nil
+        [specs addObject:[self thumbnailButtonSpecifierWithTitle:@"选择全屏背景 (图片/视频)"
+                                                            action:@selector(chooseFullscreenMedia:)]];
+        [specs addObject:[self buttonSpecifierWithTitle:@"清除全屏背景"
+                                                   action:@selector(clearFullscreenMedia:)]];
+        [specs addObject:[self sliderSpecifierWithKey:kCCBgFullscreenBlurAlphaKey
+                                                   title:@"模糊度"
                                               defaultValue:@(0.3)
                                                      min:@(0.0)
                                                      max:@(1.0)]];
 
-        // 分组4：背景模式（三选一，互斥）
-        [specs addObject:[self groupSpecifierWithName:@"背景模式"
-                                            footerText:@"三种模式互斥，开启一个会自动关闭其它"]];
-        [specs addObject:[self switchSpecifierWithKey:kCCBgFullscreenEnabledKey
-                                                  title:@"全屏背景"
-                                               defaultValue:@(YES)]];
-        [specs addObject:[self switchSpecifierWithKey:kCCBgConnectModuleEnabledKey
-                                                  title:@"连接模块背景"
+        // 分组2：连接模块背景
+        [specs addObject:[self groupSpecifierWithName:@"连接模块背景"
+                                            footerText:@"为 Wi-Fi / 蓝牙 / 飞行模式 等连接模块设置独立背景"]];
+        [specs addObject:[self switchSpecifierWithKey:kCCBgConnectEnabledKey
+                                                  title:@"开启连接模块背景"
                                                defaultValue:@(NO)]];
-        [specs addObject:[self switchSpecifierWithKey:kCCBgMediaModuleEnabledKey
-                                                  title:@"播放控制模块背景"
-                                               defaultValue:@(NO)]];
+        [specs addObject:[self thumbnailButtonSpecifierWithTitle:@"选择连接模块背景 (图片/视频)"
+                                                            action:@selector(chooseConnectMedia:)]];
+        [specs addObject:[self buttonSpecifierWithTitle:@"清除连接模块背景"
+                                                   action:@selector(clearConnectMedia:)]];
+        [specs addObject:[self sliderSpecifierWithKey:kCCBgConnectBlurAlphaKey
+                                                   title:@"模糊度"
+                                              defaultValue:@(0.3)
+                                                     min:@(0.0)
+                                                     max:@(1.0)]];
 
-        // 分组5：高级选项
+        // 分组3：播放控制模块背景
+        [specs addObject:[self groupSpecifierWithName:@"播放控制模块背景"
+                                            footerText:@"为音乐播放控制模块设置独立背景"]];
+        [specs addObject:[self switchSpecifierWithKey:kCCBgMediaEnabledKey
+                                                  title:@"开启播放控制模块背景"
+                                               defaultValue:@(NO)]];
+        [specs addObject:[self thumbnailButtonSpecifierWithTitle:@"选择播放控制模块背景 (图片/视频)"
+                                                            action:@selector(chooseMediaMedia:)]];
+        [specs addObject:[self buttonSpecifierWithTitle:@"清除播放控制模块背景"
+                                                   action:@selector(clearMediaMedia:)]];
+        [specs addObject:[self sliderSpecifierWithKey:kCCBgMediaBlurAlphaKey
+                                                   title:@"模糊度"
+                                              defaultValue:@(0.3)
+                                                     min:@(0.0)
+                                                     max:@(1.0)]];
+
+        // 分组4：高级选项
         [specs addObject:[self groupSpecifierWithName:@"高级选项"
-                                            footerText:@"模块级背景会让每个独立模块都显示背景"]];
-        [specs addObject:[self buttonSpecifierWithTitle:@"背景模式选择"
-                                                   action:@selector(chooseBackgroundMode:)]];
+                                            footerText:@"三种背景完全独立，可同时开启"]];
         [specs addObject:[self buttonSpecifierWithTitle:@"跳转 Filza 路径"
                                                    action:@selector(openFilzaPath:)]];
 
@@ -172,102 +184,48 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
                              (__bridge CFPropertyListRef)value,
                              (__bridge CFStringRef)kCCBgPrefsDomain);
 
-    // 三选一互斥：开启某个背景模式时，自动关闭其它两个
-    if ([value isKindOfClass:[NSNumber class]] && [value boolValue]) {
-        if ([key isEqualToString:kCCBgFullscreenEnabledKey]) {
-            // 全屏 ON → 关闭模块开关，开启 Enabled，模式=0
-            ccbg_log(@"switch: fullscreen ON → enabled=YES, connect=NO, media=NO");
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgConnectModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgMediaModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey, kCFBooleanTrue, (__bridge CFStringRef)kCCBgPrefsDomain);
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0), (__bridge CFStringRef)kCCBgPrefsDomain);
-        } else if ([key isEqualToString:kCCBgConnectModuleEnabledKey]) {
-            // 连接模块 ON → 关闭其它，关闭 Enabled（特定模块模式不需要 Enabled），模式=0
-            ccbg_log(@"switch: connect ON → enabled=NO, fullscreen=NO, media=NO");
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgFullscreenEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgMediaModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0), (__bridge CFStringRef)kCCBgPrefsDomain);
-        } else if ([key isEqualToString:kCCBgMediaModuleEnabledKey]) {
-            // 播放模块 ON → 关闭其它，关闭 Enabled，模式=0
-            ccbg_log(@"switch: media ON → enabled=NO, fullscreen=NO, connect=NO");
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgFullscreenEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgConnectModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
-            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0), (__bridge CFStringRef)kCCBgPrefsDomain);
-        }
-    }
-
     CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
     ccbgPostReloadNotification();
-
-    // 互斥开关变更后刷新 UI 以反映自动关闭的状态
-    if ([key isEqualToString:kCCBgFullscreenEnabledKey] ||
-        [key isEqualToString:kCCBgConnectModuleEnabledKey] ||
-        [key isEqualToString:kCCBgMediaModuleEnabledKey]) {
-        [self.table reloadData];
-    }
 }
 
 #pragma mark - Actions
 
-- (void)chooseMedia:(PSSpecifier *)specifier {
-    // 使用 UIImagePickerController — 比 PHPicker 更可靠地处理视频
-    // PHPicker 在 iOS 17 上不报告视频 UTI，导致视频被误判为图片
+- (void)chooseFullscreenMedia:(PSSpecifier *)specifier {
+    self.currentEditingType = CCBgMediaTypeFullscreen;
     [self presentUnifiedImagePicker];
 }
 
-- (void)chooseBackgroundMode:(PSSpecifier *)specifier {
-    NSInteger currentMode = 0;
-    CFPropertyListRef val = CFPreferencesCopyAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey,
-                                                      (__bridge CFStringRef)kCCBgPrefsDomain);
-    if (val) {
-        currentMode = [(__bridge NSNumber *)val integerValue];
-        CFRelease(val);
-    }
-
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"背景模式"
-                                                                   message:@"选择背景的显示方式"
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"全屏背景%@", currentMode == 0 ? @" ✓" : @""]
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0),
-                                (__bridge CFStringRef)kCCBgPrefsDomain);
-        CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
-        ccbgPostReloadNotification();
-        [self reloadSpecifiers];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"模块级背景%@", currentMode == 1 ? @" ✓" : @""]
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(1),
-                                (__bridge CFStringRef)kCCBgPrefsDomain);
-        CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
-        ccbgPostReloadNotification();
-        [self reloadSpecifiers];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-
-    alert.popoverPresentationController.sourceView = self.view;
-    alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
-
-    [self presentViewController:alert animated:YES completion:nil];
+- (void)chooseConnectMedia:(PSSpecifier *)specifier {
+    self.currentEditingType = CCBgMediaTypeConnect;
+    [self presentUnifiedImagePicker];
 }
 
-- (void)clearMedia:(PSSpecifier *)specifier {
-    ccbg_log(@"clearMedia requested");
+- (void)chooseMediaMedia:(PSSpecifier *)specifier {
+    self.currentEditingType = CCBgMediaTypeMedia;
+    [self presentUnifiedImagePicker];
+}
+
+- (void)clearFullscreenMedia:(PSSpecifier *)specifier {
+    [self clearMediaForType:CCBgMediaTypeFullscreen title:@"全屏背景"];
+}
+
+- (void)clearConnectMedia:(PSSpecifier *)specifier {
+    [self clearMediaForType:CCBgMediaTypeConnect title:@"连接模块背景"];
+}
+
+- (void)clearMediaMedia:(PSSpecifier *)specifier {
+    [self clearMediaForType:CCBgMediaTypeMedia title:@"播放控制模块背景"];
+}
+
+- (void)clearMediaForType:(CCBgMediaType)type title:(NSString *)title {
+    ccbg_log(@"clearMedia requested for type=%ld", (long)type);
+    NSString *msg = [NSString stringWithFormat:@"确定要清除%@吗？", title];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"清除背景"
-                                                                   message:@"确定要清除当前设置的控制中心背景吗？"
+                                                                   message:msg
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [[CCBGMediaManager sharedManager] clearAllMedia];
+        [[CCBGMediaManager sharedManager] clearMediaForType:type];
         ccbgPostReloadNotification();
         [self.table reloadData];
     }]];
@@ -275,7 +233,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 }
 
 - (void)openFilzaPath:(PSSpecifier *)specifier {
-    NSString *path = [@"filza://" stringByAppendingString:[CCBGMediaManager sharedManager].mediaDirectory];
+    NSString *path = [@"filza://" stringByAppendingString:[CCBGMediaManager sharedManager].baseMediaDirectory];
     NSURL *url = [NSURL URLWithString:path];
     ccbg_log(@"openFilzaPath: url=%@", path);
     // iOS 9+ canOpenURL: requires LSApplicationQueriesSchemes — skip it and just try opening.
@@ -404,6 +362,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [[CCBGMediaManager sharedManager] saveVideoFromURL:[NSURL fileURLWithPath:tempPath]
+                                                               forType:self.currentEditingType
                                                             completion:^(BOOL success) {
                         [self didFinishSavingMedia:success];
                     }];
@@ -423,6 +382,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
                 UIImage *image = (UIImage *)object;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [[CCBGMediaManager sharedManager] saveImage:image
+                                                       forType:self.currentEditingType
                                                     completion:^(BOOL success) {
                         [self didFinishSavingMedia:success];
                     }];
@@ -497,7 +457,8 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     [picker dismissViewControllerAnimated:YES completion:nil];
 
     NSString *mediaType = info[UIImagePickerControllerMediaType];
-    ccbg_log(@"picker returned mediaType=%@", mediaType);
+    CCBgMediaType targetType = self.currentEditingType;
+    ccbg_log(@"picker returned mediaType=%@ targetType=%ld", mediaType, (long)targetType);
 
     // 显示处理中 HUD
     [CCBGProgressHUD showInView:self.view text:@"处理中..."];
@@ -505,14 +466,18 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     if ([mediaType isEqualToString:@"public.image"]) {
         UIImage *image = info[UIImagePickerControllerOriginalImage];
         ccbg_log(@"image picked, size=%.0fx%.0f", image.size.width, image.size.height);
-        [[CCBGMediaManager sharedManager] saveImage:image completion:^(BOOL success) {
+        [[CCBGMediaManager sharedManager] saveImage:image
+                                           forType:targetType
+                                        completion:^(BOOL success) {
             ccbg_log(@"image save result: %d", success);
             [self didFinishSavingMedia:success];
         }];
     } else if ([mediaType isEqualToString:@"public.movie"]) {
         NSURL *videoURL = info[UIImagePickerControllerMediaURL];
         ccbg_log(@"video picked, url=%@", videoURL);
-        [[CCBGMediaManager sharedManager] saveVideoFromURL:videoURL completion:^(BOOL success) {
+        [[CCBGMediaManager sharedManager] saveVideoFromURL:videoURL
+                                                   forType:targetType
+                                                completion:^(BOOL success) {
             ccbg_log(@"video save result: %d", success);
             [self didFinishSavingMedia:success];
         }];
@@ -531,34 +496,38 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 
 - (void)didFinishSavingMedia:(BOOL)success {
     [CCBGProgressHUD dismissFromView:self.view];
-    ccbg_log(@"didFinishSavingMedia: success=%d", success);
+    ccbg_log(@"didFinishSavingMedia: success=%d type=%ld", success, (long)self.currentEditingType);
 
     if (success) {
-        // 自动开启全屏背景模式（默认模式），关闭其它模式
-        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgFullscreenEnabledKey,
-                                 kCFBooleanTrue,
-                                 (__bridge CFStringRef)kCCBgPrefsDomain);
-        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey,
-                                 kCFBooleanTrue,
-                                 (__bridge CFStringRef)kCCBgPrefsDomain);
-        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey,
-                                 (__bridge CFPropertyListRef)@(0),
-                                 (__bridge CFStringRef)kCCBgPrefsDomain);
-        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgConnectModuleEnabledKey,
-                                 kCFBooleanFalse,
-                                 (__bridge CFStringRef)kCCBgPrefsDomain);
-        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgMediaModuleEnabledKey,
-                                 kCFBooleanFalse,
-                                 (__bridge CFStringRef)kCCBgPrefsDomain);
-        CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
+        // 自动开启对应的背景开关
+        NSString *enableKey = nil;
+        switch (self.currentEditingType) {
+            case CCBgMediaTypeFullscreen: enableKey = kCCBgFullscreenEnabledKey; break;
+            case CCBgMediaTypeConnect:    enableKey = kCCBgConnectEnabledKey; break;
+            case CCBgMediaTypeMedia:      enableKey = kCCBgMediaEnabledKey; break;
+        }
+        if (enableKey) {
+            CFPreferencesSetAppValue((__bridge CFStringRef)enableKey,
+                                     kCFBooleanTrue,
+                                     (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
+        }
 
         ccbgPostReloadNotification();
         [self.table reloadData];
     }
 
-    [self showSaveResultAlertWithSuccess:success
-                                   message:success ? @"背景已保存，已自动开启自定义背景开关"
-                                                   : @"保存背景失败，请重试"];
+    NSString *typeName = @"";
+    switch (self.currentEditingType) {
+        case CCBgMediaTypeFullscreen: typeName = @"全屏背景"; break;
+        case CCBgMediaTypeConnect:    typeName = @"连接模块背景"; break;
+        case CCBgMediaTypeMedia:      typeName = @"播放控制模块背景"; break;
+    }
+    NSString *msg = success
+        ? [NSString stringWithFormat:@"%@已保存，已自动开启", typeName]
+        : [NSString stringWithFormat:@"保存%@失败，请重试", typeName];
+
+    [self showSaveResultAlertWithSuccess:success message:msg];
 }
 
 - (void)showSaveResultAlertWithSuccess:(BOOL)success message:(NSString *)message {
@@ -577,8 +546,17 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     PSSpecifier *specifier = [self specifierAtIndexPath:indexPath];
     NSString *actionName = [specifier propertyForKey:@"action"];
 
-    // 如果是缩略图按钮 cell
-    if ([actionName isEqualToString:NSStringFromSelector(@selector(chooseMedia:))]) {
+    // 如果是缩略图按钮 cell（三种类型）
+    CCBgMediaType thumbType = -1;
+    if ([actionName isEqualToString:NSStringFromSelector(@selector(chooseFullscreenMedia:))]) {
+        thumbType = CCBgMediaTypeFullscreen;
+    } else if ([actionName isEqualToString:NSStringFromSelector(@selector(chooseConnectMedia:))]) {
+        thumbType = CCBgMediaTypeConnect;
+    } else if ([actionName isEqualToString:NSStringFromSelector(@selector(chooseMediaMedia:))]) {
+        thumbType = CCBgMediaTypeMedia;
+    }
+
+    if (thumbType >= 0) {
         static NSString *thumbCellId = @"CCBgThumbnailButtonCell";
         CCBGThumbnailButtonCell *cell = [tableView dequeueReusableCellWithIdentifier:thumbCellId];
         if (!cell) {
@@ -587,7 +565,8 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
         cell.textLabel.text = specifier.name;
-        [cell setThumbnailImage:[[CCBGMediaManager sharedManager] currentThumbnail]];
+        UIImage *thumb = [[CCBGMediaManager sharedManager] thumbnailForType:thumbType];
+        [cell setThumbnailImage:thumb];
         return cell;
     }
 
