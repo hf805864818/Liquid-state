@@ -250,7 +250,9 @@ static BOOL LGTabBarUsesCustomLayout(UITabBar *bar) {
     if (!bar) return YES;
     // custom layouts own their button geometry so leave them alone
     NSArray<UIView *> *buttons = LGStockTabBarButtons(bar);
-    if (!buttons.count) return NO;
+    // 如果找不到标准 UITabBarButton,说明是完全自定义的 tab bar (如小红书),
+    // 应该视为自定义布局,跳过我们的样式化处理
+    if (!buttons.count) return YES;
     for (UIView *button in buttons) {
         if (LGTabBarButtonGeometryIsConstraintManaged(button)) return YES;
     }
