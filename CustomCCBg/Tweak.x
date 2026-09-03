@@ -720,25 +720,26 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 
 - (UIImage *)getImageForType:(CCBgType)type {
     [self ensureCacheValidForType:type];
-    UIImage **cached = NULL;
-    BOOL hasImage = NO;
 
     if (type == kCCBgTypeFullscreen) {
-        cached = &_cachedFullscreenImage;
-        hasImage = self.cachedFullscreenHasImage;
+        if (_cachedFullscreenImage) return _cachedFullscreenImage;
+        if (self.cachedFullscreenHasImage) {
+            _cachedFullscreenImage = [UIImage imageWithContentsOfFile:ccbgImagePathForType(type)];
+        }
+        return _cachedFullscreenImage;
     } else if (type == kCCBgTypeConnect) {
-        cached = &_cachedConnectImage;
-        hasImage = self.cachedConnectHasImage;
+        if (_cachedConnectImage) return _cachedConnectImage;
+        if (self.cachedConnectHasImage) {
+            _cachedConnectImage = [UIImage imageWithContentsOfFile:ccbgImagePathForType(type)];
+        }
+        return _cachedConnectImage;
     } else {
-        cached = &_cachedMediaImage;
-        hasImage = self.cachedMediaHasImage;
+        if (_cachedMediaImage) return _cachedMediaImage;
+        if (self.cachedMediaHasImage) {
+            _cachedMediaImage = [UIImage imageWithContentsOfFile:ccbgImagePathForType(type)];
+        }
+        return _cachedMediaImage;
     }
-
-    if (*cached) return *cached;
-    if (hasImage) {
-        *cached = [UIImage imageWithContentsOfFile:ccbgImagePathForType(type)];
-    }
-    return *cached;
 }
 
 - (UIImage *)getBlurredImageForType:(CCBgType)type blurAlpha:(CGFloat)blurAlpha {
