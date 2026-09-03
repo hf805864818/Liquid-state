@@ -137,9 +137,10 @@ static void LGReconcileQuickActionHosts(void) {
 %hook CSQuickActionsButton
 - (void)didMoveToWindow {
     %orig;
-    UIVisualEffectView *fx = qaFindEffectView(self);
+    UIView *btn = (UIView *)self;
+    UIVisualEffectView *fx = qaFindEffectView(btn);
     if (!fx) return;
-    if (!self.window) {
+    if (!btn.window) {
         removeQuickActionsGlass(fx);
     } else {
         injectQuickActionsGlass(fx);
@@ -147,8 +148,9 @@ static void LGReconcileQuickActionHosts(void) {
 }
 - (void)layoutSubviews {
     %orig;
-    if (!self.window) return;
-    UIVisualEffectView *fx = qaFindEffectView(self);
+    UIView *btn = (UIView *)self;
+    if (!btn.window) return;
+    UIVisualEffectView *fx = qaFindEffectView(btn);
     if (fx) injectQuickActionsGlass(fx);
 }
 %end
