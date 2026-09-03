@@ -35,10 +35,14 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
 - (void)ensureDirectoryExists {
     NSFileManager *fm = [NSFileManager defaultManager];
     if (![fm fileExistsAtPath:_mediaDirectory]) {
+        NSError *error = nil;
         [fm createDirectoryAtPath:_mediaDirectory
       withIntermediateDirectories:YES
                        attributes:nil
-                            error:nil];
+                            error:&error];
+        if (error) {
+            NSLog(@"[CCBg] ERROR: Failed to create media directory '%@': %@", _mediaDirectory, error);
+        }
     }
 }
 
@@ -64,9 +68,14 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
             // 保存原图
             NSData *imageData = UIImageJPEGRepresentation(image, kCCBgImageQuality);
             if (!imageData) {
+                NSLog(@"[CCBg] ERROR: UIImageJPEGRepresentation returned nil");
                 success = NO;
             } else {
-                success = [imageData writeToFile:self.imagePath atomically:YES];
+                NSError *writeError = nil;
+                success = [imageData writeToFile:self.imagePath options:NSDataWritingAtomic error:&writeError];
+                if (writeError) {
+                    NSLog(@"[CCBg] ERROR: Failed to write image to '%@': %@", self.imagePath, writeError);
+                }
             }
 
             // 生成缩略图
@@ -109,6 +118,9 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
                 [fm removeItemAtPath:self.videoPath error:nil];
             }
             success = [fm copyItemAtPath:videoURL.path toPath:self.videoPath error:&error];
+            if (!success && error) {
+                NSLog(@"[CCBg] ERROR: Failed to copy video from '%@' to '%@': %@", videoURL.path, self.videoPath, error);
+            }
 
             // 生成视频首帧缩略图
             if (success) {

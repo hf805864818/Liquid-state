@@ -30,6 +30,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 // Declared here because the Theos headers do not always expose them.
 @interface PSSpecifier (CCBgExtras)
 + (id)groupSpecifierWithName:(id)name;
+- (void)setButtonAction:(SEL)action;
 @end
 
 @interface PSListController (CCBgExtras)
@@ -247,16 +248,15 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     if (results.count == 0) return;
 
     id result = results.firstObject;
-    NSString *itemIdentifier = [result valueForKey:@"itemIdentifier"];
-    if (!itemIdentifier) return;
 
     // 显示处理中 HUD
     [CCBGProgressHUD showInView:self.view text:@"处理中..."];
 
-    // 用 NSItemProvider 加载
+    // 用 NSItemProvider 加载媒体（itemIdentifier 是可选的，保存不需要它）
     NSItemProvider *provider = [result valueForKey:@"itemProvider"];
     if (!provider) {
         [CCBGProgressHUD dismissFromView:self.view];
+        [self showSaveResultAlertWithSuccess:NO message:@"未能获取所选媒体，请重试"];
         return;
     }
 
@@ -282,6 +282,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
             } else {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [CCBGProgressHUD dismissFromView:self.view];
+                    [self showSaveResultAlertWithSuccess:NO message:@"视频加载失败，请重试"];
                 });
             }
         }];
@@ -300,11 +301,13 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
             } else {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [CCBGProgressHUD dismissFromView:self.view];
+                    [self showSaveResultAlertWithSuccess:NO message:@"图片加载失败，请重试"];
                 });
             }
         }];
     } else {
         [CCBGProgressHUD dismissFromView:self.view];
+        [self showSaveResultAlertWithSuccess:NO message:@"不支持的媒体类型"];
     }
 }
 
@@ -401,6 +404,19 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
         [[NSNotificationCenter defaultCenter] postNotificationName:kCCBgReloadNotification object:nil];
         [self.table reloadData];
     }
+
+    [self showSaveResultAlertWithSuccess:success
+                                   message:success ? @"背景已保存，已自动开启自定义背景开关"
+                                                   : @"保存背景失败，请重试"];
+}
+
+- (void)showSaveResultAlertWithSuccess:(BOOL)success message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:success ? @"设置成功" : @"设置失败"
+                         message:message
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - UITableViewDelegate（自定义缩略图 cell）
@@ -429,15 +445,22 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    // specifierAtIndexPath: is the real API; specifierForIndexPath: does not exist.
     PSSpecifier *specifier = [self specifierAtIndexPath:indexPath];
     NSString *actionName = [specifier propertyForKey:@"action"];
 
-    // 缩略图按钮点击
-    if ([actionName isEqualToString:NSStringFromSelector(@selector(chooseMedia:))]) {
-        [tableView deselectRowAtIndexPath:indexPath animated:YES];
-        [self chooseMedia:specifier];
-        return;
+    // On iOS 17, PSListController's standard performButtonActionForSpecifier:
+    // uses the buttonAction SEL ivar, not the "action" string property we set.
+    // So we intercept ALL button taps here and call the action directly.
+    if (actionName.length) {
+        SEL action = NSSelectorFromString(actionName);
+        if ([self respondsToSelector:action]) {
+            [tableView deselectRowAtIndexPath:indexPath animated:YES];
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [self performSelector:action withObject:specifier];
+            #pragma clang diagnostic pop
+            return;
+        }
     }
 
     [super tableView:tableView didSelectRowAtIndexPath:indexPath];
@@ -494,6 +517,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
                                                         cell:PSButtonCell
                                                         edit:nil];
     [spec setProperty:NSStringFromSelector(action) forKey:@"action"];
+    [spec setButtonAction:action]; // iOS 17: also set the SEL ivar for standard button handling
     return spec;
 }
 
@@ -507,6 +531,7 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
                                                         cell:PSButtonCell
                                                         edit:nil];
     [spec setProperty:NSStringFromSelector(action) forKey:@"action"];
+    [spec setButtonAction:action]; // iOS 17: also set the SEL ivar for standard button handling
     // 标记这是缩略图按钮
     [spec setProperty:@(YES) forKey:@"hasThumbnail"];
     return spec;
