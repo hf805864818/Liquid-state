@@ -1156,7 +1156,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     %orig;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIContentModuleContainerView layoutSubviews, actual class=%@", NSStringFromClass([self class]));
+        ccbg_log(@"hook fired: CCUIContentModuleContainerView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
     });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if (mgr.backgroundMode == kCCBgModePerModule) {
@@ -1171,7 +1171,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     %orig;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIContentModuleContainerView didMoveToWindow, actual class=%@", NSStringFromClass([self class]));
+        ccbg_log(@"hook fired: CCUIContentModuleContainerView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
     });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if (mgr.backgroundMode == kCCBgModePerModule && [(UIView *)self window]) {
