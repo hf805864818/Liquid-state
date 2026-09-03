@@ -15,6 +15,7 @@ static NSString * const kCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadP
 static NSString * const kCCBgEnabledKey = @"Enabled";
 static NSString * const kCCBgBlurAlphaKey = @"BlurAlpha";
 static NSString * const kCCBgBackgroundModeKey = @"BackgroundMode"; // 0=全屏, 1=模块级
+static NSString * const kCCBgFullscreenEnabledKey = @"FullscreenBgEnabled";
 static NSString * const kCCBgConnectModuleEnabledKey = @"ConnectModuleBgEnabled";
 static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 
@@ -82,9 +83,12 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
                                                      min:@(0.0)
                                                      max:@(1.0)]];
 
-        // 分组4：特定模块背景
-        [specs addObject:[self groupSpecifierWithName:@"特定模块背景"
-                                            footerText:@"关闭全屏背景时生效，仅在指定模块内显示背景"]];
+        // 分组4：背景模式（三选一，互斥）
+        [specs addObject:[self groupSpecifierWithName:@"背景模式"
+                                            footerText:@"三种模式互斥，开启一个会自动关闭其它"]];
+        [specs addObject:[self switchSpecifierWithKey:kCCBgFullscreenEnabledKey
+                                                  title:@"全屏背景"
+                                               defaultValue:@(YES)]];
         [specs addObject:[self switchSpecifierWithKey:kCCBgConnectModuleEnabledKey
                                                   title:@"连接模块背景"
                                                defaultValue:@(NO)]];
@@ -94,8 +98,6 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 
         // 分组5：高级选项
         [specs addObject:[self groupSpecifierWithName:@"高级选项" footerText:nil]];
-        [specs addObject:[self buttonSpecifierWithTitle:@"背景模式选择"
-                                                   action:@selector(chooseBackgroundMode:)]];
         [specs addObject:[self buttonSpecifierWithTitle:@"跳转 Filza 路径"
                                                    action:@selector(openFilzaPath:)]];
 
@@ -126,8 +128,39 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     CFPreferencesSetAppValue((__bridge CFStringRef)key,
                              (__bridge CFPropertyListRef)value,
                              (__bridge CFStringRef)kCCBgPrefsDomain);
+
+    // 三选一互斥：开启某个背景模式时，自动关闭其它两个
+    if ([value isKindOfClass:[NSNumber class]] && [value boolValue]) {
+        if ([key isEqualToString:kCCBgFullscreenEnabledKey]) {
+            // 全屏 ON → 关闭模块开关，开启 Enabled，模式=0
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgConnectModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgMediaModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey, kCFBooleanTrue, (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0), (__bridge CFStringRef)kCCBgPrefsDomain);
+        } else if ([key isEqualToString:kCCBgConnectModuleEnabledKey]) {
+            // 连接模块 ON → 关闭其它，关闭 Enabled（特定模块模式不需要 Enabled），模式=0
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgFullscreenEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgMediaModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0), (__bridge CFStringRef)kCCBgPrefsDomain);
+        } else if ([key isEqualToString:kCCBgMediaModuleEnabledKey]) {
+            // 播放模块 ON → 关闭其它，关闭 Enabled，模式=0
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgFullscreenEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgConnectModuleEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey, kCFBooleanFalse, (__bridge CFStringRef)kCCBgPrefsDomain);
+            CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey, (__bridge CFPropertyListRef)@(0), (__bridge CFStringRef)kCCBgPrefsDomain);
+        }
+    }
+
     CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
     [[NSNotificationCenter defaultCenter] postNotificationName:(id)kCCBgReloadNotification object:nil];
+
+    // 互斥开关变更后刷新 UI 以反映自动关闭的状态
+    if ([key isEqualToString:kCCBgFullscreenEnabledKey] ||
+        [key isEqualToString:kCCBgConnectModuleEnabledKey] ||
+        [key isEqualToString:kCCBgMediaModuleEnabledKey]) {
+        [self.table reloadData];
+    }
 }
 
 #pragma mark - Actions
@@ -260,10 +293,29 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
         return;
     }
 
-    // 先判断类型
-    if ([provider hasItemConformingToTypeIdentifier:@"public.movie"]) {
+    // 先判断类型 — 检查多个视频 UTI（iOS 17 可能不报告 public.movie）
+    NSArray *videoUTIs = @[
+        @"public.movie",
+        @"public.mpeg-4",
+        @"public.video",
+        @"public.audiovisual-content",
+        @"public.quicktime-movie",
+        @"com.apple.m4v-video",
+        @"com.apple.quicktime-movie"
+    ];
+    NSString *videoType = nil;
+    for (NSString *uti in videoUTIs) {
+        if ([provider hasItemConformingToTypeIdentifier:uti]) {
+            videoType = uti;
+            break;
+        }
+    }
+    NSLog(@"[CCBg] provider registeredTypeIdentifiers: %@", provider.registeredTypeIdentifiers);
+    NSLog(@"[CCBg] detected videoType: %@", videoType);
+
+    if (videoType) {
         // 视频
-        [provider loadFileRepresentationForTypeIdentifier:@"public.movie"
+        [provider loadFileRepresentationForTypeIdentifier:videoType
                                         completionHandler:^(NSURL * _Nullable url, NSError * _Nullable error) {
             if (url && !error) {
                 // 先复制到临时目录（loadFileRepresentation 的 URL 是临时的，结束后会删除）
@@ -395,9 +447,21 @@ static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
     [CCBGProgressHUD dismissFromView:self.view];
 
     if (success) {
-        // 自动开启
+        // 自动开启全屏背景模式（默认模式），关闭其它模式
+        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgFullscreenEnabledKey,
+                                 kCFBooleanTrue,
+                                 (__bridge CFStringRef)kCCBgPrefsDomain);
         CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgEnabledKey,
                                  kCFBooleanTrue,
+                                 (__bridge CFStringRef)kCCBgPrefsDomain);
+        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgBackgroundModeKey,
+                                 (__bridge CFPropertyListRef)@(0),
+                                 (__bridge CFStringRef)kCCBgPrefsDomain);
+        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgConnectModuleEnabledKey,
+                                 kCFBooleanFalse,
+                                 (__bridge CFStringRef)kCCBgPrefsDomain);
+        CFPreferencesSetAppValue((__bridge CFStringRef)kCCBgMediaModuleEnabledKey,
+                                 kCFBooleanFalse,
                                  (__bridge CFStringRef)kCCBgPrefsDomain);
         CFPreferencesAppSynchronize((__bridge CFStringRef)kCCBgPrefsDomain);
 

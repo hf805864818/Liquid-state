@@ -21,6 +21,7 @@ static NSString * const kCCBgPreferencesDomain = @"dylv.Deepliquid.ccbg";
 static NSString * const kCCBgEnabledKey = @"Enabled";
 static NSString * const kCCBgBlurAlphaKey = @"BlurAlpha";
 static NSString * const kCCBgBackgroundModeKey = @"BackgroundMode"; // 0=全屏, 1=模块级
+static NSString * const kCCBgFullscreenEnabledKey = @"FullscreenBgEnabled";
 static NSString * const kCCBgConnectModuleEnabledKey = @"ConnectModuleBgEnabled";
 static NSString * const kCCBgMediaModuleEnabledKey = @"MediaModuleBgEnabled";
 static NSString * const kCCBgReloadNotification = @"dylv.Deepliquid.ccbg/ReloadPrefs";
@@ -65,7 +66,8 @@ static NSArray *ccbgConnectModuleKeywords() {
     static NSArray *keywords = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        keywords = @[@"Network", @"Connect", @"WiFi", @"Airplane", @"Cellular"];
+        keywords = @[@"Network", @"Connect", @"WiFi", @"Airplane", @"Cellular",
+                     @"Bluetooth", @"Hotspot", @"VPN", @"Connectivity", @"Signal"];
     });
     return keywords;
 }
@@ -75,7 +77,8 @@ static NSArray *ccbgMediaModuleKeywords() {
     static NSArray *keywords = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        keywords = @[@"Media", @"NowPlaying", @"Playback", @"Audio"];
+        keywords = @[@"Media", @"NowPlaying", @"Playback", @"Audio", @"Music",
+                     @"Player", @"Volume", @"Sound"];
     });
     return keywords;
 }
@@ -444,6 +447,10 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     NSInteger mode = [defaults integerForKey:kCCBgBackgroundModeKey];
     self.connectModuleBgEnabled = [defaults boolForKey:kCCBgConnectModuleEnabledKey];
     self.mediaModuleBgEnabled = [defaults boolForKey:kCCBgMediaModuleEnabledKey];
+    BOOL fullscreenEnabled = [defaults boolForKey:kCCBgFullscreenEnabledKey];
+    NSLog(@"[CCBg] reloadPrefs: enabled=%d fullscreen=%d mode=%ld connect=%d media=%d",
+          self.isEnabled, fullscreenEnabled, (long)self.backgroundMode,
+          self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
     CCBgMode oldMode = self.backgroundMode;
     self.backgroundMode = (mode == kCCBgModePerModule) ? kCCBgModePerModule : kCCBgModeFullscreen;
 
@@ -818,9 +825,15 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     // 模块级模式已经处理了所有模块
     if (self.backgroundMode == kCCBgModePerModule) return NO;
 
+    NSString *cls = NSStringFromClass([moduleView class]);
+    BOOL isConnect = ccbgIsConnectModule(moduleView);
+    BOOL isMedia = ccbgIsMediaModule(moduleView);
+    NSLog(@"[CCBg] module check: class=%@ isConnect=%d isMedia=%d connectEnabled=%d mediaEnabled=%d",
+          cls, isConnect, isMedia, self.connectModuleBgEnabled, self.mediaModuleBgEnabled);
+
     // 检查特定模块开关
-    if (self.connectModuleBgEnabled && ccbgIsConnectModule(moduleView)) return YES;
-    if (self.mediaModuleBgEnabled && ccbgIsMediaModule(moduleView)) return YES;
+    if (self.connectModuleBgEnabled && isConnect) return YES;
+    if (self.mediaModuleBgEnabled && isMedia) return YES;
 
     return NO;
 }
