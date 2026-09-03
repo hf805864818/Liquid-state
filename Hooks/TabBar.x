@@ -501,9 +501,22 @@ static BOOL LGClearTabBarButtonShadowsRecursive(UIView *view) {
         }
     }
 
-    // 选中指示器已由 UITabBarAppearance.selectionIndicatorImage = nil 处理,
-    // 不再递归清除 UIImageView 图片, 避免误伤第三方 App 自定义图标
-
+    // 选中指示器 UIImageView: 清除图片内容
+    // iOS 的选中指示器是一个普通 UIImageView(非 UITabBarSwappableImageView),
+    // 有 image 内容, 方形(cornerRadius=0), 选中时出现在按钮内部.
+    // 它不含内容后代, 也不是内容视图本身.
+    // 注意: 仅当没有子视图时才清除,避免误伤自定义容器视图
+    if (!isContent && !subtreeHasContent &&
+        [view isKindOfClass:[UIImageView class]] &&
+        view.subviews.count == 0) {
+        UIImageView *imgView = (UIImageView *)view;
+        if (imgView.image) {
+            imgView.image = nil;
+        }
+        if (imgView.highlightedImage) {
+            imgView.highlightedImage = nil;
+        }
+    }
 
     return subtreeHasContent;
 }
