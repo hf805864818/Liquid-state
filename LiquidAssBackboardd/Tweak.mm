@@ -1296,7 +1296,6 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     // 用于确认：atom 是否注册了 / 渲染函数是否被调用 / 路由是否正确
     {
         static int sQARawCount = 0;
-        static int sQARoutedCount = 0;
         // 检查 atom 是否在 QuickActions 的注册范围内
         BOOL isQA = NO;
         int qaIdx = -1;
@@ -1321,7 +1320,6 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
         if (isQA && sQARawCount < 20) {
             sQARawCount++;
             BOOL routedCorrectly = !strcmp(hp->prefPrefix, "QuickActions");
-            if (routedCorrectly) sQARoutedCount++;
             lglog("[QA DIAG] raw render #%d atom=0x%x dims=%llux%llu routedQA=%s host=%s",
                   sQARawCount, ftype, w, h,
                   routedCorrectly ? "YES" : "NO",
