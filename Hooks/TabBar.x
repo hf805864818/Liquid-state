@@ -28,6 +28,19 @@ static const CGFloat kLGTabBarHighlightHeight = 54.0;
 static const CGFloat kLGTabBarLensWidth = 94.0;
 static const CGFloat kLGTabBarLensHeight = 72.0;
 
+// 小红书使用自定义 UIImageView 子类做图标，
+// LGClearSingleTabBarButton 会误清这些图片导致标签和图标不可见
+// 只针对小红书跳过按钮内部清除
+static BOOL LGIsXiaohongshuBundle(void) {
+    static BOOL result = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+        result = [bid isEqualToString:@"com.xingin.discover"];
+    });
+    return result;
+}
+
 @interface UITabBarButton : UIControl
 @end
 
@@ -541,6 +554,8 @@ static void LGClearSingleTabBarButton(UIView *button) {
 
 // 清除 UITabBarButton 内部的阴影和选中背景 (不隐藏视图)
 static void LGHideTabBarButtonInternals(UITabBar *bar) {
+    // 小红书: 跳过按钮内部清除, 保留自定义图标和标签
+    if (LGIsXiaohongshuBundle()) return;
     Class buttonClass = objc_getClass("UITabBarButton");
     for (UIView *button in bar.subviews) {
         if (!buttonClass || ![button isKindOfClass:buttonClass]) continue;
@@ -1445,8 +1460,11 @@ static void LGRefreshTabBarsInView(UIView *view) {
     UITabBar *bar = LGTabBarForButton(self);
     if (lgHostEnabled(@"TabBar") && LGIsStockTabBar(bar)) {
         LGCenterStockTabBarButtonContent(self);
-        // iOS 在按钮布局时设置选中背景 — 此时清除才能去掉方块阴影
-        LGClearSingleTabBarButton(self);
+        // 小红书: 跳过清除, 保留自定义图标和标签
+        if (!LGIsXiaohongshuBundle()) {
+            // iOS 在按钮布局时设置选中背景 — 此时清除才能去掉方块阴影
+            LGClearSingleTabBarButton(self);
+        }
     }
 }
 
