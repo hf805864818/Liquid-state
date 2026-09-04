@@ -1226,9 +1226,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             }
         }
     } else {
-        // 控制中心不可见:立即移除背景层，暂停视频
-        // 不能只 hidden，因为父 view 还在做关闭动画会带着背景一起动
-        // 直接从父 layer 移除，背景瞬间消失，和 CC 关闭同步
+        // 控制中心不可见:立即隐藏背景，暂停视频
+        // 用 setHidden:YES 而非 removeFromSuperlayer
+        // 因为 removeFromSuperlayer 后重新打开时需要等 layoutSubviews 重新挂载，会有延迟
 
         // --- 全屏背景 ---
         if (self.fullscreenEnabled) {
@@ -1244,21 +1244,19 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         if (self.sharedModuleVideoPlayer) {
             [self.sharedModuleVideoPlayer pause];
         }
-        // 直接从父 layer 移除所有模块背景层（不是仅 hidden）
+        // 隐藏所有模块背景
         for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
-            [bg.containerLayer removeFromSuperlayer];
+            [bg setHidden:YES];
         }
         for (CCBgModuleBackground *bg in self.mediaModuleBackgrounds.allValues) {
-            [bg.containerLayer removeFromSuperlayer];
+            [bg setHidden:YES];
         }
         if (self.expandedConnectBackground) {
-            [self.expandedConnectBackground.containerLayer removeFromSuperlayer];
+            [self.expandedConnectBackground setHidden:YES];
         }
         if (self.expandedMediaBackground) {
-            [self.expandedMediaBackground.containerLayer removeFromSuperlayer];
+            [self.expandedMediaBackground setHidden:YES];
         }
-
-        ccbg_log(@"CC hidden: all bg layers removed from superlayer");
 
         // 优化 H: 延迟释放视频资源（只释放资源，不控制可见性）
         [self scheduleDeferredRelease];
@@ -1782,24 +1780,22 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
     // 找到模块内部真正的卡片背景视图（CCUIContentModuleBackgroundView）
     UIView *platterView = [self findPlatterViewInModule:moduleView];
+    UIView *superview = moduleView.superview;
+    if (!superview) return;
     
-    // 背景直接加到 platterView 内部，用 platterView.bounds 做 frame
-    // 这样背景和模块卡片完全对齐，不会错位
-    CALayer *hostLayer;
+    // 背景 frame：优先用 platterView 的 frame（转换到 superview 坐标系）
+    // 黑色 backgroundColor 已确保不会透出全屏背景
     CGRect bgFrame;
     CGFloat cornerRadius;
 
     if (platterView) {
-        hostLayer = platterView.layer;
-        bgFrame = platterView.bounds;
+        bgFrame = [moduleView convertRect:platterView.frame toView:superview];
         cornerRadius = platterView.layer.cornerRadius;
         if (cornerRadius < 1) {
             cornerRadius = [self calculateCornerRadiusForView:platterView];
         }
     } else {
-        // fallback：直接加到 moduleView 内部
-        hostLayer = moduleView.layer;
-        bgFrame = moduleView.bounds;
+        bgFrame = moduleView.frame;
         cornerRadius = [self calculateCornerRadiusForView:moduleView];
     }
 
@@ -1810,8 +1806,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
     if (!bg) {
         bg = [[CCBgModuleBackground alloc] init];
-        // 背景层插入到 hostLayer 最底层（index 0）
-        [hostLayer insertSublayer:bg.containerLayer atIndex:0];
+        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
         bgDict[key] = bg;
         ccbg_log(@"module bg CREATED: type=%ld platterClass=%@ frame=%@ cornerRadius=%.1f hasImage=%d hasVideo=%d",
               (long)type, NSStringFromClass([platterView class] ?: [moduleView class]),
@@ -1819,10 +1814,10 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
               (type == kCCBgTypeConnect) ? self.cachedConnectHasImage : self.cachedMediaHasImage,
               (type == kCCBgTypeConnect) ? self.cachedConnectHasVideo : self.cachedMediaHasVideo);
     } else {
-        // 宿主变了则重新挂载
-        if (bg.containerLayer.superlayer != hostLayer) {
+        // 宿主变了或被移除了则重新挂载
+        if (bg.containerLayer.superlayer != superview.layer) {
             [bg.containerLayer removeFromSuperlayer];
-            [hostLayer insertSublayer:bg.containerLayer atIndex:0];
+            [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
         }
     }
 
