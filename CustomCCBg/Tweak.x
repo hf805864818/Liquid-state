@@ -1227,36 +1227,36 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         }
     } else {
         // 控制中心不可见:立即隐藏背景，暂停视频
-        // 用 setHidden:YES 而非 removeFromSuperlayer
-        // 因为 removeFromSuperlayer 后重新打开时需要等 layoutSubviews 重新挂载，会有延迟
-
-        // --- 全屏背景 ---
-        if (self.fullscreenEnabled) {
-            self.bgContainerView.hidden = YES;
-            if (self.videoView) [self.videoView pause];
-            // 立即恢复系统毛玻璃
-            if (self.originalMaterialView) {
-                self.originalMaterialView.hidden = NO;
+        // 用 performWithoutAnimation 确保 hidden 立即生效，不被动画延迟
+        [UIView performWithoutAnimation:^{
+            // --- 全屏背景 ---
+            if (self.fullscreenEnabled) {
+                self.bgContainerView.hidden = YES;
+                if (self.videoView) [self.videoView pause];
+                // 立即恢复系统毛玻璃
+                if (self.originalMaterialView) {
+                    self.originalMaterialView.hidden = NO;
+                }
             }
-        }
 
-        // --- 模块背景 ---
-        if (self.sharedModuleVideoPlayer) {
-            [self.sharedModuleVideoPlayer pause];
-        }
-        // 隐藏所有模块背景
-        for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
-            [bg setHidden:YES];
-        }
-        for (CCBgModuleBackground *bg in self.mediaModuleBackgrounds.allValues) {
-            [bg setHidden:YES];
-        }
-        if (self.expandedConnectBackground) {
-            [self.expandedConnectBackground setHidden:YES];
-        }
-        if (self.expandedMediaBackground) {
-            [self.expandedMediaBackground setHidden:YES];
-        }
+            // --- 模块背景 ---
+            if (self.sharedModuleVideoPlayer) {
+                [self.sharedModuleVideoPlayer pause];
+            }
+            // 隐藏所有模块背景
+            for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
+                [bg setHidden:YES];
+            }
+            for (CCBgModuleBackground *bg in self.mediaModuleBackgrounds.allValues) {
+                [bg setHidden:YES];
+            }
+            if (self.expandedConnectBackground) {
+                [self.expandedConnectBackground setHidden:YES];
+            }
+            if (self.expandedMediaBackground) {
+                [self.expandedMediaBackground setHidden:YES];
+            }
+        }];
 
         // 优化 H: 延迟释放视频资源（只释放资源，不控制可见性）
         [self scheduleDeferredRelease];
