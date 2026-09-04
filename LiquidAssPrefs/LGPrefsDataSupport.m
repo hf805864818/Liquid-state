@@ -1038,7 +1038,15 @@ static NSArray<NSDictionary *> *LGClockDateFormatItems(void) {
 
 NSArray<NSDictionary *> *LGClockItems(void) {
     return LGJoinItemGroups(@[
-        LGRendererItemsForHostPrefix(@"Clock"),
+        @[
+            LGSwitchSetting(@"Clock.FrostedMode",
+                            LGLocalized(@"prefs.control.clock_frosted_mode"),
+                            LGLocalized(@"prefs.subtitle.clock_frosted_mode"),
+                            NO),
+        ],
+        LGSettingsControlledByKey(
+            LGRendererItemsForHostPrefix(@"Clock"),
+            @"Clock.FrostedMode", @NO),
         LGClockVariableFontItems(),
         LGClockDateFormatItems(),
         LGModuleResetItem(@"resetClockToDefault",

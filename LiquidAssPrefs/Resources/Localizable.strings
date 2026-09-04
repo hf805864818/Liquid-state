@@ -14,6 +14,7 @@
 "prefs.control.specular" = "Specular";
 "prefs.control.quality" = "Quality";
 "prefs.control.variable_font" = "iOS 26 Clock";
+"prefs.control.clock_frosted_mode" = "Frosted Mode";
 "prefs.control.variable_font_name" = "Font";
 "prefs.control.variable_font_weight_preset" = "Weight Presets";
 "prefs.control.variable_font_size" = "Font Size";
@@ -42,6 +43,7 @@
 "prefs.subtitle.motion_highlights" = "Rotate the glass rim with device compass.";
 "prefs.subtitle.motion_highlights_sensitivity" = "How strongly device compass steers the highlight.";
 "prefs.subtitle.variable_font" = "Uses the iOS 26-style adaptive clock font. Turn off to keep the stock clock font.";
+"prefs.subtitle.clock_frosted_mode" = "Use stock frosted glass effect for the clock instead of liquid glass.";
 "prefs.subtitle.variable_font_name" = "Choose the adaptive font for the clock.";
 "prefs.subtitle.variable_font_weight_preset" = "Quickly select common weight presets.";
 "prefs.subtitle.variable_font_size" = "Point size multiplier for the iOS 26 clock font.";

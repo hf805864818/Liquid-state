@@ -7,6 +7,7 @@
 static void *kQAGlassKey = &kQAGlassKey;
 static void *kQABackdropKey = &kQABackdropKey;
 static void *kQABackdropAlphaKey = &kQABackdropAlphaKey;
+static void *kQAMaskLayerKey = &kQAMaskLayerKey;
 static NSHashTable<UIVisualEffectView *> *sQuickActionHosts;
 static void removeQuickActionsGlass(UIVisualEffectView *fx);
 
@@ -138,9 +139,24 @@ static void injectQuickActionsGlass(UIVisualEffectView *fx) {
     }
     if (glass.superview != container) [container insertSubview:glass atIndex:0];
     glass.frame               = container.bounds;
-    glass.layer.cornerRadius  = fmin(CGRectGetWidth(container.bounds), CGRectGetHeight(container.bounds)) * 0.5;
+    // 使用 CAShapeLayer mask 实现圆形裁剪，避免 iOS 17 上 masksToBounds 导致
+    // CABackdropLayer 走不同渲染路径从而绕过自定义液态滤镜的问题
+    CGFloat cornerRadius = fmin(CGRectGetWidth(container.bounds), CGRectGetHeight(container.bounds)) * 0.5;
+    glass.layer.cornerRadius  = cornerRadius;
     glass.layer.cornerCurve   = kCACornerCurveContinuous;
-    glass.layer.masksToBounds = YES;
+    // 保留 cornerRadius 以支持动态半径计算，但禁用 masksToBounds
+    // 改用 mask layer 实现裁剪
+    glass.layer.masksToBounds = NO;
+    CAShapeLayer *circleMask = objc_getAssociatedObject(glass, kQAMaskLayerKey);
+    if (!circleMask) {
+        circleMask = [CAShapeLayer layer];
+        circleMask.fillColor = [UIColor blackColor].CGColor;
+        objc_setAssociatedObject(glass, kQAMaskLayerKey, circleMask, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        glass.layer.mask = circleMask;
+    }
+    CGPathRef circlePath = CGPathCreateWithRoundedRect(glass.bounds, cornerRadius, cornerRadius, NULL);
+    circleMask.path = circlePath;
+    CGPathRelease(circlePath);
     [glass applyFilters];
 
     // 诊断: applyFilters 后检查 filter 是否附加

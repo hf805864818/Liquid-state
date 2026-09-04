@@ -146,6 +146,7 @@ typedef void (*MSHookFunctionFn)(void *, void *, void **);
 static MSHookFunctionFn g_hookFunction = nullptr;
 static bool             g_useHookPath = false;
 static bool             g_legacyRenderABI = false;
+static bool             g_clockFrostedMode = false;  // Clock 磨砂模式开关
 static thread_local bool g_inLegacyRender = false;
 static thread_local simd_float2 g_legacyRenderOffset = { 0.0f, 0.0f };
 static std::unordered_set<uint32_t> g_customAtoms;
@@ -1210,6 +1211,16 @@ static void lgReloadHostPrefs(void) {
     lglog("lgReloadHostPrefs: %s (%d hosts, %d overrides) banner.bezel=%.3f refr=%.2f",
           prefs ? "loaded prefs" : "defaults", kHostCount, overrides,
           g_hostParams[4].bezelRatio, g_hostParams[4].refractionScale);
+
+    // Clock 磨砂模式：从偏好设置读取
+    // 开启时跳过自定义液态渲染，走系统原生高斯模糊
+    if (prefs) {
+        NSNumber *frostedMode = prefs[@"Clock.FrostedMode"];
+        if ([frostedMode isKindOfClass:[NSNumber class]]) {
+            g_clockFrostedMode = frostedMode.boolValue;
+            lglog("Clock frosted mode: %s", g_clockFrostedMode ? "ON" : "OFF");
+        }
+    }
 }
 
 static void lgPrefsReloadCallback(CFNotificationCenterRef c, void *o, CFStringRef n,
@@ -1290,6 +1301,19 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     bool darkTint = false;
     const LGHostParams *hp = lgHostParamsForAtom(ftype, &darkTint);
     float shortestF = fminf((float)w, (float)h);
+
+    // Clock 磨砂模式：开启时跳过自定义液态渲染，直接走系统原生高斯模糊
+    if (!strcmp(hp->prefPrefix, "Clock") && g_clockFrostedMode) {
+        R13TRACE("R13[%llu] Clock frosted mode ON, bypassing liquid render", callN);
+        if (g_inLegacyRender && g_origGaussR14) {
+            g_origGaussR14(self, filter, layer, ctx, opacity, surface,
+                           0.0f, g_legacyRenderOffset, cm, shape, out);
+        } else if (g_origGaussR13) {
+            g_origGaussR13(self, filter, layer, ctx, opacity, surface,
+                           0.0f, flag, cm, shape, out);
+        }
+        return;
+    }
 
     // [DIAG] QuickActions 全链路诊断
     // 在 atom 层面直接统计，不依赖 host 路由结果
