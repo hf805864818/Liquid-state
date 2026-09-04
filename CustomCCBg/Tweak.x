@@ -1463,7 +1463,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 // 处理展开模块视图（从展开的 view controller 中找到实际模块内容）
 - (void)handleExpandedModuleView:(UIView *)expandedView {
-    if (!expandedView || !self.connectEnabled && !self.mediaEnabled) return;
+    if (!expandedView || (!self.connectEnabled && !self.mediaEnabled)) return;
 
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
