@@ -3001,8 +3001,21 @@ static void LGRefreshAllClockHosts(void) {
 %ctor {
     if (!LGIsSpringBoardProcess()) return;
     lgObservePreferenceReload(^{
-        LGClockLog(@"prefs reload triggered — refreshing clock hosts, frostedMode=%d",
-                   LGClockFrostedModeEnabled());
+        // 诊断: 打印所有 Clock 相关的偏好设置
+        NSDictionary *allPrefs = [NSDictionary dictionaryWithContentsOfFile:
+            jbroot(@"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist")] ?: @{};
+        NSMutableArray *clockKeys = [NSMutableArray array];
+        for (NSString *key in allPrefs) {
+            if ([key hasPrefix:@"Clock."]) {
+                [clockKeys addObject:[NSString stringWithFormat:@"%@=%@", key, allPrefs[key]]];
+            }
+        }
+        LGClockLog(@"prefs reload triggered — all Clock.* keys: %@", clockKeys);
+        LGClockLog(@"  frostedMode via CFPreferences=%d", LGClockFrostedModeEnabled());
+        id glassVal = LGGlassPreferenceValue(@"Clock.FrostedMode");
+        LGClockLog(@"  frostedMode via LGGlassPreferenceValue=%@ (class=%@)",
+                   glassVal ?: @"(nil)",
+                   NSStringFromClass(glassVal.class));
         LGRefreshAllClockHosts();
     });
     BOOL cspExists = NSClassFromString(@"CSProminentTimeView") != nil;
