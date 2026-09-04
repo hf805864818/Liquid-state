@@ -1879,7 +1879,6 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
 
 @interface LGClockGlassView : UIView
 @property (nonatomic, strong) LGClockBackdropView *glassView;
-@property (nonatomic, strong) UIView *frostedTintView;  // 磨砂模式的颜色覆盖层
 @property (nonatomic, strong) UILabel *maskLabel;
 @property (nonatomic, copy) NSString *displayText;
 @property (nonatomic, copy) NSAttributedString *displayAttributedText;
@@ -1970,13 +1969,6 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
     _glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _glassView.cornerRadius = 0.0;
     [self addSubview:_glassView];
-
-    // 磨砂模式的颜色覆盖层（默认隐藏）
-    _frostedTintView = [[UIView alloc] initWithFrame:self.bounds];
-    _frostedTintView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    _frostedTintView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.35];
-    _frostedTintView.hidden = YES;
-    [self addSubview:_frostedTintView];
 
     _maskLabel = [[UILabel alloc] initWithFrame:self.bounds];
     _maskLabel.textColor = UIColor.whiteColor;
@@ -2505,9 +2497,10 @@ static void LGApplyClockReplacement(UIView *host) {
                overlayEligible,
                blocking,
                overlay ? 1 : 0);
-    // 磨砂模式不再作为跳过条件，而是切换 filter 类型
-    if (!enabled || !overlayEligible || !sourceLabel || blocking) {
+    // 磨砂模式开启时，不显示液态玻璃效果，恢复系统原生磨砂时钟
+    if (!enabled || frostedMode || !overlayEligible || !sourceLabel || blocking) {
         NSString *reason = !enabled ? @"disabled"
+            : frostedMode ? @"frosted-mode"
             : !overlayEligible ? @"not-eligible"
             : !sourceLabel ? @"no-source"
             : @"blocked";
@@ -2613,34 +2606,6 @@ static void LGApplyClockReplacement(UIView *host) {
     } else if (overlay.superview != overlayContainer) {
         [overlay removeFromSuperview];
         [overlayContainer addSubview:overlay];
-    }
-
-    // 磨砂模式: 切换 filter 类型（液态玻璃 ↔ 高斯模糊）
-    LGClockBackdropView *glassView = overlay.glassView;
-    NSString *targetFilterType = frostedMode ? @"gaussianBlur" : LGFilterTypeForHostPrefix(@"Clock");
-    NSString *currentFilterType = glassView.lgFilterType;
-    if (![currentFilterType isEqualToString:targetFilterType]) {
-        LGClockLog(@"clock filter switch: %@ → %@ (frostedMode=%d)",
-                   currentFilterType ?: @"(nil)",
-                   targetFilterType,
-                   frostedMode);
-        glassView.lgFilterType = targetFilterType;
-        // 强制重新应用 filter（重置 _filterAttached 标志）
-        @try {
-            [glassView setValue:@NO forKey:@"_filterAttached"];
-        } @catch (NSException *e) {
-            LGClockLog(@"  WARN: could not reset _filterAttached: %@", e.reason);
-        }
-        [glassView applyFilters];
-    }
-    // 磨砂模式显示颜色覆盖层，让文字可见
-    overlay.frostedTintView.hidden = !frostedMode;
-    // 根据深浅模式调整磨砂颜色
-    if (frostedMode) {
-        BOOL isDark = overlay.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
-        overlay.frostedTintView.backgroundColor = isDark
-            ? [UIColor colorWithWhite:0.0 alpha:0.35]
-            : [UIColor colorWithWhite:1.0 alpha:0.35];
     }
 
     overlay.clockHost = host;
