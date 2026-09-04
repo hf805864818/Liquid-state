@@ -1291,14 +1291,41 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     const LGHostParams *hp = lgHostParamsForAtom(ftype, &darkTint);
     float shortestF = fminf((float)w, (float)h);
 
-    // [DIAG] QuickActions 渲染调用计数
-    // 确认自定义渲染函数是否被 QuickActions 的滤镜调用
-    if (!strcmp(hp->prefPrefix, "QuickActions")) {
-        static int sQARenderCount = 0;
-        if (sQARenderCount < 10) {
-            sQARenderCount++;
-            lglog("[QA DIAG] render called #%d atom=0x%x dims=%llux%llu dark=%d",
-                  sQARenderCount, ftype, w, h, darkTint ? 1 : 0);
+    // [DIAG] QuickActions 全链路诊断
+    // 在 atom 层面直接统计，不依赖 host 路由结果
+    // 用于确认：atom 是否注册了 / 渲染函数是否被调用 / 路由是否正确
+    {
+        static int sQARawCount = 0;
+        static int sQARoutedCount = 0;
+        // 检查 atom 是否在 QuickActions 的注册范围内
+        BOOL isQA = NO;
+        int qaIdx = -1;
+        for (int i = 0; i < kHostCount; i++) {
+            if (!strcmp(kHostDefaults[i].prefPrefix, "QuickActions")) { qaIdx = i; break; }
+        }
+        if (qaIdx >= 0) {
+            if (g_hostParams[qaIdx].atom == ftype || g_darkAtoms[qaIdx] == ftype) {
+                isQA = YES;
+            } else {
+                auto route = g_radiusRoutes.find(ftype);
+                if (route != g_radiusRoutes.end() && route->second.host == qaIdx) {
+                    isQA = YES;
+                } else {
+                    auto refRoute = g_refreshRoutes.find(ftype);
+                    if (refRoute != g_refreshRoutes.end() && refRoute->second.host == qaIdx) {
+                        isQA = YES;
+                    }
+                }
+            }
+        }
+        if (isQA && sQARawCount < 20) {
+            sQARawCount++;
+            BOOL routedCorrectly = !strcmp(hp->prefPrefix, "QuickActions");
+            if (routedCorrectly) sQARoutedCount++;
+            lglog("[QA DIAG] raw render #%d atom=0x%x dims=%llux%llu routedQA=%s host=%s",
+                  sQARawCount, ftype, w, h,
+                  routedCorrectly ? "YES" : "NO",
+                  hp->prefPrefix);
         }
     }
 
@@ -1564,6 +1591,39 @@ static void ourGaussianRenderHook(void *self, void *filter, void *layer, void *c
                                   bool flag, void *cm, void *shape, float *out) {
     uint32_t atom = filter
         ? *(uint32_t *)((uint8_t *)filter + g_filterAtomOffset) : 0;
+
+    // [DIAG] QuickActions hook 层诊断
+    // 确认 QuickActions 的 atom 有没有进入 gaussian render hook
+    {
+        static int sQAHookCount = 0;
+        BOOL isQAHook = NO;
+        int qaIdx = -1;
+        for (int i = 0; i < kHostCount; i++) {
+            if (!strcmp(kHostDefaults[i].prefPrefix, "QuickActions")) { qaIdx = i; break; }
+        }
+        if (qaIdx >= 0) {
+            if (g_hostParams[qaIdx].atom == atom || g_darkAtoms[qaIdx] == atom) {
+                isQAHook = YES;
+            } else {
+                auto route = g_radiusRoutes.find(atom);
+                if (route != g_radiusRoutes.end() && route->second.host == qaIdx) {
+                    isQAHook = YES;
+                } else {
+                    auto refRoute = g_refreshRoutes.find(atom);
+                    if (refRoute != g_refreshRoutes.end() && refRoute->second.host == qaIdx) {
+                        isQAHook = YES;
+                    }
+                }
+            }
+        }
+        if (isQAHook && sQAHookCount < 20) {
+            sQAHookCount++;
+            BOOL isCustom = lgIsCustomAtom(atom);
+            lglog("[QA DIAG] hook render #%d atom=0x%x isCustom=%d opacity=%.2f scale=%.2f",
+                  sQAHookCount, atom, isCustom, opacity, scale);
+        }
+    }
+
     if (lgIsCustomAtom(atom)) {
         static int loggedCustomDispatch = 0;
         if (__sync_bool_compare_and_swap(&loggedCustomDispatch, 0, 1)) {
