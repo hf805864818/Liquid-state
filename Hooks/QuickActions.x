@@ -115,17 +115,34 @@ static void injectQuickActionsGlass(UIVisualEffectView *fx) {
         container.overrideUserInterfaceStyle = UIUserInterfaceStyleLight;
     }
 
+    // 将 glass 视图添加到 UIVisualEffectView 的父视图中 (作为兄弟视图)
+    // 而不是添加到 contentView 内部。
+    // 原因: iOS 17 上,在 UIVisualEffectView.contentView 内部放置 CABackdropLayer
+    // 可能导致 backdrop 捕获异常或渲染路径变化,从而液态效果不可见。
+    // 放在父视图中可以确保 backdrop 正确捕获壁纸内容。
+    UIView *parentView = fx.superview;
+    if (!parentView) {
+        LGQALog(@"inject FAILED — fx.superview is nil");
+        return;
+    }
+
     LGLiveBackdropView *glass = objc_getAssociatedObject(fx, kQAGlassKey);
     if (!glass) {
-        glass = LGCreateRegisteredGlass(container.bounds, nil, @"QuickActions");
+        glass = LGCreateRegisteredGlass(fx.bounds, nil, @"QuickActions");
         if (!glass) {
             LGQALog(@"inject FAILED — glass creation returned nil (bounds=%@)",
-                    NSStringFromCGRect(container.bounds));
+                    NSStringFromCGRect(fx.bounds));
             return;
         }
-        LGQALog(@"inject: created new glass bounds=%@", NSStringFromCGRect(container.bounds));
-        glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [container insertSubview:glass atIndex:0];
+        LGQALog(@"inject: created new glass bounds=%@ (sibling mode)", NSStringFromCGRect(fx.bounds));
+        glass.autoresizingMask =
+            UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight |
+            UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin |
+            UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+        // 插入到 UIVisualEffectView 下方 (同一父视图中)
+        NSInteger fxIndex = [parentView.subviews indexOfObject:fx];
+        if (fxIndex == NSNotFound) fxIndex = 0;
+        [parentView insertSubview:glass atIndex:fxIndex];
         objc_setAssociatedObject(fx, kQAGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
         // 诊断: 检查 glass view 的 layer 和 filter
@@ -137,11 +154,22 @@ static void injectQuickActionsGlass(UIVisualEffectView *fx) {
                 isBackdrop ? @"YES" : @"NO",
                 glass.lgFilterType ?: @"(nil)");
     }
-    if (glass.superview != container) [container insertSubview:glass atIndex:0];
-    glass.frame               = container.bounds;
+    // 确保 glass 在正确的父视图中且在 UIVisualEffectView 下方
+    if (glass.superview != parentView) {
+        NSInteger fxIndex = [parentView.subviews indexOfObject:fx];
+        if (fxIndex == NSNotFound) fxIndex = 0;
+        [parentView insertSubview:glass atIndex:fxIndex];
+    } else {
+        NSInteger glassIndex = [parentView.subviews indexOfObject:glass];
+        NSInteger fxIndex = [parentView.subviews indexOfObject:fx];
+        if (glassIndex != NSNotFound && fxIndex != NSNotFound && glassIndex > fxIndex) {
+            [parentView insertSubview:glass atIndex:fxIndex];
+        }
+    }
+    glass.frame = fx.frame;
     // 使用 CAShapeLayer mask 实现圆形裁剪，避免 iOS 17 上 masksToBounds 导致
     // CABackdropLayer 走不同渲染路径从而绕过自定义液态滤镜的问题
-    CGFloat cornerRadius = fmin(CGRectGetWidth(container.bounds), CGRectGetHeight(container.bounds)) * 0.5;
+    CGFloat cornerRadius = fmin(CGRectGetWidth(glass.bounds), CGRectGetHeight(glass.bounds)) * 0.5;
     glass.layer.cornerRadius  = cornerRadius;
     glass.layer.cornerCurve   = kCACornerCurveContinuous;
     // 保留 cornerRadius 以支持动态半径计算，但禁用 masksToBounds
