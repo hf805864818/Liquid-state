@@ -280,6 +280,10 @@ static NSArray *ccbgMediaModuleExcludeKeywords() {
         keywords = @[@"Volume", @"Brightness", @"Mirroring",
                      @"ScreenMirror", @"AirPlayReceiver",
                      @"volume", @"brightness", @"mirroring",
+                     // mediaremote 是音量模块，不是播放控制模块
+                     @"mediaremote",
+                     @"MRUVolume",
+                     @"MRUContinuousSlider",
                      // 模块标识符排除
                      @"com.apple.controlcenter.volume",
                      @"com.apple.controlcenter.brightness",
@@ -288,6 +292,7 @@ static NSArray *ccbgMediaModuleExcludeKeywords() {
                      @"com.apple.controlcenter.flashlight",
                      @"com.apple.controlcenter.calculator",
                      @"com.apple.controlcenter.camera",
+                     @"com.apple.mediaremote",
                      // iOS 17+ 标识排除
                      @"volume-control",
                      @"brightness-control",
@@ -295,7 +300,11 @@ static NSArray *ccbgMediaModuleExcludeKeywords() {
                      @"airplay",
                      @"flashlight",
                      @"calculator",
-                     @"camera"];
+                     @"camera",
+                     // accessibility ID 排除
+                     @"cc-volume-slider",
+                     @"cc-secondary-volume-slider",
+                     @"cc-brightness-slider"];
     });
     return keywords;
 }
@@ -776,6 +785,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 - (void)attachToHostView:(UIView *)view;
 - (void)handleModuleView:(UIView *)moduleView;
 - (void)scanForModulesInView:(UIView *)rootView;
+- (void)handleExpandedModuleView:(UIView *)expandedView;
 - (CGFloat)calculateCornerRadiusForView:(UIView *)moduleView;
 - (void)setControlCenterVisible:(BOOL)visible;
 - (void)detachAllModules;
@@ -1451,6 +1461,22 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 }
 
+// 处理展开模块视图（从展开的 view controller 中找到实际模块内容）
+- (void)handleExpandedModuleView:(UIView *)expandedView {
+    if (!expandedView || !self.connectEnabled && !self.mediaEnabled) return;
+
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"expanded module view received, class=%@", NSStringFromClass([expandedView class]));
+        NSMutableString *tree = [NSMutableString string];
+        ccbgDumpSubviewTree(expandedView, @"", tree);
+        ccbg_log(@"  expanded view hierarchy:\n%@", tree);
+    });
+
+    // 在展开视图中查找模块容器
+    [self scanView:expandedView depth:0 maxDepth:6];
+}
+
 // 智能计算模块圆角（处理胶囊形滑块等特殊形状）
 - (CGFloat)calculateCornerRadiusForView:(UIView *)moduleView {
     CGFloat viewRadius = moduleView.layer.cornerRadius;
@@ -1523,6 +1549,11 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
     CGRect moduleFrame = moduleView.frame;
     CGFloat cornerRadius = [self calculateCornerRadiusForView:moduleView];
+
+    // 模块还没布局好（frame 为 0），跳过
+    if (CGRectGetWidth(moduleFrame) < 10 || CGRectGetHeight(moduleFrame) < 10) {
+        return;
+    }
 
     if (!bg) {
         bg = [[CCBgModuleBackground alloc] init];
@@ -1831,6 +1862,26 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     if ([(UIView *)self window]) {
         [mgr handleModuleView:(UIView *)self];
     }
+}
+
+%end
+
+// 额外 hook: 展开模块详情视图
+%hook CCUIExpandedModuleDetailViewController
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    ccbg_log(@"expanded module viewWillAppear: class=%@", NSStringFromClass([(id)self class]));
+    UIView *view = ((UIViewController *)self).view;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleExpandedModuleView:view];
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    UIView *view = ((UIViewController *)self).view;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleExpandedModuleView:view];
 }
 
 %end
