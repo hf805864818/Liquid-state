@@ -139,6 +139,81 @@ static UIView *ccbgFindMaterialView(UIView *rootView) {
 }
 
 // 模块类型识别
+// MARK: - 模块标识符检测（运行时）
+
+// 尝试从视图或其响应者链中获取模块标识符
+static NSString *ccbgGetModuleIdentifier(UIView *view) {
+    if (!view) return nil;
+
+    // 尝试直接从视图获取模块相关属性
+    NSArray *propertyNames = @[@"moduleIdentifier", @"_moduleIdentifier",
+                               @"moduleID", @"_moduleID",
+                               @"identifier", @"_identifier",
+                               @"module", @"_module",
+                               @"contentModule", @"_contentModule"];
+
+    for (NSString *propName in propertyNames) {
+        @try {
+            if ([view respondsToSelector:NSSelectorFromString(propName)]) {
+                id value = [view valueForKey:propName];
+                if (value && [value isKindOfClass:[NSString class]]) {
+                    return (NSString *)value;
+                }
+                // 如果属性是一个对象，尝试从该对象中获取 identifier
+                if (value && ![value isKindOfClass:[NSNumber class]] && ![value isKindOfClass:[NSString class]]) {
+                    for (NSString *innerProp in @[@"identifier", @"moduleIdentifier", @"ID"]) {
+                        SEL innerSel = NSSelectorFromString(innerProp);
+                        if ([value respondsToSelector:innerSel]) {
+                            id innerValue = [value valueForKey:innerProp];
+                            if (innerValue && [innerValue isKindOfClass:[NSString class]]) {
+                                return (NSString *)innerValue;
+                            }
+                        }
+                    }
+                }
+            }
+        } @catch (NSException *e) {
+            continue;
+        }
+    }
+
+    // 尝试通过响应者链找视图控制器
+    UIResponder *responder = view.nextResponder;
+    NSInteger attempts = 0;
+    while (responder && attempts < 10) {
+        if ([responder isKindOfClass:[UIViewController class]]) {
+            UIViewController *vc = (UIViewController *)responder;
+            for (NSString *propName in propertyNames) {
+                @try {
+                    if ([vc respondsToSelector:NSSelectorFromString(propName)]) {
+                        id value = [vc valueForKey:propName];
+                        if (value && [value isKindOfClass:[NSString class]]) {
+                            return (NSString *)value;
+                        }
+                        if (value && ![value isKindOfClass:[NSNumber class]] && ![value isKindOfClass:[NSString class]]) {
+                            for (NSString *innerProp in @[@"identifier", @"moduleIdentifier", @"ID"]) {
+                                SEL innerSel = NSSelectorFromString(innerProp);
+                                if ([value respondsToSelector:innerSel]) {
+                                    id innerValue = [value valueForKey:innerProp];
+                                    if (innerValue && [innerValue isKindOfClass:[NSString class]]) {
+                                        return (NSString *)innerValue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } @catch (NSException *e) {
+                    continue;
+                }
+            }
+        }
+        responder = responder.nextResponder;
+        attempts++;
+    }
+
+    return nil;
+}
+
 // 连接模块类名关键词（更全面）
 static NSArray *ccbgConnectModuleKeywords() {
     static NSArray *keywords = nil;
@@ -153,7 +228,16 @@ static NSArray *ccbgConnectModuleKeywords() {
                      @"com.apple.controlcenter.bluetooth",
                      @"com.apple.controlcenter.cellular",
                      @"com.apple.controlcenter.hotspot",
-                     @"com.apple.controlcenter.vpn"];
+                     @"com.apple.controlcenter.vpn",
+                     // iOS 17+ 模块标识
+                     @"airplane-mode",
+                     @"wifi",
+                     @"bluetooth",
+                     @"cellular",
+                     @"personal-hotspot",
+                     @"vpn",
+                     // 额外关键词
+                     @"Radio", @"Antenna", @"Modem"];
     });
     return keywords;
 }
@@ -168,7 +252,17 @@ static NSArray *ccbgMediaModuleKeywords() {
                      // 模块标识符关键词
                      @"com.apple.controlcenter.media",
                      @"com.apple.controlcenter.nowplaying",
-                     @"com.apple.mediapicker"];
+                     @"com.apple.mediapicker",
+                     // iOS 17+ 模块标识
+                     @"now-playing",
+                     @"media-player",
+                     @"music",
+                     // 额外关键词
+                     @"PlaybackControl",
+                     @"MediaControl",
+                     @"AVPlayer",
+                     @"MPMedia",
+                     @"MPNowPlaying"];
     });
     return keywords;
 }
@@ -190,6 +284,22 @@ static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInte
             }
         }
     }
+    // 额外检查 accessibilityLabel
+    if (view.accessibilityLabel) {
+        for (NSString *keyword in keywords) {
+            if ([view.accessibilityLabel rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                return YES;
+            }
+        }
+    }
+    // 检查 restorationIdentifier
+    if (view.restorationIdentifier) {
+        for (NSString *keyword in keywords) {
+            if ([view.restorationIdentifier rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                return YES;
+            }
+        }
+    }
     for (UIView *subview in view.subviews) {
         if (ccbgCheckViewTreeForKeywords(subview, keywords, depth - 1)) {
             return YES;
@@ -201,19 +311,38 @@ static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInte
 // 递归 dump 子视图类名（调试用）
 static void ccbgDumpSubviewTree(UIView *view, NSString *indent, NSMutableString *output) {
     if (!view) return;
-    [output appendFormat:@"%@%@\n", indent, NSStringFromClass([view class])];
-    if (view.subviews.count > 0 && indent.length < 8) {
+    NSMutableString *line = [NSMutableString stringWithFormat:@"%@%@", indent, NSStringFromClass([view class])];
+    // 额外信息：accessibilityIdentifier
+    if (view.accessibilityIdentifier) {
+        [line appendFormat:@" [id=%@]", view.accessibilityIdentifier];
+    }
+    if (view.accessibilityLabel) {
+        [line appendFormat:@" [label=%@]", view.accessibilityLabel];
+    }
+    [output appendFormat:@"%@\n", line];
+    // 增加到 10 层深度
+    if (view.subviews.count > 0 && indent.length < 20) {
         for (UIView *sub in view.subviews) {
             ccbgDumpSubviewTree(sub, [indent stringByAppendingString:@"  "], output);
         }
     }
 }
 
-// 判断是否为连接模块（递归检查子视图类名）
+// 判断是否为连接模块（优先通过模块标识符，其次递归检查子视图类名）
 static BOOL ccbgIsConnectModule(UIView *view) {
     if (!view) return NO;
     NSArray *keywords = ccbgConnectModuleKeywords();
 
+    // 方案1: 优先通过模块标识符检测（最准确）
+    NSString *moduleID = ccbgGetModuleIdentifier(view);
+    if (moduleID) {
+        for (NSString *keyword in keywords) {
+            if ([moduleID rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                return YES;
+            }
+        }
+    }
+
     // 检查自身类名
     NSString *className = NSStringFromClass([view class]);
     for (NSString *keyword in keywords) {
@@ -231,15 +360,25 @@ static BOOL ccbgIsConnectModule(UIView *view) {
             }
         }
     }
-    // 递归检查子视图（最多 4 层）—— iOS 17 模块容器类名相同，内容视图在子视图中
-    return ccbgCheckViewTreeForKeywords(view, keywords, 4);
+    // 递归检查子视图（最多 6 层）—— iOS 17 模块容器类名相同，内容视图在子视图中
+    return ccbgCheckViewTreeForKeywords(view, keywords, 6);
 }
 
-// 判断是否为播放控制模块（递归检查子视图类名）
+// 判断是否为播放控制模块（优先通过模块标识符，其次递归检查子视图类名）
 static BOOL ccbgIsMediaModule(UIView *view) {
     if (!view) return NO;
     NSArray *keywords = ccbgMediaModuleKeywords();
 
+    // 方案1: 优先通过模块标识符检测（最准确）
+    NSString *moduleID = ccbgGetModuleIdentifier(view);
+    if (moduleID) {
+        for (NSString *keyword in keywords) {
+            if ([moduleID rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                return YES;
+            }
+        }
+    }
+
     // 检查自身类名
     NSString *className = NSStringFromClass([view class]);
     for (NSString *keyword in keywords) {
@@ -257,8 +396,8 @@ static BOOL ccbgIsMediaModule(UIView *view) {
             }
         }
     }
-    // 递归检查子视图（最多 4 层）
-    return ccbgCheckViewTreeForKeywords(view, keywords, 4);
+    // 递归检查子视图（最多 6 层）
+    return ccbgCheckViewTreeForKeywords(view, keywords, 6);
 }
 
 // MARK: - 图片预渲染模糊工具
@@ -563,6 +702,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 - (void)reloadPreferences;
 - (void)attachToHostView:(UIView *)view;
 - (void)handleModuleView:(UIView *)moduleView;
+- (void)scanForModulesInView:(UIView *)rootView;
 - (void)setControlCenterVisible:(BOOL)visible;
 - (void)detachAllModules;
 - (void)detach;
@@ -608,15 +748,48 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 }
 
 - (void)reloadPreferences {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kCCBgPreferencesDomain];
+    // 使用 CFPreferences 读取，确保与设置界面写入方式一致，避免跨进程缓存问题
+    CFStringRef domain = (__bridge CFStringRef)kCCBgPreferencesDomain;
 
     // 读取三种独立背景的设置
-    self.fullscreenEnabled = [defaults boolForKey:kCCBgFullscreenEnabledKey];
-    self.fullscreenBlurAlpha = [defaults floatForKey:kCCBgFullscreenBlurAlphaKey];
-    self.connectEnabled = [defaults boolForKey:kCCBgConnectEnabledKey];
-    self.connectBlurAlpha = [defaults floatForKey:kCCBgConnectBlurAlphaKey];
-    self.mediaEnabled = [defaults boolForKey:kCCBgMediaEnabledKey];
-    self.mediaBlurAlpha = [defaults floatForKey:kCCBgMediaBlurAlphaKey];
+    Boolean fullscreenEnabled = CFPreferencesGetAppBooleanValue(
+        (__bridge CFStringRef)kCCBgFullscreenEnabledKey, domain, NULL);
+    self.fullscreenEnabled = fullscreenEnabled;
+
+    CFNumberRef fullscreenBlurNum = CFPreferencesCopyAppValue(
+        (__bridge CFStringRef)kCCBgFullscreenBlurAlphaKey, domain);
+    if (fullscreenBlurNum) {
+        CFNumberGetValue(fullscreenBlurNum, kCFNumberCGFloatType, &_fullscreenBlurAlpha);
+        CFRelease(fullscreenBlurNum);
+    } else {
+        self.fullscreenBlurAlpha = 0.3; // 默认值
+    }
+
+    Boolean connectEnabled = CFPreferencesGetAppBooleanValue(
+        (__bridge CFStringRef)kCCBgConnectEnabledKey, domain, NULL);
+    self.connectEnabled = connectEnabled;
+
+    CFNumberRef connectBlurNum = CFPreferencesCopyAppValue(
+        (__bridge CFStringRef)kCCBgConnectBlurAlphaKey, domain);
+    if (connectBlurNum) {
+        CFNumberGetValue(connectBlurNum, kCFNumberCGFloatType, &_connectBlurAlpha);
+        CFRelease(connectBlurNum);
+    } else {
+        self.connectBlurAlpha = 0.3;
+    }
+
+    Boolean mediaEnabled = CFPreferencesGetAppBooleanValue(
+        (__bridge CFStringRef)kCCBgMediaEnabledKey, domain, NULL);
+    self.mediaEnabled = mediaEnabled;
+
+    CFNumberRef mediaBlurNum = CFPreferencesCopyAppValue(
+        (__bridge CFStringRef)kCCBgMediaBlurAlphaKey, domain);
+    if (mediaBlurNum) {
+        CFNumberGetValue(mediaBlurNum, kCFNumberCGFloatType, &_mediaBlurAlpha);
+        CFRelease(mediaBlurNum);
+    } else {
+        self.mediaBlurAlpha = 0.3;
+    }
 
     NSFileManager *fm = [NSFileManager defaultManager];
     ccbg_log(@"reloadPrefs: fullscreen=%d(blur=%.2f) connect=%d(blur=%.2f) media=%d(blur=%.2f)",
@@ -958,7 +1131,6 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     // 全屏背景未开启则不挂载
     if (!self.fullscreenEnabled) {
         [self detachFullscreenViews];
-        return;
     }
 
     if (self.hostView == view && self.bgContainerView.superview == view) {
@@ -972,19 +1144,29 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     UIView *materialView = ccbgFindMaterialView(view);
     self.originalMaterialView = materialView;
 
-    self.bgContainerView = [[UIView alloc] initWithFrame:view.bounds];
-    self.bgContainerView.userInteractionEnabled = NO;
-    self.bgContainerView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    // 诊断：dump 控制中心根视图层级（仅首次）
+    static dispatch_once_t dumpOnce;
+    dispatch_once(&dumpOnce, ^{
+        NSMutableString *tree = [NSMutableString string];
+        ccbgDumpSubviewTree(view, @"", tree);
+        ccbg_log(@"CC root view hierarchy:\n%@", tree);
+    });
 
-    // 将背景插入到 MTMaterialView 同一层级（在它下面），并隐藏 MTMaterialView
-    if (materialView) {
-        materialView.hidden = YES;
-        [view insertSubview:self.bgContainerView belowSubview:materialView];
-    } else {
-        [view insertSubview:self.bgContainerView atIndex:0];
+    if (self.fullscreenEnabled) {
+        self.bgContainerView = [[UIView alloc] initWithFrame:view.bounds];
+        self.bgContainerView.userInteractionEnabled = NO;
+        self.bgContainerView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+
+        // 将背景插入到 MTMaterialView 同一层级（在它下面），并隐藏 MTMaterialView
+        if (materialView) {
+            materialView.hidden = YES;
+            [view insertSubview:self.bgContainerView belowSubview:materialView];
+        } else {
+            [view insertSubview:self.bgContainerView atIndex:0];
+        }
+
+        [self updateBackgroundView];
     }
-
-    [self updateBackgroundView];
 }
 
 - (void)updateBackgroundView {
@@ -1108,8 +1290,25 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     @synchronized(loggedModules) {
         if (![loggedModules containsObject:clsName]) {
             [loggedModules addObject:clsName];
-            ccbg_log(@"module detected: class=%@ isConnect=%d isMedia=%d (connectEnabled=%d mediaEnabled=%d)",
-                  clsName, isConnect, isMedia, self.connectEnabled, self.mediaEnabled);
+            // 获取模块标识符（调试用）
+            NSString *moduleID = ccbgGetModuleIdentifier(moduleView);
+            ccbg_log(@"module detected: class=%@ isConnect=%d isMedia=%d (connectEnabled=%d mediaEnabled=%d) moduleID=%@",
+                  clsName, isConnect, isMedia, self.connectEnabled, self.mediaEnabled,
+                  moduleID ?: @"nil");
+            // 查找所有可能的标识信息
+            NSMutableString *identifiers = [NSMutableString string];
+            if (moduleView.accessibilityIdentifier) {
+                [identifiers appendFormat:@"  accessibilityID=%@\n", moduleView.accessibilityIdentifier];
+            }
+            if (moduleView.accessibilityLabel) {
+                [identifiers appendFormat:@"  accessibilityLabel=%@\n", moduleView.accessibilityLabel];
+            }
+            if (moduleView.restorationIdentifier) {
+                [identifiers appendFormat:@"  restorationID=%@\n", moduleView.restorationIdentifier];
+            }
+            if (identifiers.length > 0) {
+                ccbg_log(@"  identifiers:\n%@", identifiers);
+            }
             NSMutableString *tree = [NSMutableString string];
             ccbgDumpSubviewTree(moduleView, @"  ", tree);
             ccbg_log(@"  subtree:\n%@", tree);
@@ -1142,6 +1341,36 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 }
 
+// 递归扫描视图树中的所有模块候选视图（备用机制）
+- (void)scanForModulesInView:(UIView *)rootView {
+    if (!rootView) return;
+    [self scanView:rootView depth:0 maxDepth:8];
+}
+
+- (void)scanView:(UIView *)view depth:(NSInteger)depth maxDepth:(NSInteger)maxDepth {
+    if (!view || depth > maxDepth) return;
+
+    // 只处理看起来像模块容器的视图（有一定尺寸，有子视图）
+    BOOL isContainerLike = view.subviews.count > 0 &&
+                           CGRectGetWidth(view.bounds) > 40 &&
+                           CGRectGetHeight(view.bounds) > 40;
+
+    if (isContainerLike) {
+        // 尝试用模块检测逻辑判断
+        BOOL isConnect = self.connectEnabled && ccbgIsConnectModule(view);
+        BOOL isMedia = self.mediaEnabled && ccbgIsMediaModule(view);
+
+        if (isConnect || isMedia) {
+            [self handleModuleView:view];
+        }
+    }
+
+    // 继续扫描子视图
+    for (UIView *subview in view.subviews) {
+        [self scanView:subview depth:depth + 1 maxDepth:maxDepth];
+    }
+}
+
 // 更新单个模块背景
 - (void)updateModuleBackground:(UIView *)moduleView forType:(CCBgType)type {
     UIView *superview = moduleView.superview;
@@ -1164,9 +1393,11 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         bg = [[CCBgModuleBackground alloc] init];
         [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
         bgDict[key] = bg;
-        ccbg_log(@"module bg CREATED: type=%ld class=%@ frame=%@",
+        ccbg_log(@"module bg CREATED: type=%ld class=%@ frame=%@ hasImage=%d hasVideo=%d",
               (long)type, NSStringFromClass([moduleView class]),
-              NSStringFromCGRect(moduleFrame));
+              NSStringFromCGRect(moduleFrame),
+              (type == kCCBgTypeConnect) ? self.cachedConnectHasImage : self.cachedMediaHasImage,
+              (type == kCCBgTypeConnect) ? self.cachedConnectHasVideo : self.cachedMediaHasVideo);
     }
 
     // 父视图变了则重新挂载
@@ -1200,6 +1431,8 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         if (image) {
             [bg updateWithImage:image blurredImage:blurredImage frame:moduleFrame cornerRadius:cornerRadius];
         } else {
+            ccbg_log(@"module bg CLEANUP: type=%ld class=%@ - no image/video found",
+                  (long)type, NSStringFromClass([moduleView class]));
             [bg cleanup];
             [bgDict removeObjectForKey:key];
             return;
@@ -1302,10 +1535,17 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 - (void)layoutSubviews {
     %orig;
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if (mgr.fullscreenEnabled) {
-        UIView *host = [(UIView *)self superview];
-        if (host) {
-            [mgr attachToHostView:host];
+    UIView *host = [(UIView *)self superview];
+    if (host) {
+        [mgr attachToHostView:host];
+    }
+    // 备用：扫描所有子视图寻找模块（防止 CCUIContentModuleContainerView hook 不生效）
+    if (mgr.connectEnabled || mgr.mediaEnabled) {
+        static NSTimeInterval lastScanTime = 0;
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (now - lastScanTime > 0.5) { // 节流：最多每 0.5 秒扫描一次
+            lastScanTime = now;
+            [mgr scanForModulesInView:(UIView *)self];
         }
     }
 }
