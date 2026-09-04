@@ -288,7 +288,11 @@ static BOOL LGClockFrostedModeEnabled(void) {
         if (CFGetTypeID(cfValue) == CFBooleanGetTypeID()) {
             result = CFBooleanGetValue((CFBooleanRef)cfValue);
         } else if (CFGetTypeID(cfValue) == CFNumberGetTypeID()) {
-            CFNumberGetValue((CFNumberRef)cfValue, kCFNumberBoolType, &result);
+            // 用 char 类型代替 kCFNumberBoolType（旧版 SDK 不支持）
+            char boolVal = 0;
+            if (CFNumberGetValue((CFNumberRef)cfValue, kCFNumberCharType, &boolVal)) {
+                result = boolVal ? YES : NO;
+            }
         }
         CFRelease(cfValue);
     }
