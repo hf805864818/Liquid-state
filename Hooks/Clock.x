@@ -157,41 +157,23 @@ static void LGStopClockDisplayLinkDriver(LGClockDisplayLink *state) {
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame groupName:nil
                     filterType:LGFilterTypeForHostPrefix(@"Clock")];
-    if (self) self.hidden = YES;
+    // [DIAG TEST 1] 注释掉默认隐藏，让玻璃以完整矩形显示
+    // 用于判断是 mask 问题还是渲染本身的问题
+    if (self) self.hidden = NO; // 原为 YES
     return self;
 }
 - (void)setCornerRadius:(CGFloat)r { _cornerRadius = r; self.layer.cornerRadius = r; }
 - (void)setShapeMaskImage:(UIImage *)image {
     _shapeMaskImage = image;
-    if (!image) {
-        self.maskView = nil;
-        self.shapeMaskView = nil;
-        return;
-    }
-
-    UIImageView *mask = self.shapeMaskView;
-    if (!mask) {
-        mask = [[UIImageView alloc] initWithFrame:self.bounds];
-        mask.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        mask.contentMode = UIViewContentModeScaleToFill;
-        mask.layer.minificationFilter = kCAFilterLinear;
-        mask.layer.magnificationFilter = kCAFilterLinear;
-        mask.layer.actions = @{
-            @"contents": NSNull.null,
-            @"bounds": NSNull.null,
-            @"position": NSNull.null,
-        };
-        self.shapeMaskView = mask;
-        self.maskView = mask;
-    }
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    mask.frame = self.bounds;
-    mask.image = image;
-    [mask.layer setNeedsDisplay];
-    [self.layer setNeedsDisplay];
+    // [DIAG TEST 1] 不应用字形遮罩，直接显示完整矩形玻璃
+    // 目的：验证自定义液态渲染是否正常工作
+    // 如果能看到矩形液态玻璃 → 渲染正常，问题在 mask
+    // 如果只有磨砂效果 → 自定义渲染没工作
     self.hidden = NO;
-    [CATransaction commit];
+    self.maskView = nil;
+    // 给玻璃加一个明显的边框，方便确认视图位置
+    self.layer.borderWidth = 2.0;
+    self.layer.borderColor = [UIColor colorWithRed:1.0 green:0 blue:0 alpha:0.6].CGColor;
 }
 @end
 
