@@ -372,6 +372,14 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
 
     constexpr sampler s(filter::linear, address::clamp_to_edge);
 
+    // [DIAG TEST 2] 如果是字形遮罩模式（时钟），直接返回纯蓝色
+    // 目的：验证自定义 Metal 渲染是否真的在时钟上运行
+    // - 如果时钟矩形变蓝 → 自定义渲染在工作，问题在参数/mask
+    // - 如果还是白色磨砂 → 自定义渲染没运行，用的是系统默认模糊
+    if (u.useGlyphMask > 0.5) {
+        return float4(0.0, 0.3, 1.0, 0.9);
+    }
+
     float2 localUV = (float2(gid) + 0.5) / float2(W, H);
     bool isCoverSheet = u.useGlyphMask < -0.5;
     float2 captureUV = localUV;
