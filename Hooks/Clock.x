@@ -279,6 +279,10 @@ static BOOL LGClockEnabled(void) {
     return lgHostEnabled(@"Clock");
 }
 
+static BOOL LGClockFrostedModeEnabled(void) {
+    return LG_prefBool(@"Clock.FrostedMode", NO);
+}
+
 static NSHashTable<UIView *> *LGClockNotificationObstacleViews(void) {
     if (!sClockNotificationObstacleViews) {
         sClockNotificationObstacleViews = [NSHashTable weakObjectsHashTable];
@@ -2466,10 +2470,13 @@ static void LGApplyClockReplacement(UIView *host) {
     NSArray<UIView *> *visibleSourceViews = LGClockVisibleSourceViewsForHost(host, sourceLabel);
     LGClockGlassView *overlay = objc_getAssociatedObject(host, kLGClockOverlayKey);
     BOOL enabled = LGClockEnabled();
+    BOOL frostedMode = LGClockFrostedModeEnabled();
     BOOL overlayEligible = LGClockHostCanReceiveOverlay(host);
     BOOL blocking = LGClockHasBlockingPresentation(host);
-    if (!enabled || !overlayEligible || !sourceLabel || blocking) {
+    // 磨砂模式开启时，不显示液态玻璃效果，恢复系统原生磨砂时钟
+    if (!enabled || frostedMode || !overlayEligible || !sourceLabel || blocking) {
         NSString *reason = !enabled ? @"disabled"
+            : frostedMode ? @"frosted-mode"
             : !overlayEligible ? @"not-eligible"
             : !sourceLabel ? @"no-source"
             : @"blocked";
@@ -2991,6 +2998,7 @@ static void LGRefreshAllClockHosts(void) {
     LGClockLog(@"CAMPreviewView (blocker): %@", camPreviewExists ? @"FOUND" : @"NOT FOUND");
     LGClockLog(@"PBUISnapshotReplicaView (blocker): %@", pbuiSnapshotExists ? @"FOUND" : @"NOT FOUND");
     LGClockLog(@"Clock.Enabled: %d", LGClockEnabled());
+    LGClockLog(@"Clock.FrostedMode: %d", LGClockFrostedModeEnabled());
     LGClockLog(@"Global.Enabled: %d", [[LGGlassPreferenceValue(@"Global.Enabled") isKindOfClass:[NSNumber class]] ? LGGlassPreferenceValue(@"Global.Enabled") : @(YES) boolValue]);
     LGClockLog(@"fontPath: %@", LGClockVariableFontPath() ?: @"(none)");
     LGClockLog(@"Filter type for Clock: %@", LGFilterTypeForHostPrefix(@"Clock") ?: @"(nil)");
