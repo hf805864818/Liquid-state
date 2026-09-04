@@ -126,9 +126,6 @@ static const NSInteger kCCBgTargetVideoFPS = 30;
 // 视频静音（默认静音，避免与系统媒体音量冲突）
 static const BOOL kCCBgVideoMuted = YES;
 
-// 控制中心收起动画时长（用于延迟恢复系统背景）
-static const NSTimeInterval kCCBgCCDismissAnimationDuration = 0.35;
-
 // MARK: - 媒体路径辅助
 
 static NSString *ccbgMediaDirForType(CCBgType type) {
