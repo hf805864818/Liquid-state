@@ -639,9 +639,14 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 @property (nonatomic, strong) CALayer *containerLayer;     // 替代 containerView
 @property (nonatomic, strong) CALayer *imageLayer;         // 替代 imageView（用 CALayer 显示 contents）
 @property (nonatomic, strong) AVPlayerLayer *playerLayer;
+@property (nonatomic, strong) AVQueuePlayer *ownPlayer;
+@property (nonatomic, strong) AVPlayerLooper *ownLooper;
+@property (nonatomic, copy) NSString *currentVideoPath;    // 跟踪当前视频路径，URL变更时重建player
 - (void)updateWithImage:(UIImage *)image blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius;
-- (void)updateWithPlayer:(AVQueuePlayer *)player blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius;
+- (void)updateWithVideoURL:(NSURL *)videoURL blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius;
 - (void)setVideoLayerHidden:(BOOL)hidden;
+- (void)play;
+- (void)pause;
 - (void)setHidden:(BOOL)hidden;
 - (void)setAlpha:(CGFloat)alpha;
 - (void)cleanup;
@@ -655,10 +660,21 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
         _containerLayer = [CALayer layer];
         _containerLayer.masksToBounds = YES;
         // 设置不透明背景色，防止全屏背景透过模块背景显示
-        // 这样模块背景和全屏背景不会同时可见造成"双层背景"错位感
         _containerLayer.backgroundColor = [UIColor blackColor].CGColor;
     }
     return self;
+}
+
+- (void)play {
+    if (_ownPlayer && _ownPlayer.rate == 0) {
+        [_ownPlayer play];
+    }
+}
+
+- (void)pause {
+    if (_ownPlayer) {
+        [_ownPlayer pause];
+    }
 }
 
 // 图片模式: 使用预渲染模糊图
@@ -685,8 +701,8 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     _imageLayer.frame = _containerLayer.bounds;
 }
 
-// 视频模式: 视频层 + 底部一层静态模糊图
-- (void)updateWithPlayer:(AVQueuePlayer *)player blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius {
+// 视频模式: 每个模块背景独立的 player，避免共享冲突
+- (void)updateWithVideoURL:(NSURL *)videoURL blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius {
     _containerLayer.frame = frame;
     _containerLayer.cornerRadius = radius;
 
@@ -708,20 +724,45 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     }
     _imageLayer.frame = _containerLayer.bounds;
 
-    // 视频层
-    if (!_playerLayer) {
-        _playerLayer = [AVPlayerLayer layer];
-        _playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-        [_containerLayer addSublayer:_playerLayer];
+    // 检查视频URL是否变更，变更时重建player
+    NSString *newPath = videoURL.path;
+    BOOL urlChanged = !_currentVideoPath || ![_currentVideoPath isEqualToString:newPath];
+
+    if (!_ownPlayer || urlChanged) {
+        // 清理旧 player
+        if (_ownPlayer) {
+            [_ownPlayer pause];
+        }
+        _ownLooper = nil;
+        _ownPlayer = nil;
+        if (_playerLayer) {
+            [_playerLayer removeFromSuperlayer];
+            _playerLayer = nil;
+        }
+
+        // 创建新 player
+        AVPlayerItem *item = [AVPlayerItem playerItemWithURL:videoURL];
+        _ownPlayer = [AVQueuePlayer queuePlayerWithItems:@[item]];
+        _ownPlayer.muted = YES;
+        _ownPlayer.actionAtItemEnd = AVPlayerActionAtItemEndAdvance;
+        _ownLooper = [AVPlayerLooper playerLooperWithPlayer:_ownPlayer templateItem:item];
+
+        _currentVideoPath = [newPath copy];
+
+        if (!_playerLayer) {
+            _playerLayer = [AVPlayerLayer layer];
+            _playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+            [_containerLayer addSublayer:_playerLayer];
+        }
+        _playerLayer.player = _ownPlayer;
     }
     _playerLayer.frame = _containerLayer.bounds;
-    if (_playerLayer.player != player) {
-        _playerLayer.player = player;
-    }
 }
 
 - (void)setVideoLayerHidden:(BOOL)hidden {
-    _playerLayer.hidden = hidden;
+    if (_playerLayer) {
+        _playerLayer.hidden = hidden;
+    }
 }
 
 - (void)setHidden:(BOOL)hidden {
@@ -741,6 +782,14 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
         [_playerLayer removeFromSuperlayer];
         _playerLayer = nil;
     }
+    if (_ownLooper) {
+        _ownLooper = nil;
+    }
+    if (_ownPlayer) {
+        [_ownPlayer pause];
+        _ownPlayer = nil;
+    }
+    _currentVideoPath = nil;
     if (_containerLayer) {
         [_containerLayer removeFromSuperlayer];
         _containerLayer = nil;
@@ -1149,12 +1198,20 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         }
         strongSelf.sharedModuleLooper = nil;
 
-        // 隐藏所有模块视频层
+        // 暂停每个模块的独立播放器并隐藏视频层
         for (CCBgModuleBackground *bg in strongSelf.connectModuleBackgrounds.allValues) {
+            [bg pause];
             [bg setVideoLayerHidden:YES];
         }
         for (CCBgModuleBackground *bg in strongSelf.mediaModuleBackgrounds.allValues) {
+            [bg pause];
             [bg setVideoLayerHidden:YES];
+        }
+        if (strongSelf.expandedConnectBackground) {
+            [strongSelf.expandedConnectBackground pause];
+        }
+        if (strongSelf.expandedMediaBackground) {
+            [strongSelf.expandedMediaBackground pause];
         }
         strongSelf.deferredReleaseTimer = nil;
     });
@@ -1209,20 +1266,18 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             }
 
             if (allModuleBgs.count > 0) {
-                // 确定使用哪个类型的视频（优先媒体模块，其次连接模块）
-                CCBgType videoType = kCCBgTypeMedia;
-                if (!self.mediaEnabled || ![self hasVideoForType:kCCBgTypeMedia]) {
-                    videoType = kCCBgTypeConnect;
-                }
-                if ([self hasVideoForType:videoType]) {
-                    AVQueuePlayer *player = [self getSharedModuleVideoPlayerForType:videoType];
-                    if (player && player.rate == 0) {
-                        [player play];
-                    }
-                }
+                // 每个模块背景有独立的 player，直接调用 play
                 for (CCBgModuleBackground *bg in allModuleBgs) {
+                    [bg play];
                     [bg setVideoLayerHidden:NO];
                 }
+            }
+            // 展开模块背景也需要播放
+            if (self.expandedConnectBackground) {
+                [self.expandedConnectBackground play];
+            }
+            if (self.expandedMediaBackground) {
+                [self.expandedMediaBackground play];
             }
         }
     } else {
@@ -1240,20 +1295,21 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             }
 
             // --- 模块背景 ---
-            if (self.sharedModuleVideoPlayer) {
-                [self.sharedModuleVideoPlayer pause];
-            }
-            // 隐藏所有模块背景
+            // 暂停每个模块的独立播放器
             for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
+                [bg pause];
                 [bg setHidden:YES];
             }
             for (CCBgModuleBackground *bg in self.mediaModuleBackgrounds.allValues) {
+                [bg pause];
                 [bg setHidden:YES];
             }
             if (self.expandedConnectBackground) {
+                [self.expandedConnectBackground pause];
                 [self.expandedConnectBackground setHidden:YES];
             }
             if (self.expandedMediaBackground) {
+                [self.expandedMediaBackground pause];
                 [self.expandedMediaBackground setHidden:YES];
             }
         }];
@@ -1621,22 +1677,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 
     if (hasVideo) {
-        if (!self.sharedModuleVideoPlayer) {
-            self.sharedModuleVideoPlayer = [AVQueuePlayer queuePlayerWithItems:@[]];
-            self.sharedModuleVideoPlayer.muted = YES;
-            self.sharedModuleVideoPlayer.actionAtItemEnd = AVPlayerActionAtItemEndAdvance;
-        }
-        AVPlayerItem *item = [AVPlayerItem playerItemWithURL:videoURL];
-        [self.sharedModuleVideoPlayer replaceCurrentItemWithPlayerItem:item];
-
-        if (!self.sharedModuleLooper) {
-            self.sharedModuleLooper = [AVPlayerLooper playerLooperWithPlayer:self.sharedModuleVideoPlayer templateItem:item];
-        }
-
-        [bg updateWithPlayer:self.sharedModuleVideoPlayer blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
-
+        [bg updateWithVideoURL:videoURL blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
         if (self.isControlCenterVisible) {
-            [self.sharedModuleVideoPlayer play];
+            [bg play];
         }
     } else if (hasImage) {
         [bg updateWithImage:image blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
@@ -1832,11 +1875,11 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     UIImage *blurredImage = [self getBlurredImageForType:type blurAlpha:blurAlpha];
 
     if ([self hasVideoForType:type]) {
-        AVQueuePlayer *player = [self getSharedModuleVideoPlayerForType:type];
-        if (player) {
-            [bg updateWithPlayer:player blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
-            if (self.isControlCenterVisible && player.rate == 0) {
-                [player play];
+        NSURL *videoURL = [self getVideoURLForType:type];
+        if (videoURL) {
+            [bg updateWithVideoURL:videoURL blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
+            if (self.isControlCenterVisible) {
+                [bg play];
             }
             BOOL isVisible = [self isModuleViewVisible:moduleView];
             [bg setVideoLayerHidden:!isVisible];
@@ -1961,15 +2004,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     if (host) {
         [mgr attachToHostView:host];
     }
-    // 备用：扫描所有子视图寻找模块（防止 CCUIContentModuleContainerView hook 不生效）
-    if (mgr.connectEnabled || mgr.mediaEnabled) {
-        static NSTimeInterval lastScanTime = 0;
-        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        if (now - lastScanTime > 0.5) { // 节流：最多每 0.5 秒扫描一次
-            lastScanTime = now;
-            [mgr scanForModulesInView:(UIView *)self];
-        }
-    }
+    // 不再扫描子视图寻找模块
+    // CCUIContentModuleContainerViewController hook 已足够可靠地检测模块
+    // 扫描可能找到不同层级的视图（和 VC 的 view 指针不同），导致重复背景
 }
 
 %end
@@ -2032,22 +2069,11 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
-// 备用 hook: CCUIContentModuleContainerView（小模块布局更新）
+// 仅保留 willMoveToWindow 用于检测控制中心关闭
+// 不再在 layoutSubviews / didMoveToWindow 中调用 handleModuleView:
+// 因为 CCUIContentModuleContainerView 和 VC 的 view 是不同对象，
+// 同时调用 handleModuleView: 会以不同指针为 key 创建两个背景
 %hook CCUIContentModuleContainerView
-
-- (void)layoutSubviews {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleModuleView:(UIView *)self];
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if ([(UIView *)self window]) {
-        [mgr handleModuleView:(UIView *)self];
-    }
-}
 
 - (void)willMoveToWindow:(UIWindow *)newWindow {
     %orig;
