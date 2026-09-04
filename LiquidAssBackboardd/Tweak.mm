@@ -1319,7 +1319,10 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
             float pixelsPerPointX = maskPointWidth > 0.0f ? (float)w / maskPointWidth : 1.0f;
             float pixelsPerPointY = maskPointHeight > 0.0f ? (float)h / maskPointHeight : 1.0f;
             float pixelsPerPoint = fminf(pixelsPerPointX, pixelsPerPointY);
-            lu.bezelWidth = fmaxf(1.0f, g_clockMaskBezelWidthPoints * pixelsPerPoint);
+            float maskBezelPx = g_clockMaskBezelWidthPoints * pixelsPerPoint;
+            // 取设置值和 mask 值的较大者，确保设置里的边缘比例调节对时钟也生效
+            // mask 值是基础最小值（保证字形边缘有效果），设置值可以进一步加大
+            lu.bezelWidth = fmaxf(lu.bezelWidth, fmaxf(1.0f, maskBezelPx));
         }
     } else if (!strcmp(hp->prefPrefix, "CoverSheet")) {
 
