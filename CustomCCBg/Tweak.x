@@ -813,6 +813,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 - (void)attachToHostView:(UIView *)view;
 - (void)handleModuleView:(UIView *)moduleView;
 - (void)scanForModulesInView:(UIView *)rootView;
+- (void)handleExpandedModuleViewController:(UIViewController *)vc type:(CCBgType)type;
 - (void)handleExpandedModuleView:(UIView *)expandedView;
 - (void)updateExpandedPlatterView:(UIView *)platterView;
 - (void)hideAllSmallModuleBackgroundsForType:(CCBgType)type;
@@ -1498,16 +1499,6 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 }
 
-// 处理展开模块视图（从展开的 view controller 中找到实际模块内容）
-- (void)handleExpandedModuleView:(UIView *)expandedView {
-    if (!expandedView || (!self.connectEnabled && !self.mediaEnabled)) return;
-
-    ccbg_log(@"expanded module view received, class=%@ frame=%@", NSStringFromClass([expandedView class]), NSStringFromCGRect(expandedView.frame));
-
-    // 在展开视图中查找 platter 视图并处理
-    [self scanForExpandedPlatterInView:expandedView depth:0 maxDepth:6];
-}
-
 // 从窗口扫描展开模块（兜底方案：当 hook 不生效时使用）
 - (void)scanForExpandedModulesInWindow {
     if (!self.connectEnabled && !self.mediaEnabled) return;
@@ -1536,6 +1527,91 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         self.expandedModuleScanTimer = nil;
         ccbg_log(@"expanded module scan timer stopped");
     }
+}
+
+// MARK: 展开模块背景 - 新方案
+// 通过 CCUIContentModuleContainerViewController 的 isExpanded 判断展开状态
+// 背景直接加到 VC 的 view 上，不需要 hook PLExpandedPlatterView
+- (void)handleExpandedModuleViewController:(UIViewController *)vc type:(CCBgType)type {
+    UIView *moduleView = vc.view;
+    if (!moduleView || !moduleView.window) return;
+
+    // 模块还没布局好，跳过
+    CGRect moduleFrame = moduleView.frame;
+    if (CGRectGetWidth(moduleFrame) < 50 || CGRectGetHeight(moduleFrame) < 50) return;
+
+    // 获取或创建展开背景
+    CCBgModuleBackground *bg = (type == kCCBgTypeConnect) ? self.expandedConnectBackground : self.expandedMediaBackground;
+
+    // 计算圆角和模糊
+    CGFloat cornerRadius = [self calculateCornerRadiusForView:moduleView];
+    CGFloat blurAlpha = (type == kCCBgTypeConnect) ? self.connectBlurAlpha : self.mediaBlurAlpha;
+
+    ccbg_log(@"expanded VC bg: type=%ld frame=%@ cornerRadius=%.1f",
+          (long)type, NSStringFromCGRect(moduleFrame), cornerRadius);
+
+    if (!bg) {
+        bg = [[CCBgModuleBackground alloc] init];
+        // 背景层插入到模块视图下方
+        UIView *superview = moduleView.superview ?: moduleView;
+        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
+
+        if (type == kCCBgTypeConnect) {
+            self.expandedConnectBackground = bg;
+        } else {
+            self.expandedMediaBackground = bg;
+        }
+
+        // 展开时隐藏对应的小模块背景
+        [self hideAllSmallModuleBackgroundsForType:type];
+        self.expandedModuleActive = YES;
+
+        ccbg_log(@"expanded VC bg CREATED: type=%ld", (long)type);
+    }
+
+    // 更背景内容
+    UIImage *image = [self getImageForType:type];
+    NSURL *videoURL = [self getVideoURLForType:type];
+    BOOL hasVideo = videoURL != nil;
+    BOOL hasImage = image != nil;
+
+    UIImage *blurredImage = nil;
+    if (blurAlpha > 0.01 && hasImage) {
+        blurredImage = [self getBlurredImageForType:type blurAlpha:blurAlpha];
+    }
+
+    if (hasVideo) {
+        // 视频背景
+        if (!self.sharedModuleVideoPlayer) {
+            self.sharedModuleVideoPlayer = [AVQueuePlayer queuePlayerWithItems:@[]];
+            self.sharedModuleVideoPlayer.muted = YES;
+            self.sharedModuleVideoPlayer.actionAtItemEnd = AVPlayerActionAtItemEndAdvance;
+        }
+        AVPlayerItem *item = [AVPlayerItem playerItemWithURL:videoURL];
+        [self.sharedModuleVideoPlayer replaceCurrentItemWithPlayerItem:item];
+
+        if (!self.sharedModuleLooper) {
+            self.sharedModuleLooper = [AVPlayerLooper playerLooperWithPlayer:self.sharedModuleVideoPlayer templateItem:item];
+        }
+
+        [bg updateWithPlayer:self.sharedModuleVideoPlayer blurredImage:blurredImage frame:moduleFrame cornerRadius:cornerRadius];
+
+        if (self.isControlCenterVisible) {
+            [self.sharedModuleVideoPlayer play];
+        }
+    } else if (hasImage) {
+        [bg updateWithImage:image blurredImage:blurredImage frame:moduleFrame cornerRadius:cornerRadius];
+    }
+}
+
+// 处理展开模块视图（旧方案，保留作为备用）
+- (void)handleExpandedModuleView:(UIView *)expandedView {
+    if (!expandedView || (!self.connectEnabled && !self.mediaEnabled)) return;
+
+    ccbg_log(@"expanded module view received, class=%@ frame=%@", NSStringFromClass([expandedView class]), NSStringFromCGRect(expandedView.frame));
+
+    // 在展开视图中查找 platter 视图并处理
+    [self scanForExpandedPlatterInView:expandedView depth:0 maxDepth:6];
 }
 
 // 扫描展开视图中的 platter 视图
@@ -1965,6 +2041,64 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 %end
 
 // 模块背景 hook: 控制中心模块容器（展开状态也可能使用这个类）
+// MARK: - 模块视图控制器 hook
+// 核心：hook CCUIContentModuleContainerViewController
+// 这个 VC 同时管理小模块和展开模块两种状态，通过 isExpanded 判断
+// 不需要 hook PLExpandedPlatterView 等 NotificationCenterUI 的类
+%hook CCUIContentModuleContainerViewController
+
+// 模块视图加载到窗口时处理
+- (void)viewDidLayoutSubviews {
+    %orig;
+
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    UIView *view = [(UIViewController *)self view];
+    if (!view) return;
+
+    // 检测是否是连接/媒体模块
+    BOOL isConnect = mgr.connectEnabled && ccbgIsConnectModule(view);
+    BOOL isMedia = mgr.mediaEnabled && ccbgIsMediaModule(view);
+
+    if (!isConnect && !isMedia) return;
+
+    // 判断模块是否展开
+    BOOL isExpanded = NO;
+    if ([(id)self respondsToSelector:@selector(isExpanded)]) {
+        isExpanded = [(id)self isExpanded];
+    }
+
+    CCBgType bgType = isConnect ? kCCBgTypeConnect : kCCBgTypeMedia;
+
+    if (isExpanded) {
+        // 展开状态：显示大模块背景，隐藏小模块背景
+        [mgr handleExpandedModuleViewController:(UIViewController *)self type:bgType];
+    } else {
+        // 收起状态：显示小模块背景，清理展开背景
+        [mgr cleanupExpandedBackgroundForType:bgType];
+        [mgr handleModuleView:view];
+    }
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    UIView *view = [(UIViewController *)self view];
+    if (!view) return;
+
+    BOOL isConnect = mgr.connectEnabled && ccbgIsConnectModule(view);
+    BOOL isMedia = mgr.mediaEnabled && ccbgIsMediaModule(view);
+
+    if (isConnect || isMedia) {
+        ccbg_log(@"CCUIContentModuleContainerViewController viewWillAppear: moduleID=%@ isExpanded=%d",
+              ccbgGetModuleIdentifier(view) ?: @"nil",
+              [(id)self respondsToSelector:@selector(isExpanded)] ? [(id)self isExpanded] : NO);
+    }
+}
+
+%end
+
+// 备用 hook: CCUIContentModuleContainerView（小模块布局更新）
 %hook CCUIContentModuleContainerView
 
 - (void)layoutSubviews {
@@ -1994,318 +2128,14 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
-// 额外 hook: 可能的展开模块容器类
-%hook CCUIModuleContainerView
-
-- (void)layoutSubviews {
-    %orig;
-    ccbg_log(@"hook fired: CCUIModuleContainerView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleModuleView:(UIView *)self];
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if ([(UIView *)self window]) {
-        [mgr handleModuleView:(UIView *)self];
-    }
-}
-
-%end
-
-// 额外 hook: 模块内容视图（展开后可能使用）
-%hook CCUIControlCenterModuleView
-
-- (void)layoutSubviews {
-    %orig;
-    ccbg_log(@"hook fired: CCUIControlCenterModuleView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleModuleView:(UIView *)self];
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if ([(UIView *)self window]) {
-        [mgr handleModuleView:(UIView *)self];
-    }
-}
-
-%end
-
-// 额外 hook: 展开模块容器（iOS 17+）
-%hook CCUIExpandedModuleContainerView
-
-- (void)layoutSubviews {
-    %orig;
-    ccbg_log(@"hook fired: CCUIExpandedModuleContainerView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleModuleView:(UIView *)self];
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if ([(UIView *)self window]) {
-        [mgr handleModuleView:(UIView *)self];
-    }
-}
-
-%end
-
-// 额外 hook: 模块 Platter 视图
-%hook CCUIControlCenterPlatterView
-
-- (void)layoutSubviews {
-    %orig;
-    ccbg_log(@"hook fired: CCUIControlCenterPlatterView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleModuleView:(UIView *)self];
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if ([(UIView *)self window]) {
-        [mgr handleModuleView:(UIView *)self];
-    }
-}
-
-%end
-
-// 额外 hook: 展开模块详情视图
-%hook CCUIExpandedModuleDetailViewController
-
-- (void)viewWillAppear:(BOOL)animated {
-    %orig;
-    ccbg_log(@"expanded module viewWillAppear: class=%@", NSStringFromClass([(id)self class]));
-    UIView *view = ((UIViewController *)self).view;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleExpandedModuleView:view];
-}
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    UIView *view = ((UIViewController *)self).view;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleExpandedModuleView:view];
-}
-
-%end
-
-// 额外 hook: 展开模块 VC（iOS 17+ 可能的类名）
-%hook CCUIExpandedModuleViewController
-
-- (void)viewWillAppear:(BOOL)animated {
-    %orig;
-    ccbg_log(@"expanded module VC viewWillAppear: class=%@", NSStringFromClass([(id)self class]));
-    UIView *view = ((UIViewController *)self).view;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleExpandedModuleView:view];
-}
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    UIView *view = ((UIViewController *)self).view;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleExpandedModuleView:view];
-}
-
-%end
-
-// 额外 hook: 模块扩展视图
-%hook CCUIContentExtensionView
-
-- (void)layoutSubviews {
-    %orig;
-    ccbg_log(@"hook fired: CCUIContentExtensionView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleModuleView:(UIView *)self];
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if ([(UIView *)self window]) {
-        [mgr handleModuleView:(UIView *)self];
-    }
-}
-
-%end
-
-// 额外 hook: 模块扩展容器视图
-%hook CCUIModuleExtensionContainerView
-
-- (void)layoutSubviews {
-    %orig;
-    ccbg_log(@"hook fired: CCUIModuleExtensionContainerView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    [mgr handleModuleView:(UIView *)self];
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    if ([(UIView *)self window]) {
-        [mgr handleModuleView:(UIView *)self];
-    }
-}
-
-%end
-
-// 展开模块 hook 组 - 等 NotificationCenterUI.framework 加载后再初始化
-// 因为 PLExpandedPlatterView / NCExpandedPlatterView 属于 NotificationCenterUI，
-// 该 framework 可能在 tweak 加载后才懒加载，直接 %hook 会因为类不存在而失效
-%group ExpandedPlatterHooks
-
-%hook PLExpandedPlatterView
-
-- (void)layoutSubviews {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    UIView *view = (UIView *)self;
-    ccbg_log(@"PLExpandedPlatterView layoutSubviews, frame=%@ window=%d", NSStringFromCGRect(view.bounds), view.window != nil);
-    if (view.window && CGRectGetWidth(view.bounds) > 100) {
-        [mgr updateExpandedPlatterView:view];
-    }
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    UIView *view = (UIView *)self;
-    if (view.window) {
-        ccbg_log(@"PLExpandedPlatterView didMoveToWindow, frame=%@", NSStringFromCGRect(view.frame));
-    } else {
-        // 从窗口移除 = 模块收起，清理展开背景
-        ccbg_log(@"PLExpandedPlatterView removed from window → module dismissed");
-        [mgr cleanupExpandedBackgroundForType:kCCBgTypeConnect];
-        [mgr cleanupExpandedBackgroundForType:kCCBgTypeMedia];
-    }
-}
-
-%end
-
-%hook PLExpandedPlatterPresentationView
-
-- (void)layoutSubviews {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    UIView *view = (UIView *)self;
-    ccbg_log(@"PLExpandedPlatterPresentationView layoutSubviews, frame=%@ window=%d", NSStringFromCGRect(view.bounds), view.window != nil);
-    if (view.window && CGRectGetWidth(view.bounds) > 100) {
-        [mgr updateExpandedPlatterView:view];
-    }
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    UIView *view = (UIView *)self;
-    if (view.window) {
-        ccbg_log(@"PLExpandedPlatterPresentationView didMoveToWindow, frame=%@", NSStringFromCGRect(view.frame));
-    } else {
-        ccbg_log(@"PLExpandedPlatterPresentationView removed from window");
-        [mgr cleanupExpandedBackgroundForType:kCCBgTypeConnect];
-        [mgr cleanupExpandedBackgroundForType:kCCBgTypeMedia];
-    }
-}
-
-%end
-
-%hook NCExpandedPlatterView
-
-- (void)layoutSubviews {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    UIView *view = (UIView *)self;
-    ccbg_log(@"NCExpandedPlatterView layoutSubviews, frame=%@ window=%d", NSStringFromCGRect(view.bounds), view.window != nil);
-    if (view.window && CGRectGetWidth(view.bounds) > 100) {
-        [mgr updateExpandedPlatterView:view];
-    }
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
-    UIView *view = (UIView *)self;
-    if (!view.window) {
-        ccbg_log(@"NCExpandedPlatterView removed from window → module dismissed");
-        [mgr cleanupExpandedBackgroundForType:kCCBgTypeConnect];
-        [mgr cleanupExpandedBackgroundForType:kCCBgTypeMedia];
-    }
-}
-
-%end
-
-%end // ExpandedPlatterHooks group
-
 // MARK: - 构造函数
 
-static void ccbg_tryInitExpandedHooks(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // 检查 PLExpandedPlatterView 类是否已加载到运行时
-        if (objc_getClass("PLExpandedPlatterView") != NULL ||
-            objc_getClass("PLExpandedPlatterPresentationView") != NULL ||
-            objc_getClass("NCExpandedPlatterView") != NULL) {
-            ccbg_log(@"NotificationCenterUI classes detected, initializing ExpandedPlatterHooks");
-            %init(ExpandedPlatterHooks);
-            ccbg_log(@"ExpandedPlatterHooks initialized successfully");
-
-            // 同时启动扫描定时器作为兜底方案
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[CustomCCBgManager sharedInstance] startExpandedModuleScanTimer];
-            });
-        }
-    });
-}
-
 %ctor {
-    // 初始化默认组（所有未分组的 hook）
+    // 初始化所有 hook
     %init;
 
     // 确保 CustomCCBgManager 单例延迟初始化
     dispatch_async(dispatch_get_main_queue(), ^{
         [CustomCCBgManager sharedInstance];
-    });
-
-    // 尝试立即初始化展开模块 hook（如果 framework 已加载）
-    ccbg_tryInitExpandedHooks();
-
-    // 监听 NSBundle 加载通知，等 NotificationCenterUI.framework 加载后再初始化 hook
-    [[NSNotificationCenter defaultCenter] addObserverForName:NSBundleDidLoadNotification
-                                                      object:nil
-                                                       queue:[NSOperationQueue mainQueue]
-                                                  usingBlock:^(NSNotification *note) {
-        // 检查是否包含 NotificationCenterUI framework
-        NSArray *loadedClasses = note.userInfo[@"NSLoadedClasses"];
-        BOOL hasNCUI = NO;
-        for (NSString *clsName in loadedClasses) {
-            if ([clsName hasPrefix:@"PLExpanded"] ||
-                [clsName hasPrefix:@"NCExpanded"] ||
-                [clsName isEqualToString:@"PLExpandedPlatterView"] ||
-                [clsName isEqualToString:@"NCExpandedPlatterView"]) {
-                hasNCUI = YES;
-                break;
-            }
-        }
-        if (hasNCUI) {
-            ccbg_log(@"NSBundleDidLoadNotification: NotificationCenterUI classes detected");
-            ccbg_tryInitExpandedHooks();
-        }
-    }];
-
-    // 兜底：延迟 3 秒后再检查一次，防止通知漏发
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        ccbg_tryInitExpandedHooks();
-    });
-
-    // 再兜底：延迟 10 秒后再检查一次（控制中心首次打开时才加载）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        ccbg_tryInitExpandedHooks();
     });
 }
