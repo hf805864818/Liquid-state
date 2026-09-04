@@ -814,6 +814,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 - (void)handleModuleView:(UIView *)moduleView;
 - (void)scanForModulesInView:(UIView *)rootView;
 - (void)handleExpandedModuleViewController:(UIViewController *)vc type:(CCBgType)type;
+- (UIView *)findExpandedPlatterViewInViewController:(UIViewController *)vc;
 - (void)handleExpandedModuleView:(UIView *)expandedView;
 - (void)updateExpandedPlatterView:(UIView *)platterView;
 - (void)hideAllSmallModuleBackgroundsForType:(CCBgType)type;
@@ -1186,6 +1187,20 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         // --- 模块背景 ---
         BOOL hasModuleBg = self.connectEnabled || self.mediaEnabled;
         if (hasModuleBg) {
+            // 恢复所有模块背景可见
+            for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
+                [bg setHidden:NO];
+            }
+            for (CCBgModuleBackground *bg in self.mediaModuleBackgrounds.allValues) {
+                [bg setHidden:NO];
+            }
+            if (self.expandedConnectBackground) {
+                [self.expandedConnectBackground setHidden:NO];
+            }
+            if (self.expandedMediaBackground) {
+                [self.expandedMediaBackground setHidden:NO];
+            }
+
             // 播放所有启用的模块视频
             NSArray *allModuleBgs = @[];
             if (self.connectEnabled) {
@@ -1219,25 +1234,31 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         if (self.fullscreenEnabled) {
             self.bgContainerView.hidden = YES;
             if (self.videoView) [self.videoView pause];
+            // 立即恢复系统毛玻璃（不再延迟）
+            if (self.originalMaterialView) {
+                self.originalMaterialView.hidden = NO;
+            }
         }
 
         // --- 模块背景 ---
         if (self.sharedModuleVideoPlayer) {
             [self.sharedModuleVideoPlayer pause];
         }
+        // 隐藏所有模块背景
+        for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
+            [bg setHidden:YES];
+        }
+        for (CCBgModuleBackground *bg in self.mediaModuleBackgrounds.allValues) {
+            [bg setHidden:YES];
+        }
+        if (self.expandedConnectBackground) {
+            [self.expandedConnectBackground setHidden:YES];
+        }
+        if (self.expandedMediaBackground) {
+            [self.expandedMediaBackground setHidden:YES];
+        }
 
-        // 延迟恢复系统毛玻璃（等收起动画结束）
-        __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCCBgCCDismissAnimationDuration * NSEC_PER_SEC)),
-                      dispatch_get_main_queue(), ^{
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            if (!strongSelf.isControlCenterVisible && strongSelf.originalMaterialView) {
-                strongSelf.originalMaterialView.hidden = NO;
-            }
-        });
-
-        // 优化 H: 延迟释放视频资源
+        // 优化 H: 延迟释放视频资源（只释放资源，不控制可见性）
         [self scheduleDeferredRelease];
     }
 }
@@ -1542,31 +1563,74 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 }
 
 // MARK: 展开模块背景 - 新方案
+// 在展开模块 VC 中查找实际的卡片视图
+// VC 的 view 是全屏的，实际卡片是内部的某个子视图（有圆角、尺寸较大）
+- (UIView *)findExpandedPlatterViewInViewController:(UIViewController *)vc {
+    UIView *rootView = vc.view;
+    if (!rootView) return nil;
+    return [self findPlatterViewForExpanded:rootView depth:0 maxDepth:6];
+}
+
+- (UIView *)findPlatterViewForExpanded:(UIView *)view depth:(NSInteger)depth maxDepth:(NSInteger)maxDepth {
+    if (!view || depth > maxDepth) return nil;
+
+    // 查找有圆角且尺寸合理的视图（展开模块的卡片特征）
+    CGFloat width = CGRectGetWidth(view.bounds);
+    CGFloat height = CGRectGetHeight(view.bounds);
+    CGFloat radius = view.layer.cornerRadius;
+
+    if (radius > 10 && width > 150 && height > 150 && width < 500 && height < 800) {
+        // 排除全屏视图
+        CGRect screenBounds = [UIScreen mainScreen].bounds;
+        if (width < CGRectGetWidth(screenBounds) - 20 || height < CGRectGetHeight(screenBounds) - 20) {
+            return view;
+        }
+    }
+
+    for (UIView *subview in view.subviews) {
+        UIView *found = [self findPlatterViewForExpanded:subview depth:depth + 1 maxDepth:maxDepth];
+        if (found) return found;
+    }
+    return nil;
+}
+
 // 通过 CCUIContentModuleContainerViewController 的 isExpanded 判断展开状态
 // 背景直接加到 VC 的 view 上，不需要 hook PLExpandedPlatterView
 - (void)handleExpandedModuleViewController:(UIViewController *)vc type:(CCBgType)type {
     UIView *moduleView = vc.view;
     if (!moduleView || !moduleView.window) return;
 
+    // 找到展开模块内部实际的卡片视图（不是 VC 的全屏 view）
+    // 展开后 VC 的 view 是全屏的，实际卡片是内部的 platter/content view
+    UIView *platterView = [self findExpandedPlatterViewInViewController:vc];
+    UIView *targetView = platterView ?: moduleView;
+    UIView *superview = targetView.superview ?: moduleView;
+
+    // 用卡片视图的 frame（转换到 superview 坐标系）
+    CGRect bgFrame;
+    if (platterView) {
+        bgFrame = [targetView convertRect:targetView.bounds toView:superview];
+    } else {
+        bgFrame = moduleView.frame;
+    }
+
     // 模块还没布局好，跳过
-    CGRect moduleFrame = moduleView.frame;
-    if (CGRectGetWidth(moduleFrame) < 50 || CGRectGetHeight(moduleFrame) < 50) return;
+    if (CGRectGetWidth(bgFrame) < 50 || CGRectGetHeight(bgFrame) < 50) return;
 
     // 获取或创建展开背景
     CCBgModuleBackground *bg = (type == kCCBgTypeConnect) ? self.expandedConnectBackground : self.expandedMediaBackground;
 
     // 计算圆角和模糊
-    CGFloat cornerRadius = [self calculateCornerRadiusForView:moduleView];
+    CGFloat cornerRadius = platterView ? platterView.layer.cornerRadius : [self calculateCornerRadiusForView:targetView];
+    if (cornerRadius < 1) cornerRadius = [self calculateCornerRadiusForView:targetView];
     CGFloat blurAlpha = (type == kCCBgTypeConnect) ? self.connectBlurAlpha : self.mediaBlurAlpha;
 
-    ccbg_log(@"expanded VC bg: type=%ld frame=%@ cornerRadius=%.1f",
-          (long)type, NSStringFromCGRect(moduleFrame), cornerRadius);
+    ccbg_log(@"expanded VC bg: type=%ld platterClass=%@ frame=%@ cornerRadius=%.1f",
+          (long)type, NSStringFromClass([targetView class]), NSStringFromCGRect(bgFrame), cornerRadius);
 
     if (!bg) {
         bg = [[CCBgModuleBackground alloc] init];
-        // 背景层插入到模块视图下方
-        UIView *superview = moduleView.superview ?: moduleView;
-        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
+        [superview.layer insertSublayer:bg.containerLayer below:targetView.layer];
 
         if (type == kCCBgTypeConnect) {
             self.expandedConnectBackground = bg;
@@ -1579,9 +1643,15 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         self.expandedModuleActive = YES;
 
         ccbg_log(@"expanded VC bg CREATED: type=%ld", (long)type);
+    } else {
+        // 父视图变了则重新挂载
+        if (bg.containerLayer.superlayer != superview.layer) {
+            [bg.containerLayer removeFromSuperlayer];
+            [superview.layer insertSublayer:bg.containerLayer below:targetView.layer];
+        }
     }
 
-    // 更背景内容
+    // 更新背景内容
     UIImage *image = [self getImageForType:type];
     NSURL *videoURL = [self getVideoURLForType:type];
     BOOL hasVideo = videoURL != nil;
@@ -1593,7 +1663,6 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 
     if (hasVideo) {
-        // 视频背景
         if (!self.sharedModuleVideoPlayer) {
             self.sharedModuleVideoPlayer = [AVQueuePlayer queuePlayerWithItems:@[]];
             self.sharedModuleVideoPlayer.muted = YES;
@@ -1606,13 +1675,13 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             self.sharedModuleLooper = [AVPlayerLooper playerLooperWithPlayer:self.sharedModuleVideoPlayer templateItem:item];
         }
 
-        [bg updateWithPlayer:self.sharedModuleVideoPlayer blurredImage:blurredImage frame:moduleFrame cornerRadius:cornerRadius];
+        [bg updateWithPlayer:self.sharedModuleVideoPlayer blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
 
         if (self.isControlCenterVisible) {
             [self.sharedModuleVideoPlayer play];
         }
     } else if (hasImage) {
-        [bg updateWithImage:image blurredImage:blurredImage frame:moduleFrame cornerRadius:cornerRadius];
+        [bg updateWithImage:image blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
     }
 }
 
