@@ -229,6 +229,7 @@ static NSArray *ccbgConnectModuleKeywords() {
                      @"com.apple.controlcenter.cellular",
                      @"com.apple.controlcenter.hotspot",
                      @"com.apple.controlcenter.vpn",
+                     @"com.apple.controlcenter.connectivity",
                      // iOS 17+ 模块标识
                      @"airplane-mode",
                      @"wifi",
@@ -236,8 +237,12 @@ static NSArray *ccbgConnectModuleKeywords() {
                      @"cellular",
                      @"personal-hotspot",
                      @"vpn",
+                     @"connectivity",
                      // 额外关键词
-                     @"Radio", @"Antenna", @"Modem"];
+                     @"Radio", @"Antenna", @"Modem",
+                     // 展开模块标识
+                     @"expandedConnectivity",
+                     @"ConnectivityModule"];
     });
     return keywords;
 }
@@ -247,8 +252,8 @@ static NSArray *ccbgMediaModuleKeywords() {
     static NSArray *keywords = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        keywords = @[@"Media", @"NowPlaying", @"Playback", @"Audio", @"Music",
-                     @"Player", @"Volume", @"Sound", @"NowPlayingInfo",
+        keywords = @[@"Media", @"NowPlaying", @"Playback", @"Music",
+                     @"Player", @"NowPlayingInfo",
                      // 模块标识符关键词
                      @"com.apple.controlcenter.media",
                      @"com.apple.controlcenter.nowplaying",
@@ -267,10 +272,57 @@ static NSArray *ccbgMediaModuleKeywords() {
     return keywords;
 }
 
+// 媒体模块排除关键词（防止音量、亮度等被误匹配）
+static NSArray *ccbgMediaModuleExcludeKeywords() {
+    static NSArray *keywords = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keywords = @[@"Volume", @"Brightness", @"Mirroring",
+                     @"ScreenMirror", @"AirPlayReceiver",
+                     @"volume", @"brightness", @"mirroring",
+                     // 模块标识符排除
+                     @"com.apple.controlcenter.volume",
+                     @"com.apple.controlcenter.brightness",
+                     @"com.apple.controlcenter.mirroring",
+                     @"com.apple.controlcenter.airplay",
+                     // iOS 17+ 标识排除
+                     @"volume-control",
+                     @"brightness-control",
+                     @"screen-mirroring",
+                     @"airplay"];
+    });
+    return keywords;
+}
+
+// 连接模块排除关键词
+static NSArray *ccbgConnectModuleExcludeKeywords() {
+    static NSArray *keywords = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keywords = @[@"Volume", @"Brightness", @"Mirroring",
+                     @"Media", @"NowPlaying", @"Playback",
+                     @"Music", @"Player"];
+    });
+    return keywords;
+}
+
+// 检查是否包含排除关键词
+static BOOL ccbgContainsExcludeKeyword(NSString *string, NSArray *excludeKeywords) {
+    if (!string || !excludeKeywords) return NO;
+    for (NSString *keyword in excludeKeywords) {
+        if ([string rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 // 递归检查视图树中是否包含关键词（最多 depth 层）
-static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInteger depth) {
+static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInteger depth, NSArray *excludeKeywords) {
     if (!view || depth < 0) return NO;
     NSString *className = NSStringFromClass([view class]);
+    // 先检查排除关键词
+    if (ccbgContainsExcludeKeyword(className, excludeKeywords)) return NO;
     for (NSString *keyword in keywords) {
         if ([className rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
             return YES;
@@ -278,6 +330,7 @@ static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInte
     }
     // 额外检查 accessibilityIdentifier
     if (view.accessibilityIdentifier) {
+        if (ccbgContainsExcludeKeyword(view.accessibilityIdentifier, excludeKeywords)) return NO;
         for (NSString *keyword in keywords) {
             if ([view.accessibilityIdentifier rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
                 return YES;
@@ -286,6 +339,7 @@ static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInte
     }
     // 额外检查 accessibilityLabel
     if (view.accessibilityLabel) {
+        if (ccbgContainsExcludeKeyword(view.accessibilityLabel, excludeKeywords)) return NO;
         for (NSString *keyword in keywords) {
             if ([view.accessibilityLabel rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
                 return YES;
@@ -294,6 +348,7 @@ static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInte
     }
     // 检查 restorationIdentifier
     if (view.restorationIdentifier) {
+        if (ccbgContainsExcludeKeyword(view.restorationIdentifier, excludeKeywords)) return NO;
         for (NSString *keyword in keywords) {
             if ([view.restorationIdentifier rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
                 return YES;
@@ -301,7 +356,7 @@ static BOOL ccbgCheckViewTreeForKeywords(UIView *view, NSArray *keywords, NSInte
         }
     }
     for (UIView *subview in view.subviews) {
-        if (ccbgCheckViewTreeForKeywords(subview, keywords, depth - 1)) {
+        if (ccbgCheckViewTreeForKeywords(subview, keywords, depth - 1, excludeKeywords)) {
             return YES;
         }
     }
@@ -332,10 +387,13 @@ static void ccbgDumpSubviewTree(UIView *view, NSString *indent, NSMutableString 
 static BOOL ccbgIsConnectModule(UIView *view) {
     if (!view) return NO;
     NSArray *keywords = ccbgConnectModuleKeywords();
+    NSArray *excludeKeywords = ccbgConnectModuleExcludeKeywords();
 
     // 方案1: 优先通过模块标识符检测（最准确）
     NSString *moduleID = ccbgGetModuleIdentifier(view);
     if (moduleID) {
+        // 先检查排除关键词
+        if (ccbgContainsExcludeKeyword(moduleID, excludeKeywords)) return NO;
         for (NSString *keyword in keywords) {
             if ([moduleID rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
                 return YES;
@@ -345,6 +403,7 @@ static BOOL ccbgIsConnectModule(UIView *view) {
 
     // 检查自身类名
     NSString *className = NSStringFromClass([view class]);
+    if (ccbgContainsExcludeKeyword(className, excludeKeywords)) return NO;
     for (NSString *keyword in keywords) {
         if ([className rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
             return YES;
@@ -354,24 +413,29 @@ static BOOL ccbgIsConnectModule(UIView *view) {
     UIView *superview = view.superview;
     if (superview) {
         NSString *superClassName = NSStringFromClass([superview class]);
-        for (NSString *keyword in keywords) {
-            if ([superClassName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
-                return YES;
+        if (!ccbgContainsExcludeKeyword(superClassName, excludeKeywords)) {
+            for (NSString *keyword in keywords) {
+                if ([superClassName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                    return YES;
+                }
             }
         }
     }
     // 递归检查子视图（最多 6 层）—— iOS 17 模块容器类名相同，内容视图在子视图中
-    return ccbgCheckViewTreeForKeywords(view, keywords, 6);
+    return ccbgCheckViewTreeForKeywords(view, keywords, 6, excludeKeywords);
 }
 
 // 判断是否为播放控制模块（优先通过模块标识符，其次递归检查子视图类名）
 static BOOL ccbgIsMediaModule(UIView *view) {
     if (!view) return NO;
     NSArray *keywords = ccbgMediaModuleKeywords();
+    NSArray *excludeKeywords = ccbgMediaModuleExcludeKeywords();
 
     // 方案1: 优先通过模块标识符检测（最准确）
     NSString *moduleID = ccbgGetModuleIdentifier(view);
     if (moduleID) {
+        // 先检查排除关键词
+        if (ccbgContainsExcludeKeyword(moduleID, excludeKeywords)) return NO;
         for (NSString *keyword in keywords) {
             if ([moduleID rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
                 return YES;
@@ -381,6 +445,7 @@ static BOOL ccbgIsMediaModule(UIView *view) {
 
     // 检查自身类名
     NSString *className = NSStringFromClass([view class]);
+    if (ccbgContainsExcludeKeyword(className, excludeKeywords)) return NO;
     for (NSString *keyword in keywords) {
         if ([className rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
             return YES;
@@ -390,14 +455,16 @@ static BOOL ccbgIsMediaModule(UIView *view) {
     UIView *superview = view.superview;
     if (superview) {
         NSString *superClassName = NSStringFromClass([superview class]);
-        for (NSString *keyword in keywords) {
-            if ([superClassName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
-                return YES;
+        if (!ccbgContainsExcludeKeyword(superClassName, excludeKeywords)) {
+            for (NSString *keyword in keywords) {
+                if ([superClassName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                    return YES;
+                }
             }
         }
     }
     // 递归检查子视图（最多 6 层）
-    return ccbgCheckViewTreeForKeywords(view, keywords, 6);
+    return ccbgCheckViewTreeForKeywords(view, keywords, 6, excludeKeywords);
 }
 
 // MARK: - 图片预渲染模糊工具
@@ -1350,8 +1417,14 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 - (void)scanView:(UIView *)view depth:(NSInteger)depth maxDepth:(NSInteger)maxDepth {
     if (!view || depth > maxDepth) return;
 
-    // 只处理看起来像模块容器的视图（有一定尺寸，有子视图）
-    BOOL isContainerLike = view.subviews.count > 0 &&
+    // 只处理看起来像模块容器的视图
+    NSString *className = NSStringFromClass([view class]);
+    BOOL isModuleContainer = [className rangeOfString:@"Module" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                             [className rangeOfString:@"Container" options:NSCaseInsensitiveSearch].location != NSNotFound;
+
+    // 必须是模块容器类，且有一定尺寸和子视图
+    BOOL isContainerLike = isModuleContainer &&
+                           view.subviews.count > 0 &&
                            CGRectGetWidth(view.bounds) > 40 &&
                            CGRectGetHeight(view.bounds) > 40;
 
@@ -1552,7 +1625,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
-// 模块背景 hook: 控制中心模块容器
+// 模块背景 hook: 控制中心模块容器（展开状态也可能使用这个类）
 %hook CCUIContentModuleContainerView
 
 - (void)layoutSubviews {
@@ -1587,6 +1660,114 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             ccbg_log(@"willMoveToWindow:nil → CC closing, hide bg immediately");
             [mgr setControlCenterVisible:NO];
         }
+    }
+}
+
+%end
+
+// 额外 hook: 可能的展开模块容器类
+%hook CCUIModuleContainerView
+
+- (void)layoutSubviews {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIModuleContainerView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
+    });
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleModuleView:(UIView *)self];
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIModuleContainerView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
+    });
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    if ([(UIView *)self window]) {
+        [mgr handleModuleView:(UIView *)self];
+    }
+}
+
+%end
+
+// 额外 hook: 模块内容视图（展开后可能使用）
+%hook CCUIControlCenterModuleView
+
+- (void)layoutSubviews {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIControlCenterModuleView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
+    });
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleModuleView:(UIView *)self];
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIControlCenterModuleView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
+    });
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    if ([(UIView *)self window]) {
+        [mgr handleModuleView:(UIView *)self];
+    }
+}
+
+%end
+
+// 额外 hook: 展开模块容器（iOS 17+）
+%hook CCUIExpandedModuleContainerView
+
+- (void)layoutSubviews {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIExpandedModuleContainerView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
+    });
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleModuleView:(UIView *)self];
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIExpandedModuleContainerView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
+    });
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    if ([(UIView *)self window]) {
+        [mgr handleModuleView:(UIView *)self];
+    }
+}
+
+%end
+
+// 额外 hook: 模块 Platter 视图
+%hook CCUIControlCenterPlatterView
+
+- (void)layoutSubviews {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIControlCenterPlatterView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
+    });
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleModuleView:(UIView *)self];
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ccbg_log(@"hook fired: CCUIControlCenterPlatterView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
+    });
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    if ([(UIView *)self window]) {
+        [mgr handleModuleView:(UIView *)self];
     }
 }
 
