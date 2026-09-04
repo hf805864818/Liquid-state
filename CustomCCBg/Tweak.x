@@ -1232,6 +1232,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             self.originalMaterialView.hidden = YES;
         }
         if (self.fullscreenEnabled) {
+            // 恢复 opacity 和 hidden（与关闭时的设置对称）
+            self.bgContainerView.layer.opacity = 1.0f;
+            self.bgContainerView.layer.hidden = NO;
             self.bgContainerView.hidden = NO;
             if (self.videoView) [self.videoView play];
             else if ([self hasVideoForType:kCCBgTypeFullscreen]) {
@@ -1282,37 +1285,61 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         }
     } else {
         // 控制中心不可见:立即隐藏背景，暂停视频
-        // 用 performWithoutAnimation 确保 hidden 立即生效，不被动画延迟
-        [UIView performWithoutAnimation:^{
-            // --- 全屏背景 ---
-            if (self.fullscreenEnabled) {
-                self.bgContainerView.hidden = YES;
-                if (self.videoView) [self.videoView pause];
-                // 立即恢复系统毛玻璃
-                if (self.originalMaterialView) {
-                    self.originalMaterialView.hidden = NO;
-                }
-            }
+        // 用显式 CATransaction + setAnimationDuration:0 确保 hidden 立即生效
+        // performWithoutAnimation 在系统动画上下文中可能被 UIViewAnimationState 覆盖
+        [CATransaction begin];
+        [CATransaction setAnimationDuration:0];
+        [CATransaction setDisableActions:YES];
 
-            // --- 模块背景 ---
-            // 暂停每个模块的独立播放器
-            for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
-                [bg pause];
-                [bg setHidden:YES];
+        // --- 全屏背景 ---
+        if (self.fullscreenEnabled) {
+            // 直接操作 layer，绕过 UIView 动画系统
+            self.bgContainerView.layer.opacity = 0.0f;
+            self.bgContainerView.layer.hidden = YES;
+            self.bgContainerView.hidden = YES;
+            if (self.videoView) [self.videoView pause];
+            // 立即恢复系统毛玻璃
+            if (self.originalMaterialView) {
+                self.originalMaterialView.hidden = NO;
+                self.originalMaterialView.layer.opacity = 1.0f;
+                self.originalMaterialView.layer.hidden = NO;
             }
-            for (CCBgModuleBackground *bg in self.mediaModuleBackgrounds.allValues) {
-                [bg pause];
-                [bg setHidden:YES];
+        }
+
+        // --- 模块背景 ---
+        // 暂停每个模块的独立播放器
+        for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
+            [bg pause];
+            [bg setHidden:YES];
+        }
+        for (CCBgModuleBackground *bg in self.mediaModuleBackgrounds.allValues) {
+            [bg pause];
+            [bg setHidden:YES];
+        }
+        if (self.expandedConnectBackground) {
+            [self.expandedConnectBackground pause];
+            [self.expandedConnectBackground setHidden:YES];
+        }
+        if (self.expandedMediaBackground) {
+            [self.expandedMediaBackground pause];
+            [self.expandedMediaBackground setHidden:YES];
+        }
+
+        [CATransaction commit];
+
+        // 兜底：在下一个 runloop 再次强制设置，确保脱离系统动画上下文
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.fullscreenEnabled && self.bgContainerView) {
+                self.bgContainerView.layer.opacity = 0.0f;
+                self.bgContainerView.layer.hidden = YES;
+                self.bgContainerView.hidden = YES;
             }
-            if (self.expandedConnectBackground) {
-                [self.expandedConnectBackground pause];
-                [self.expandedConnectBackground setHidden:YES];
+            if (self.originalMaterialView) {
+                self.originalMaterialView.hidden = NO;
+                self.originalMaterialView.layer.opacity = 1.0f;
+                self.originalMaterialView.layer.hidden = NO;
             }
-            if (self.expandedMediaBackground) {
-                [self.expandedMediaBackground pause];
-                [self.expandedMediaBackground setHidden:YES];
-            }
-        }];
+        });
 
         // 优化 H: 延迟释放视频资源（只释放资源，不控制可见性）
         [self scheduleDeferredRelease];
@@ -1370,14 +1397,20 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
     // 功能关闭 → 隐藏并清理媒体
     if (!self.fullscreenEnabled) {
+        self.bgContainerView.layer.opacity = 0.0f;
+        self.bgContainerView.layer.hidden = YES;
         self.bgContainerView.hidden = YES;
         [self detachMediaViews];
         return;
     }
     if (!self.isControlCenterVisible) {
+        self.bgContainerView.layer.opacity = 0.0f;
+        self.bgContainerView.layer.hidden = YES;
         self.bgContainerView.hidden = YES;
         return;
     }
+    self.bgContainerView.layer.opacity = 1.0f;
+    self.bgContainerView.layer.hidden = NO;
     self.bgContainerView.hidden = NO;
 
     [self ensureCacheValidForType:kCCBgTypeFullscreen];
@@ -1976,14 +2009,19 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 // 这比 viewWillDisappear 更早，能和控制中心关闭动画同步
 - (void)viewWillDisappear:(BOOL)animated {
     // 先隐藏背景，再执行 orig（orig 会触发关闭动画）
+    // 用 CATransaction 确保 layer 属性立即生效，不被系统动画捕获
     ccbg_log(@"CC overlay viewWillDisappear → instant remove");
+    [CATransaction begin];
+    [CATransaction setAnimationDuration:0];
+    [CATransaction setDisableActions:YES];
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:NO];
+    [CATransaction commit];
     %orig;
 }
 
+// 兜底：viewDidDisappear 确保已关闭
 - (void)viewDidDisappear:(BOOL)animated {
     %orig;
-    // 确保已关闭（兜底）
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:NO];
 }
 
