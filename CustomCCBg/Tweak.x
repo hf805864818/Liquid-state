@@ -2079,7 +2079,11 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
-// 核心 hook: 展开模块 Platter 视图（实际展开模块使用的类）
+// 展开模块 hook 组 - 等 NotificationCenterUI.framework 加载后再初始化
+// 因为 PLExpandedPlatterView / NCExpandedPlatterView 属于 NotificationCenterUI，
+// 该 framework 可能在 tweak 加载后才懒加载，直接 %hook 会因为类不存在而失效
+%group ExpandedPlatterHooks
+
 %hook PLExpandedPlatterView
 
 - (void)layoutSubviews {
@@ -2107,7 +2111,6 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
-// 额外 hook: NC 展开 platter 视图
 %hook NCExpandedPlatterView
 
 - (void)layoutSubviews {
@@ -2132,11 +2135,64 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
+%end // ExpandedPlatterHooks group
+
 // MARK: - 构造函数
+
+static void ccbg_tryInitExpandedHooks(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // 检查 PLExpandedPlatterView 类是否已加载到运行时
+        if (objc_getClass("PLExpandedPlatterView") != NULL ||
+            objc_getClass("NCExpandedPlatterView") != NULL) {
+            ccbg_log(@"NotificationCenterUI classes detected, initializing ExpandedPlatterHooks");
+            %init(ExpandedPlatterHooks);
+            ccbg_log(@"ExpandedPlatterHooks initialized successfully");
+        }
+    });
+}
 
 %ctor {
     // 确保 CustomCCBgManager 单例延迟初始化
     dispatch_async(dispatch_get_main_queue(), ^{
         [CustomCCBgManager sharedInstance];
+    });
+
+    // 尝试立即初始化展开模块 hook（如果 framework 已加载）
+    ccbg_tryInitExpandedHooks();
+
+    // 监听 NSBundle 加载通知，等 NotificationCenterUI.framework 加载后再初始化 hook
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSBundleDidLoadNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        // 检查是否包含 NotificationCenterUI framework
+        NSArray *loadedClasses = note.userInfo[@"NSLoadedClasses"];
+        BOOL hasNCUI = NO;
+        for (NSString *clsName in loadedClasses) {
+            if ([clsName hasPrefix:@"PLExpanded"] ||
+                [clsName hasPrefix:@"NCExpanded"] ||
+                [clsName isEqualToString:@"PLExpandedPlatterView"] ||
+                [clsName isEqualToString:@"NCExpandedPlatterView"]) {
+                hasNCUI = YES;
+                break;
+            }
+        }
+        if (hasNCUI) {
+            ccbg_log(@"NSBundleDidLoadNotification: NotificationCenterUI classes detected");
+            ccbg_tryInitExpandedHooks();
+        }
+    }];
+
+    // 兜底：延迟 3 秒后再检查一次，防止通知漏发
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        ccbg_tryInitExpandedHooks();
+    });
+
+    // 再兜底：延迟 10 秒后再检查一次（控制中心首次打开时才加载）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        ccbg_tryInitExpandedHooks();
     });
 }
