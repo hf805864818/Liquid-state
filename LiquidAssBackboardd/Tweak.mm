@@ -372,14 +372,6 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
 
     constexpr sampler s(filter::linear, address::clamp_to_edge);
 
-    // [DIAG TEST 2] 如果是字形遮罩模式（时钟），直接返回纯蓝色
-    // 目的：验证自定义 Metal 渲染是否真的在时钟上运行
-    // - 如果时钟矩形变蓝 → 自定义渲染在工作，问题在参数/mask
-    // - 如果还是白色磨砂 → 自定义渲染没运行，用的是系统默认模糊
-    if (u.useGlyphMask > 0.5) {
-        return float4(0.0, 0.3, 1.0, 0.9);
-    }
-
     float2 localUV = (float2(gid) + 0.5) / float2(W, H);
     bool isCoverSheet = u.useGlyphMask < -0.5;
     float2 captureUV = localUV;
@@ -1439,6 +1431,24 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
               ftype, hp->prefPrefix, w, h,
               (unsigned long)destTex.width, (unsigned long)destTex.height, lu.radius,
               lu.bezelWidth, lu.useGlyphMask);
+    }
+
+    // [DIAG TEST 3] Clock 参数详细日志
+    // 确认实际渲染时用的参数值，判断是否被偏好设置或降级逻辑覆盖
+    if (!strcmp(hp->prefPrefix, "Clock")) {
+        static int sClockParamLogCount = 0;
+        if (sClockParamLogCount < 10) {
+            sClockParamLogCount++;
+            lglog("[CLOCK PARAMS] thickness=%.1f refrScale=%.2f refrIdx=%.2f "
+                  "bezel=%.2f disp=%.3f fresnel=%.2f "
+                  "tintRGB=(%.3f,%.3f,%.3f) tintA=%.3f dark=%d hostBlur=%.1f",
+                  lu.glassThickness, lu.refractionScale, lu.refractiveIndex,
+                  lu.bezelWidth, lu.dispersionStrength,
+                  lu.fresnelGlareStrength,
+                  lu.tintColor.x, lu.tintColor.y, lu.tintColor.z, lu.tintColor.w,
+                  darkTint ? 1 : 0,
+                  hp->blur);
+        }
     }
     R13TRACE("R13[%llu] CA destination surf=%p tex=%p dims=%lux%lu",
              callN, destSurf, rawDestTex,
