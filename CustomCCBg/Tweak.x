@@ -654,6 +654,9 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     if (self) {
         _containerLayer = [CALayer layer];
         _containerLayer.masksToBounds = YES;
+        // 设置不透明背景色，防止全屏背景透过模块背景显示
+        // 这样模块背景和全屏背景不会同时可见造成"双层背景"错位感
+        _containerLayer.backgroundColor = [UIColor blackColor].CGColor;
     }
     return self;
 }
@@ -1767,9 +1770,6 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 // 更新单个模块背景
 - (void)updateModuleBackground:(UIView *)moduleView forType:(CCBgType)type {
-    UIView *superview = moduleView.superview;
-    if (!superview) return;
-
     NSMutableDictionary *bgDict = (type == kCCBgTypeConnect) ? self.connectModuleBackgrounds : self.mediaModuleBackgrounds;
     CGFloat blurAlpha = (type == kCCBgTypeConnect) ? self.connectBlurAlpha : self.mediaBlurAlpha;
 
@@ -1777,48 +1777,53 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     CCBgModuleBackground *bg = bgDict[key];
 
     // 找到模块内部真正的卡片背景视图（CCUIContentModuleBackgroundView）
-    // 因为模块容器(CCUIContentModuleContainerView)比实际卡片大，有内边距
     UIView *platterView = [self findPlatterViewInModule:moduleView];
-    CGRect moduleFrame;
+    
+    // 背景直接加到 platterView 内部，用 platterView.bounds 做 frame
+    // 这样背景和模块卡片完全对齐，不会错位
+    CALayer *hostLayer;
+    CGRect bgFrame;
     CGFloat cornerRadius;
 
     if (platterView) {
-        // 用 platterView 的 frame（转换到 superview 坐标系）作为背景 frame
-        moduleFrame = [moduleView convertRect:platterView.frame toView:superview];
+        hostLayer = platterView.layer;
+        bgFrame = platterView.bounds;
         cornerRadius = platterView.layer.cornerRadius;
         if (cornerRadius < 1) {
             cornerRadius = [self calculateCornerRadiusForView:platterView];
         }
     } else {
-        // fallback：用模块容器的 frame
-        moduleFrame = moduleView.frame;
+        // fallback：直接加到 moduleView 内部
+        hostLayer = moduleView.layer;
+        bgFrame = moduleView.bounds;
         cornerRadius = [self calculateCornerRadiusForView:moduleView];
     }
 
     // 模块还没布局好（frame 为 0），跳过
-    if (CGRectGetWidth(moduleFrame) < 10 || CGRectGetHeight(moduleFrame) < 10) {
+    if (CGRectGetWidth(bgFrame) < 10 || CGRectGetHeight(bgFrame) < 10) {
         return;
     }
 
     if (!bg) {
         bg = [[CCBgModuleBackground alloc] init];
-        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
+        // 背景层插入到 hostLayer 最底层（index 0）
+        [hostLayer insertSublayer:bg.containerLayer atIndex:0];
         bgDict[key] = bg;
-        ccbg_log(@"module bg CREATED: type=%ld class=%@ frame=%@ cornerRadius=%.1f hasImage=%d hasVideo=%d",
-              (long)type, NSStringFromClass([moduleView class]),
-              NSStringFromCGRect(moduleFrame), cornerRadius,
+        ccbg_log(@"module bg CREATED: type=%ld platterClass=%@ frame=%@ cornerRadius=%.1f hasImage=%d hasVideo=%d",
+              (long)type, NSStringFromClass([platterView class] ?: [moduleView class]),
+              NSStringFromCGRect(bgFrame), cornerRadius,
               (type == kCCBgTypeConnect) ? self.cachedConnectHasImage : self.cachedMediaHasImage,
               (type == kCCBgTypeConnect) ? self.cachedConnectHasVideo : self.cachedMediaHasVideo);
-    }
-
-    // 父视图变了则重新挂载
-    if (bg.containerLayer.superlayer != superview.layer) {
-        [bg.containerLayer removeFromSuperlayer];
-        [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
+    } else {
+        // 宿主变了则重新挂载
+        if (bg.containerLayer.superlayer != hostLayer) {
+            [bg.containerLayer removeFromSuperlayer];
+            [hostLayer insertSublayer:bg.containerLayer atIndex:0];
+        }
     }
 
     // 节流：尺寸和圆角没变就跳过渲染更新
-    if (CGRectEqualToRect(bg.containerLayer.frame, moduleFrame) &&
+    if (CGRectEqualToRect(bg.containerLayer.frame, bgFrame) &&
         fabs(bg.containerLayer.cornerRadius - cornerRadius) < 0.1) {
         [bg setHidden:moduleView.hidden];
         [bg setAlpha:moduleView.alpha];
@@ -1830,7 +1835,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     if ([self hasVideoForType:type]) {
         AVQueuePlayer *player = [self getSharedModuleVideoPlayerForType:type];
         if (player) {
-            [bg updateWithPlayer:player blurredImage:blurredImage frame:moduleFrame cornerRadius:cornerRadius];
+            [bg updateWithPlayer:player blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
             if (self.isControlCenterVisible && player.rate == 0) {
                 [player play];
             }
@@ -1840,7 +1845,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     } else {
         UIImage *image = [self getImageForType:type];
         if (image) {
-            [bg updateWithImage:image blurredImage:blurredImage frame:moduleFrame cornerRadius:cornerRadius];
+            [bg updateWithImage:image blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
         } else {
             ccbg_log(@"module bg CLEANUP: type=%ld class=%@ - no image/video found",
                   (long)type, NSStringFromClass([moduleView class]));
