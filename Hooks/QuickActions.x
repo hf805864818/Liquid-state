@@ -92,11 +92,20 @@ static UIVisualEffectView *qaFindEffectView(UIView *view) {
 
 static void injectQuickActionsGlass(UIVisualEffectView *fx) {
     if (!lgHostEnabled(@"QuickActions")) {
+        LGQALog(@"inject skipped: QuickActions disabled");
         removeQuickActionsGlass(fx);
         return;
     }
     UIView *container = fx.contentView;
-    if (CGRectGetWidth(container.bounds) < 4.0 || CGRectGetHeight(container.bounds) < 4.0) return;
+    if (CGRectGetWidth(container.bounds) < 4.0 || CGRectGetHeight(container.bounds) < 4.0) {
+        LGQALog(@"inject skipped: container too small (%@)", NSStringFromCGRect(container.bounds));
+        return;
+    }
+
+    UIView *backdrop = qaBackdropView(fx);
+    LGQALog(@"inject: backdropView=%@ alpha=%.2f",
+            backdrop ? NSStringFromClass(backdrop.class) : @"(not found)",
+            backdrop ? backdrop.alpha : 0.0);
 
     qaSetBackdropHidden(fx);
 
@@ -117,6 +126,15 @@ static void injectQuickActionsGlass(UIVisualEffectView *fx) {
         glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [container insertSubview:glass atIndex:0];
         objc_setAssociatedObject(fx, kQAGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        // 诊断: 检查 glass view 的 layer 和 filter
+        Class backdropCls = NSClassFromString(@"CABackdropLayer");
+        BOOL isBackdrop = backdropCls && [glass.layer isKindOfClass:backdropCls];
+        LGQALog(@"  DIAG: glass=%@ layerClass=%@ isBackdrop=%@ filterType=%@",
+                NSStringFromClass(glass.class),
+                NSStringFromClass(glass.layer.class),
+                isBackdrop ? @"YES" : @"NO",
+                glass.lgFilterType ?: @"(nil)");
     }
     if (glass.superview != container) [container insertSubview:glass atIndex:0];
     glass.frame               = container.bounds;
@@ -124,6 +142,21 @@ static void injectQuickActionsGlass(UIVisualEffectView *fx) {
     glass.layer.cornerCurve   = kCACornerCurveContinuous;
     glass.layer.masksToBounds = YES;
     [glass applyFilters];
+
+    // 诊断: applyFilters 后检查 filter 是否附加
+    NSArray *filters = glass.layer.filters;
+    LGQALog(@"  DIAG: after applyFilters — filters.count=%lu",
+            (unsigned long)filters.count);
+    if (filters.count > 0) {
+        id firstFilter = filters.firstObject;
+        @try {
+            NSString *ftype = [firstFilter valueForKey:@"type"];
+            LGQALog(@"  DIAG: filter type = %@", ftype);
+        } @catch (NSException *e) {
+            LGQALog(@"  DIAG: filter type read failed: %@", e.reason);
+        }
+    }
+
     if (!sQuickActionHosts) sQuickActionHosts = [NSHashTable weakObjectsHashTable];
     [sQuickActionHosts addObject:fx];
     lgTrackGlass(glass, @"QuickActions", nil);
@@ -175,10 +208,32 @@ static void LGReconcileQuickActionHosts(void) {
 - (void)didMoveToWindow {
     %orig;
     UIView *btn = (UIView *)self;
-    LGQALog(@"CSQuickActionsButton didMoveToWindow (hasWindow=%d class=%@)",
-            btn.window != nil, NSStringFromClass(btn.class));
+    LGQALog(@"CSQuickActionsButton didMoveToWindow (hasWindow=%d class=%@ subviews=%lu)",
+            btn.window != nil, NSStringFromClass(btn.class),
+            (unsigned long)btn.subviews.count);
+    if (btn.window) {
+        // 诊断: dump 按钮子视图树
+        NSMutableString *dump = [NSMutableString stringWithString:@"\n  --- CSQuickActionsButton subview tree ---"];
+        void (^dumpTree)(UIView *, NSInteger) = nil;
+        dumpTree = ^(UIView *v, NSInteger depth) {
+            NSMutableString *indent = [NSMutableString string];
+            for (NSInteger i = 0; i < depth; i++) [indent appendString:@"  "];
+            [dump appendFormat:@"\n%@%@ frame=%@ hidden=%d alpha=%.2f",
+             indent, NSStringFromClass(v.class),
+             NSStringFromCGRect(v.bounds), v.hidden, v.alpha];
+            for (UIView *s in v.subviews) dumpTree(s, depth + 1);
+        };
+        dumpTree(btn, 1);
+        [dump appendString:@"\n  ---------------------------------------"];
+        LGQALog(@"%@", dump);
+    }
     UIVisualEffectView *fx = qaFindEffectView(btn);
-    if (!fx) return;
+    if (!fx) {
+        LGQALog(@"  DIAG: UIVisualEffectView NOT found in button");
+        return;
+    }
+    LGQALog(@"  DIAG: UIVisualEffectView found: %@ bounds=%@",
+            NSStringFromClass(fx.class), NSStringFromCGRect(fx.bounds));
     if (!btn.window) {
         removeQuickActionsGlass(fx);
     } else {
@@ -195,7 +250,21 @@ static void LGReconcileQuickActionHosts(void) {
 %end
 
 %ctor {
-    LGQALog(@"QuickActions module loaded — CSQuickActionsButton class %@",
-            NSClassFromString(@"CSQuickActionsButton") ? @"FOUND" : @"NOT FOUND");
+    BOOL qaExists = NSClassFromString(@"CSQuickActionsButton") != nil;
+    BOOL fxExists = NSClassFromString(@"CABackdropLayer") != nil;
+    BOOL caFilterExists = NSClassFromString(@"CAFilter") != nil;
+    BOOL glassClsExists = NSClassFromString(@"LGLiveBackdropView") != nil;
+    NSString *filterType = LGFilterTypeForHostPrefix(@"QuickActions");
+    BOOL enabled = lgHostEnabled(@"QuickActions");
+
+    LGQALog(@"=== DIAGNOSTIC: QuickActions Module Init ===");
+    LGQALog(@"CSQuickActionsButton: %@", qaExists ? @"FOUND" : @"NOT FOUND");
+    LGQALog(@"LGLiveBackdropView: %@", glassClsExists ? @"FOUND" : @"NOT FOUND");
+    LGQALog(@"CABackdropLayer: %@", fxExists ? @"FOUND" : @"NOT FOUND");
+    LGQALog(@"CAFilter: %@", caFilterExists ? @"FOUND" : @"NOT FOUND");
+    LGQALog(@"QuickActions.Enabled: %d", enabled);
+    LGQALog(@"Filter type: %@", filterType ?: @"(nil)");
+    LGQALog(@"==========================================");
+
     lgObservePreferenceReload(^{ LGReconcileQuickActionHosts(); });
 }

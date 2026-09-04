@@ -106,6 +106,19 @@ static void LGTraverseViews(UIView *root, void (^block)(UIView *)) {
     block(root);
     for (UIView *s in root.subviews) LGTraverseViews(s, block);
 }
+
+// 诊断用: 递归 dump 视图树结构
+static void LGClockDumpViewTree(UIView *view, NSInteger depth, NSMutableString *out) {
+    if (!view || !out) return;
+    NSMutableString *indent = [NSMutableString string];
+    for (NSInteger i = 0; i < depth; i++) [indent appendString:@"  "];
+    [out appendFormat:@"\n%@%@ frame=%@ hidden=%d alpha=%.2f clips=%d",
+     indent, NSStringFromClass(view.class),
+     NSStringFromCGRect(view.bounds), view.hidden, view.alpha, view.clipsToBounds];
+    for (UIView *s in view.subviews) {
+        LGClockDumpViewTree(s, depth + 1, out);
+    }
+}
 #pragma mark - Display-link lifecycle
 
 typedef struct { __unsafe_unretained CADisplayLink *link; } LGClockDisplayLink;
@@ -2550,6 +2563,15 @@ static void LGApplyClockReplacement(UIView *host) {
                    NSStringFromCGRect(overlay.frame),
                    sourceLabel.text ?: @"(nil)",
                    NSStringFromClass(sourceLabel.font.class));
+        // 诊断: 检查 glassView 的 layer 类型和 filter
+        LGClockBackdropView *glassView = overlay.glassView;
+        Class backdropCls = NSClassFromString(@"CABackdropLayer");
+        BOOL isBackdrop = backdropCls && [glassView.layer isKindOfClass:backdropCls];
+        LGClockLog(@"  DIAG: glassView=%@ layerClass=%@ isBackdrop=%@ filterType=%@",
+                   NSStringFromClass(glassView.class),
+                   NSStringFromClass(glassView.layer.class),
+                   isBackdrop ? @"YES" : @"NO",
+                   glassView.lgFilterType ?: @"(nil)");
     } else if (overlay.superview != overlayContainer) {
         [overlay removeFromSuperview];
         [overlayContainer addSubview:overlay];
@@ -2705,7 +2727,25 @@ static void LGRefreshAllClockHosts(void) {
     UIView *self_ = (UIView *)self;
     LGClockLog(@"CSProminentTimeView didMoveToWindow (hasWindow=%d frame=%@)",
                self_.window != nil, NSStringFromCGRect(self_.frame));
-    if (self_.window) LGScheduleClockApply(self_, YES, 0.0);
+    if (self_.window) {
+        // 诊断: dump 子视图结构和所有 UILabel
+        NSMutableString *dump = [NSMutableString stringWithString:@"\n  --- CSProminentTimeView subview tree ---"];
+        LGClockDumpViewTree(self_, 1, dump);
+        [dump appendString:@"\n  --- All UILabels in host ---"];
+        LGTraverseViews(self_, ^(UIView *view) {
+            if ([view isKindOfClass:[UILabel class]]) {
+                UILabel *l = (UILabel *)view;
+                [dump appendFormat:@"\n    cls=%@ fontSize=%.1f text='%@' hidden=%d alpha=%.2f frame=%@",
+                 NSStringFromClass(l.class),
+                 l.font.pointSize,
+                 l.text.length > 20 ? [[l.text substringToIndex:20] stringByAppendingString:@"..."] : l.text ?: @"(nil)",
+                 l.hidden, l.alpha, NSStringFromCGRect(l.frame)];
+            }
+        });
+        [dump appendString:@"\n  ----------------------------------"];
+        LGClockLog(@"%@", dump);
+        LGScheduleClockApply(self_, YES, 0.0);
+    }
     else LGApplyClockReplacement(self_);
 }
 
@@ -2932,9 +2972,29 @@ static void LGRefreshAllClockHosts(void) {
     lgObservePreferenceReload(^{ LGRefreshAllClockHosts(); });
     BOOL cspExists = NSClassFromString(@"CSProminentTimeView") != nil;
     BOOL sbfExists = NSClassFromString(@"SBFLockScreenDateView") != nil;
-    LGClockLog(@"ctor: init LGClockSpringBoard, CSProminentTimeView=%@, SBFLockScreenDateView=%@, fontPath=%@",
-               cspExists ? @"FOUND" : @"NOT FOUND",
-               sbfExists ? @"FOUND" : @"NOT FOUND",
-               LGClockVariableFontPath() ?: @"(none)");
+    BOOL csSubExists = NSClassFromString(@"CSProminentSubtitleDateView") != nil;
+    BOOL uiAnimLabelExists = NSClassFromString(@"_UIAnimatingLabel") != nil;
+    BOOL camPreviewExists = NSClassFromString(@"CAMPreviewView") != nil;
+    BOOL pbuiSnapshotExists = NSClassFromString(@"PBUISnapshotReplicaView") != nil;
+    Class glassCls = NSClassFromString(@"LGLiveBackdropView");
+    BOOL backdropClsExists = NSClassFromString(@"CABackdropLayer") != nil;
+    BOOL caFilterExists = NSClassFromString(@"CAFilter") != nil;
+
+    LGClockLog(@"=== DIAGNOSTIC: Clock Module Init ===");
+    LGClockLog(@"CSProminentTimeView: %@", cspExists ? @"FOUND" : @"NOT FOUND");
+    LGClockLog(@"SBFLockScreenDateView: %@", sbfExists ? @"FOUND" : @"NOT FOUND");
+    LGClockLog(@"CSProminentSubtitleDateView: %@", csSubExists ? @"FOUND" : @"NOT FOUND");
+    LGClockLog(@"_UIAnimatingLabel: %@", uiAnimLabelExists ? @"FOUND" : @"NOT FOUND");
+    LGClockLog(@"LGLiveBackdropView: %@", glassCls ? @"FOUND" : @"NOT FOUND");
+    LGClockLog(@"CABackdropLayer: %@", backdropClsExists ? @"FOUND" : @"NOT FOUND");
+    LGClockLog(@"CAFilter: %@", caFilterExists ? @"FOUND" : @"NOT FOUND");
+    LGClockLog(@"CAMPreviewView (blocker): %@", camPreviewExists ? @"FOUND" : @"NOT FOUND");
+    LGClockLog(@"PBUISnapshotReplicaView (blocker): %@", pbuiSnapshotExists ? @"FOUND" : @"NOT FOUND");
+    LGClockLog(@"Clock.Enabled: %d", LGClockEnabled());
+    LGClockLog(@"Global.Enabled: %d", [[LGGlassPreferenceValue(@"Global.Enabled") isKindOfClass:[NSNumber class]] ? LGGlassPreferenceValue(@"Global.Enabled") : @(YES) boolValue]);
+    LGClockLog(@"fontPath: %@", LGClockVariableFontPath() ?: @"(none)");
+    LGClockLog(@"Filter type for Clock: %@", LGFilterTypeForHostPrefix(@"Clock") ?: @"(nil)");
+    LGClockLog(@"======================================");
+
     %init(LGClockSpringBoard);
 }
