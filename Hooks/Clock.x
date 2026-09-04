@@ -280,7 +280,11 @@ static BOOL LGClockEnabled(void) {
 }
 
 static BOOL LGClockFrostedModeEnabled(void) {
-    return LG_prefBool(@"Clock.FrostedMode", NO);
+    id value = LGGlassPreferenceValue(@"Clock.FrostedMode");
+    if ([value isKindOfClass:[NSNumber class]]) {
+        return [value boolValue];
+    }
+    return NO;
 }
 
 static NSHashTable<UIView *> *LGClockNotificationObstacleViews(void) {
