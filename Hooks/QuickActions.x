@@ -212,20 +212,23 @@ static void LGReconcileQuickActionHosts(void) {
             btn.window != nil, NSStringFromClass(btn.class),
             (unsigned long)btn.subviews.count);
     if (btn.window) {
-        // 诊断: dump 按钮子视图树
-        NSMutableString *dump = [NSMutableString stringWithString:@"\n  --- CSQuickActionsButton subview tree ---"];
-        void (^dumpTree)(UIView *, NSInteger) = nil;
-        dumpTree = ^(UIView *v, NSInteger depth) {
-            NSMutableString *indent = [NSMutableString string];
-            for (NSInteger i = 0; i < depth; i++) [indent appendString:@"  "];
-            [dump appendFormat:@"\n%@%@ frame=%@ hidden=%d alpha=%.2f",
-             indent, NSStringFromClass(v.class),
-             NSStringFromCGRect(v.bounds), v.hidden, v.alpha];
-            for (UIView *s in v.subviews) dumpTree(s, depth + 1);
-        };
-        dumpTree(btn, 1);
-        [dump appendString:@"\n  ---------------------------------------"];
-        LGQALog(@"%@", dump);
+        // 诊断: 延迟到下一个 runloop dump 子视图树,避免视图层级过渡态崩溃
+        __weak UIView *weakBtn = btn;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!weakBtn || !weakBtn.window) return;
+            LGQALog(@"  DIAG: deferred subview dump for %@", NSStringFromClass(weakBtn.class));
+            for (UIView *s in weakBtn.subviews) {
+                LGQALog(@"    sub: %@ frame=%@ hidden=%d alpha=%.2f subviews=%lu",
+                        NSStringFromClass(s.class),
+                        NSStringFromCGRect(s.bounds), s.hidden, s.alpha,
+                        (unsigned long)s.subviews.count);
+                for (UIView *ss in s.subviews) {
+                    LGQALog(@"      sub: %@ frame=%@ hidden=%d alpha=%.2f",
+                            NSStringFromClass(ss.class),
+                            NSStringFromCGRect(ss.bounds), ss.hidden, ss.alpha);
+                }
+            }
+        });
     }
     UIVisualEffectView *fx = qaFindEffectView(btn);
     if (!fx) {
