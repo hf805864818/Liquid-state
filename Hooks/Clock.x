@@ -280,11 +280,19 @@ static BOOL LGClockEnabled(void) {
 }
 
 static BOOL LGClockFrostedModeEnabled(void) {
-    id value = LGGlassPreferenceValue(@"Clock.FrostedMode");
-    if ([value isKindOfClass:[NSNumber class]]) {
-        return [value boolValue];
+    // 直接从 CFPreferences 读取，避免 plist 文件缓存不同步
+    CFTypeRef cfValue = CFPreferencesCopyAppValue(CFSTR("Clock.FrostedMode"),
+                                                  CFSTR("dylv.liquidassprefs"));
+    BOOL result = NO;
+    if (cfValue) {
+        if (CFGetTypeID(cfValue) == CFBooleanGetTypeID()) {
+            result = CFBooleanGetValue((CFBooleanRef)cfValue);
+        } else if (CFGetTypeID(cfValue) == CFNumberGetTypeID()) {
+            CFNumberGetValue((CFNumberRef)cfValue, kCFNumberBoolType, &result);
+        }
+        CFRelease(cfValue);
     }
-    return NO;
+    return result;
 }
 
 static NSHashTable<UIView *> *LGClockNotificationObstacleViews(void) {
