@@ -1879,6 +1879,7 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
 
 @interface LGClockGlassView : UIView
 @property (nonatomic, strong) LGClockBackdropView *glassView;
+@property (nonatomic, strong) UIView *frostedTintView;  // 磨砂模式的颜色覆盖层
 @property (nonatomic, strong) UILabel *maskLabel;
 @property (nonatomic, copy) NSString *displayText;
 @property (nonatomic, copy) NSAttributedString *displayAttributedText;
@@ -1969,6 +1970,13 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
     _glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _glassView.cornerRadius = 0.0;
     [self addSubview:_glassView];
+
+    // 磨砂模式的颜色覆盖层（默认隐藏）
+    _frostedTintView = [[UIView alloc] initWithFrame:self.bounds];
+    _frostedTintView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _frostedTintView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.35];
+    _frostedTintView.hidden = YES;
+    [self addSubview:_frostedTintView];
 
     _maskLabel = [[UILabel alloc] initWithFrame:self.bounds];
     _maskLabel.textColor = UIColor.whiteColor;
@@ -2618,13 +2626,21 @@ static void LGApplyClockReplacement(UIView *host) {
                    frostedMode);
         glassView.lgFilterType = targetFilterType;
         // 强制重新应用 filter（重置 _filterAttached 标志）
-        // 通过 KVC 重置私有变量来强制刷新
         @try {
             [glassView setValue:@NO forKey:@"_filterAttached"];
         } @catch (NSException *e) {
             LGClockLog(@"  WARN: could not reset _filterAttached: %@", e.reason);
         }
         [glassView applyFilters];
+    }
+    // 磨砂模式显示颜色覆盖层，让文字可见
+    overlay.frostedTintView.hidden = !frostedMode;
+    // 根据深浅模式调整磨砂颜色
+    if (frostedMode) {
+        BOOL isDark = overlay.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
+        overlay.frostedTintView.backgroundColor = isDark
+            ? [UIColor colorWithWhite:0.0 alpha:0.35]
+            : [UIColor colorWithWhite:1.0 alpha:0.35];
     }
 
     overlay.clockHost = host;
