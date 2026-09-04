@@ -2153,6 +2153,9 @@ static void ccbg_tryInitExpandedHooks(void) {
 }
 
 %ctor {
+    // 初始化默认组（所有未分组的 hook）
+    %init;
+
     // 确保 CustomCCBgManager 单例延迟初始化
     dispatch_async(dispatch_get_main_queue(), ^{
         [CustomCCBgManager sharedInstance];
