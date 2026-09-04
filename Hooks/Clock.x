@@ -2477,6 +2477,14 @@ static void LGApplyClockReplacement(UIView *host) {
     BOOL frostedMode = LGClockFrostedModeEnabled();
     BOOL overlayEligible = LGClockHostCanReceiveOverlay(host);
     BOOL blocking = LGClockHasBlockingPresentation(host);
+    // 诊断: 打印磨砂模式状态
+    LGClockLog(@"clock apply check kind=%@ enabled=%d frostedMode=%d eligible=%d blocking=%d hasOverlay=%d",
+               LGClockHostKind(host),
+               enabled,
+               frostedMode,
+               overlayEligible,
+               blocking,
+               overlay ? 1 : 0);
     // 磨砂模式开启时，不显示液态玻璃效果，恢复系统原生磨砂时钟
     if (!enabled || frostedMode || !overlayEligible || !sourceLabel || blocking) {
         NSString *reason = !enabled ? @"disabled"
@@ -2980,7 +2988,11 @@ static void LGRefreshAllClockHosts(void) {
 
 %ctor {
     if (!LGIsSpringBoardProcess()) return;
-    lgObservePreferenceReload(^{ LGRefreshAllClockHosts(); });
+    lgObservePreferenceReload(^{
+        LGClockLog(@"prefs reload triggered — refreshing clock hosts, frostedMode=%d",
+                   LGClockFrostedModeEnabled());
+        LGRefreshAllClockHosts();
+    });
     BOOL cspExists = NSClassFromString(@"CSProminentTimeView") != nil;
     BOOL sbfExists = NSClassFromString(@"SBFLockScreenDateView") != nil;
     BOOL csSubExists = NSClassFromString(@"CSProminentSubtitleDateView") != nil;
