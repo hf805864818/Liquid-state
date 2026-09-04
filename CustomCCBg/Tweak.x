@@ -1226,13 +1226,15 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             }
         }
     } else {
-        // 控制中心不可见:立即隐藏背景，暂停视频
+        // 控制中心不可见:立即移除背景层，暂停视频
+        // 不能只 hidden，因为父 view 还在做关闭动画会带着背景一起动
+        // 直接从父 layer 移除，背景瞬间消失，和 CC 关闭同步
 
         // --- 全屏背景 ---
         if (self.fullscreenEnabled) {
             self.bgContainerView.hidden = YES;
             if (self.videoView) [self.videoView pause];
-            // 立即恢复系统毛玻璃（不再延迟）
+            // 立即恢复系统毛玻璃
             if (self.originalMaterialView) {
                 self.originalMaterialView.hidden = NO;
             }
@@ -1242,19 +1244,21 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         if (self.sharedModuleVideoPlayer) {
             [self.sharedModuleVideoPlayer pause];
         }
-        // 隐藏所有模块背景
+        // 直接从父 layer 移除所有模块背景层（不是仅 hidden）
         for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
-            [bg setHidden:YES];
+            [bg.containerLayer removeFromSuperlayer];
         }
         for (CCBgModuleBackground *bg in self.mediaModuleBackgrounds.allValues) {
-            [bg setHidden:YES];
+            [bg.containerLayer removeFromSuperlayer];
         }
         if (self.expandedConnectBackground) {
-            [self.expandedConnectBackground setHidden:YES];
+            [self.expandedConnectBackground.containerLayer removeFromSuperlayer];
         }
         if (self.expandedMediaBackground) {
-            [self.expandedMediaBackground setHidden:YES];
+            [self.expandedMediaBackground.containerLayer removeFromSuperlayer];
         }
+
+        ccbg_log(@"CC hidden: all bg layers removed from superlayer");
 
         // 优化 H: 延迟释放视频资源（只释放资源，不控制可见性）
         [self scheduleDeferredRelease];
@@ -1920,7 +1924,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     ccbg_log(@"CC overlay viewWillAppear");
     ccbgLogExpandedClasses();
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:YES];
-    UIView *root = ((UIViewController *)self).view;
+    UIView *root = [(UIViewController *)self view];
     [[CustomCCBgManager sharedInstance] attachToHostView:root];
 }
 
@@ -1930,15 +1934,18 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:YES];
 }
 
+// 最早期信号：view 移出窗口时立即隐藏背景
+// 这比 viewWillDisappear 更早，能和控制中心关闭动画同步
 - (void)viewWillDisappear:(BOOL)animated {
-    %orig;
-    ccbg_log(@"CC overlay viewWillDisappear");
+    // 先隐藏背景，再执行 orig（orig 会触发关闭动画）
+    ccbg_log(@"CC overlay viewWillDisappear → instant remove");
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:NO];
+    %orig;
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
     %orig;
-    ccbg_log(@"CC overlay viewDidDisappear");
+    // 确保已关闭（兜底）
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:NO];
 }
 
