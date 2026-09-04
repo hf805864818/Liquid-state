@@ -771,6 +771,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 @property (nonatomic, strong) CCBgModuleBackground *expandedConnectBackground;
 @property (nonatomic, strong) CCBgModuleBackground *expandedMediaBackground;
 @property (nonatomic, assign) BOOL expandedModuleActive; // 是否有模块处于展开状态
+@property (nonatomic, strong) NSTimer *expandedModuleScanTimer; // 定期扫描展开模块
 
 // 每种类型的媒体缓存
 @property (nonatomic, strong) UIImage *cachedFullscreenImage;
@@ -1507,6 +1508,36 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     [self scanForExpandedPlatterInView:expandedView depth:0 maxDepth:6];
 }
 
+// 从窗口扫描展开模块（兜底方案：当 hook 不生效时使用）
+- (void)scanForExpandedModulesInWindow {
+    if (!self.connectEnabled && !self.mediaEnabled) return;
+    if (!self.isControlCenterVisible) return;
+
+    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+    if (!keyWindow) return;
+
+    // 遍历窗口的子视图，查找包含 "Platter" 且尺寸较大的视图
+    [self scanForExpandedPlatterInView:keyWindow depth:0 maxDepth:8];
+}
+
+// 启动展开模块扫描定时器
+- (void)startExpandedModuleScanTimer {
+    if (self.expandedModuleScanTimer) return;
+
+    self.expandedModuleScanTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(scanForExpandedModulesInWindow) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.expandedModuleScanTimer forMode:NSRunLoopCommonModes];
+    ccbg_log(@"expanded module scan timer started");
+}
+
+// 停止展开模块扫描定时器
+- (void)stopExpandedModuleScanTimer {
+    if (self.expandedModuleScanTimer) {
+        [self.expandedModuleScanTimer invalidate];
+        self.expandedModuleScanTimer = nil;
+        ccbg_log(@"expanded module scan timer stopped");
+    }
+}
+
 // 扫描展开视图中的 platter 视图
 - (void)scanForExpandedPlatterInView:(UIView *)view depth:(NSInteger)depth maxDepth:(NSInteger)maxDepth {
     if (!view || depth > maxDepth) return;
@@ -1644,6 +1675,35 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 }
 
+// 在模块视图中查找真正的卡片视图（CCUIContentModuleBackgroundView）
+// 模块容器比实际卡片大，有内边距，所以需要找到真正的卡片来对齐背景
+- (UIView *)findPlatterViewInModule:(UIView *)moduleView {
+    // 直接查找 CCUIContentModuleBackgroundView
+    for (UIView *subview in moduleView.subviews) {
+        if ([NSStringFromClass([subview class]) isEqualToString:@"CCUIContentModuleBackgroundView"]) {
+            return subview;
+        }
+        UIView *found = [self findPlatterViewInSubviews:subview depth:0 maxDepth:5];
+        if (found) return found;
+    }
+    return nil;
+}
+
+- (UIView *)findPlatterViewInSubviews:(UIView *)view depth:(NSInteger)depth maxDepth:(NSInteger)maxDepth {
+    if (!view || depth > maxDepth) return nil;
+    
+    NSString *clsName = NSStringFromClass([view class]);
+    if ([clsName isEqualToString:@"CCUIContentModuleBackgroundView"]) {
+        return view;
+    }
+    
+    for (UIView *subview in view.subviews) {
+        UIView *found = [self findPlatterViewInSubviews:subview depth:depth + 1 maxDepth:maxDepth];
+        if (found) return found;
+    }
+    return nil;
+}
+
 // 智能计算模块圆角（处理胶囊形滑块等特殊形状）
 - (CGFloat)calculateCornerRadiusForView:(UIView *)moduleView {
     CGFloat viewRadius = moduleView.layer.cornerRadius;
@@ -1679,7 +1739,6 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 // 递归查找子视图中的最大 cornerRadius
 - (CGFloat)findMaxCornerRadiusInSubviews:(UIView *)view depth:(NSInteger)depth maxDepth:(NSInteger)maxDepth {
     if (!view || depth > maxDepth) return 0;
-
     CGFloat maxRadius = view.layer.cornerRadius;
 
     // 如果找到一个接近胶囊形状的圆角（约等于短边的一半），直接返回
@@ -1714,8 +1773,24 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     NSNumber *key = [NSNumber numberWithUnsignedLong:(unsigned long)moduleView];
     CCBgModuleBackground *bg = bgDict[key];
 
-    CGRect moduleFrame = moduleView.frame;
-    CGFloat cornerRadius = [self calculateCornerRadiusForView:moduleView];
+    // 找到模块内部真正的卡片背景视图（CCUIContentModuleBackgroundView）
+    // 因为模块容器(CCUIContentModuleContainerView)比实际卡片大，有内边距
+    UIView *platterView = [self findPlatterViewInModule:moduleView];
+    CGRect moduleFrame;
+    CGFloat cornerRadius;
+
+    if (platterView) {
+        // 用 platterView 的 frame（转换到 superview 坐标系）作为背景 frame
+        moduleFrame = [moduleView convertRect:platterView.frame toView:superview];
+        cornerRadius = platterView.layer.cornerRadius;
+        if (cornerRadius < 1) {
+            cornerRadius = [self calculateCornerRadiusForView:platterView];
+        }
+    } else {
+        // fallback：用模块容器的 frame
+        moduleFrame = moduleView.frame;
+        cornerRadius = [self calculateCornerRadiusForView:moduleView];
+    }
 
     // 模块还没布局好（frame 为 0），跳过
     if (CGRectGetWidth(moduleFrame) < 10 || CGRectGetHeight(moduleFrame) < 10) {
@@ -2090,6 +2165,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     %orig;
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     UIView *view = (UIView *)self;
+    ccbg_log(@"PLExpandedPlatterView layoutSubviews, frame=%@ window=%d", NSStringFromCGRect(view.bounds), view.window != nil);
     if (view.window && CGRectGetWidth(view.bounds) > 100) {
         [mgr updateExpandedPlatterView:view];
     }
@@ -2111,12 +2187,40 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 %end
 
+%hook PLExpandedPlatterPresentationView
+
+- (void)layoutSubviews {
+    %orig;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    UIView *view = (UIView *)self;
+    ccbg_log(@"PLExpandedPlatterPresentationView layoutSubviews, frame=%@ window=%d", NSStringFromCGRect(view.bounds), view.window != nil);
+    if (view.window && CGRectGetWidth(view.bounds) > 100) {
+        [mgr updateExpandedPlatterView:view];
+    }
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    UIView *view = (UIView *)self;
+    if (view.window) {
+        ccbg_log(@"PLExpandedPlatterPresentationView didMoveToWindow, frame=%@", NSStringFromCGRect(view.frame));
+    } else {
+        ccbg_log(@"PLExpandedPlatterPresentationView removed from window");
+        [mgr cleanupExpandedBackgroundForType:kCCBgTypeConnect];
+        [mgr cleanupExpandedBackgroundForType:kCCBgTypeMedia];
+    }
+}
+
+%end
+
 %hook NCExpandedPlatterView
 
 - (void)layoutSubviews {
     %orig;
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     UIView *view = (UIView *)self;
+    ccbg_log(@"NCExpandedPlatterView layoutSubviews, frame=%@ window=%d", NSStringFromCGRect(view.bounds), view.window != nil);
     if (view.window && CGRectGetWidth(view.bounds) > 100) {
         [mgr updateExpandedPlatterView:view];
     }
@@ -2144,10 +2248,16 @@ static void ccbg_tryInitExpandedHooks(void) {
     dispatch_once(&onceToken, ^{
         // 检查 PLExpandedPlatterView 类是否已加载到运行时
         if (objc_getClass("PLExpandedPlatterView") != NULL ||
+            objc_getClass("PLExpandedPlatterPresentationView") != NULL ||
             objc_getClass("NCExpandedPlatterView") != NULL) {
             ccbg_log(@"NotificationCenterUI classes detected, initializing ExpandedPlatterHooks");
             %init(ExpandedPlatterHooks);
             ccbg_log(@"ExpandedPlatterHooks initialized successfully");
+
+            // 同时启动扫描定时器作为兜底方案
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[CustomCCBgManager sharedInstance] startExpandedModuleScanTimer];
+            });
         }
     });
 }
