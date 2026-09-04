@@ -709,14 +709,17 @@ NSArray<NSDictionary *> *LGItemsWithAppearanceMode(NSArray<NSDictionary *> *item
         NSMutableDictionary *mutableItem = [item mutableCopy];
         NSString *key = mutableItem[@"key"];
         // Skip tint colors - they are already mode-specific by their nature
+        // Skip frosted mode - it's a feature switch, not appearance-specific
         if (key.length && ![key hasSuffix:suffix] &&
-            ![key hasSuffix:@"LightTintColor"] && ![key hasSuffix:@"DarkTintColor"]) {
+            ![key hasSuffix:@"LightTintColor"] && ![key hasSuffix:@"DarkTintColor"] &&
+            ![key hasSuffix:@".FrostedMode"]) {
             mutableItem[@"key"] = [key stringByAppendingString:suffix];
         }
         // Also handle visible_key if present
         NSString *visibleKey = mutableItem[@"visible_key"];
         if (visibleKey.length && ![visibleKey hasSuffix:suffix] &&
-            ![visibleKey hasSuffix:@"LightTintColor"] && ![visibleKey hasSuffix:@"DarkTintColor"]) {
+            ![visibleKey hasSuffix:@"LightTintColor"] && ![visibleKey hasSuffix:@"DarkTintColor"] &&
+            ![visibleKey hasSuffix:@".FrostedMode"]) {
             mutableItem[@"visible_key"] = [visibleKey stringByAppendingString:suffix];
         }
         [result addObject:[mutableItem copy]];

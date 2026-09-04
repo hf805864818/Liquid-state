@@ -64,6 +64,8 @@ static BOOL LGKeySupportsAppearanceMode(NSString *key) {
     if ([key hasPrefix:@"QuickToggle."]) return NO;
     if ([key hasPrefix:@"SurfaceSort."]) return NO;
     if ([key hasPrefix:@"SettingsControls."]) return NO;
+    // Skip frosted mode toggle - it's a feature switch, not appearance-specific
+    if ([key hasSuffix:@".FrostedMode"]) return NO;
     // All per-surface parameters support appearance mode
     return YES;
 }
