@@ -2497,10 +2497,9 @@ static void LGApplyClockReplacement(UIView *host) {
                overlayEligible,
                blocking,
                overlay ? 1 : 0);
-    // 磨砂模式开启时，不显示液态玻璃效果，恢复系统原生磨砂时钟
-    if (!enabled || frostedMode || !overlayEligible || !sourceLabel || blocking) {
+    // 磨砂模式不再作为跳过条件，而是切换 filter 类型
+    if (!enabled || !overlayEligible || !sourceLabel || blocking) {
         NSString *reason = !enabled ? @"disabled"
-            : frostedMode ? @"frosted-mode"
             : !overlayEligible ? @"not-eligible"
             : !sourceLabel ? @"no-source"
             : @"blocked";
@@ -2606,6 +2605,26 @@ static void LGApplyClockReplacement(UIView *host) {
     } else if (overlay.superview != overlayContainer) {
         [overlay removeFromSuperview];
         [overlayContainer addSubview:overlay];
+    }
+
+    // 磨砂模式: 切换 filter 类型（液态玻璃 ↔ 高斯模糊）
+    LGClockBackdropView *glassView = overlay.glassView;
+    NSString *targetFilterType = frostedMode ? @"gaussianBlur" : LGFilterTypeForHostPrefix(@"Clock");
+    NSString *currentFilterType = glassView.lgFilterType;
+    if (![currentFilterType isEqualToString:targetFilterType]) {
+        LGClockLog(@"clock filter switch: %@ → %@ (frostedMode=%d)",
+                   currentFilterType ?: @"(nil)",
+                   targetFilterType,
+                   frostedMode);
+        glassView.lgFilterType = targetFilterType;
+        // 强制重新应用 filter（重置 _filterAttached 标志）
+        // 通过 KVC 重置私有变量来强制刷新
+        @try {
+            [glassView setValue:@NO forKey:@"_filterAttached"];
+        } @catch (NSException *e) {
+            LGClockLog(@"  WARN: could not reset _filterAttached: %@", e.reason);
+        }
+        [glassView applyFilters];
     }
 
     overlay.clockHost = host;
