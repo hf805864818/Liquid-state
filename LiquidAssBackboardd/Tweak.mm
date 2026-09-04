@@ -1579,6 +1579,41 @@ static uint64_t ourCustomEdgeInfo(void *self, void *filter, void *layer,
 static uint64_t ourGaussianEdgeInfoHook(void *self, void *filter, void *layer,
                                         void *ctx, void *bounds,
                                         simd_float2 *edge, bool *flag) {
+    // [DIAG] QuickActions edgeInfo 诊断
+    // 确认 QuickActions 的滤镜是否进入 edgeInfo hook
+    // 如果连 edgeInfo 都没进，说明不走 gaussian 渲染路径
+    {
+        uint32_t atom = filter
+            ? *(uint32_t *)((uint8_t *)filter + g_filterAtomOffset) : 0;
+        static int sQAEdgeCount = 0;
+        BOOL isQAEdge = NO;
+        int qaIdx = -1;
+        for (int i = 0; i < kHostCount; i++) {
+            if (!strcmp(kHostDefaults[i].prefPrefix, "QuickActions")) { qaIdx = i; break; }
+        }
+        if (qaIdx >= 0) {
+            if (g_hostParams[qaIdx].atom == atom || g_darkAtoms[qaIdx] == atom) {
+                isQAEdge = YES;
+            } else {
+                auto route = g_radiusRoutes.find(atom);
+                if (route != g_radiusRoutes.end() && route->second.host == qaIdx) {
+                    isQAEdge = YES;
+                } else {
+                    auto refRoute = g_refreshRoutes.find(atom);
+                    if (refRoute != g_refreshRoutes.end() && refRoute->second.host == qaIdx) {
+                        isQAEdge = YES;
+                    }
+                }
+            }
+        }
+        if (isQAEdge && sQAEdgeCount < 20) {
+            sQAEdgeCount++;
+            BOOL isCustom = lgIsCustomAtom(atom);
+            lglog("[QA DIAG] edgeInfo #%d atom=0x%x isCustom=%d",
+                  sQAEdgeCount, atom, isCustom);
+        }
+    }
+
     return g_origGaussEdgeInfo
         ? g_origGaussEdgeInfo(self, filter, layer, ctx, bounds, edge, flag)
         : 0;
