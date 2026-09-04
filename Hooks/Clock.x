@@ -3015,7 +3015,7 @@ static void LGRefreshAllClockHosts(void) {
         id glassVal = LGGlassPreferenceValue(@"Clock.FrostedMode");
         LGClockLog(@"  frostedMode via LGGlassPreferenceValue=%@ (class=%@)",
                    glassVal ?: @"(nil)",
-                   NSStringFromClass(glassVal.class));
+                   NSStringFromClass([glassVal class]));
         LGRefreshAllClockHosts();
     });
     BOOL cspExists = NSClassFromString(@"CSProminentTimeView") != nil;
