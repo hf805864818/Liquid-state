@@ -610,6 +610,14 @@ static void LGStyleStockTabBar(UITabBar *bar) {
     }
     if (!LGIsStockTabBar(bar) || !bar.window) return;
 
+    // 小红书: 完全跳过样式化, 保留原始 TabBar 布局和交互
+    // 小红书使用自定义 UIImageView 子类做图标和标签,
+    // 我们的样式化(隐藏背景/重排按钮/插入覆盖层)会导致标签不可见和点击失效
+    if (LGIsXiaohongshuBundle()) {
+        LGRemoveTabBarInjection(bar);
+        return;
+    }
+
     if (LGTabBarUsesCustomLayout(bar)) {
         LGRemoveTabBarInjection(bar);
         return;
@@ -1457,27 +1465,29 @@ static void LGRefreshTabBarsInView(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
+    // 小红书: 完全跳过按钮级别的样式化(居中和清除),
+    // 保留原始按钮内容和交互
+    if (LGIsXiaohongshuBundle()) return;
+
     UITabBar *bar = LGTabBarForButton(self);
     if (lgHostEnabled(@"TabBar") && LGIsStockTabBar(bar)) {
         LGCenterStockTabBarButtonContent(self);
-        // 小红书: 跳过清除, 保留自定义图标和标签
-        if (!LGIsXiaohongshuBundle()) {
-            // iOS 在按钮布局时设置选中背景 — 此时清除才能去掉方块阴影
-            LGClearSingleTabBarButton(self);
-        }
+        // iOS 在按钮布局时设置选中背景 — 此时清除才能去掉方块阴影
+        LGClearSingleTabBarButton(self);
     }
 }
 
 - (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
     BOOL tracking = %orig;
-    if (tracking && lgHostEnabled(@"TabBar"))
+    // 小红书: 跳过选中镜头效果, 避免覆盖层挡住按钮内容
+    if (tracking && lgHostEnabled(@"TabBar") && !LGIsXiaohongshuBundle())
         LGShowTabBarSelectionLens(self, touch);
     return tracking;
 }
 
 - (BOOL)continueTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
     BOOL tracking = %orig;
-    if (!lgHostEnabled(@"TabBar")) return tracking;
+    if (!lgHostEnabled(@"TabBar") || LGIsXiaohongshuBundle()) return tracking;
     LGTabBarMotionState *state =
         LGTabBarMotionStateForBar(LGTabBarForButton(self), NO);
     if (tracking || state.active) LGMoveTabBarSelectionLens(self, touch);
@@ -1486,14 +1496,15 @@ static void LGRefreshTabBarsInView(UIView *view) {
 
 - (void)endTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
     %orig;
-    if (!lgHostEnabled(@"TabBar")) return;
+    if (!lgHostEnabled(@"TabBar") || LGIsXiaohongshuBundle()) return;
     LGCommitTabBarSelectionAtLens(self, touch);
     LGHideTabBarSelectionLens(self);
 }
 
 - (void)cancelTrackingWithEvent:(UIEvent *)event {
     %orig;
-    if (lgHostEnabled(@"TabBar")) LGHideTabBarSelectionLens(self);
+    if (lgHostEnabled(@"TabBar") && !LGIsXiaohongshuBundle())
+        LGHideTabBarSelectionLens(self);
 }
 
 %end
