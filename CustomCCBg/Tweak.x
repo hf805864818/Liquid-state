@@ -13,6 +13,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
 #import <CoreImage/CoreImage.h>
+#import <objc/runtime.h>
 #import "../Shared/LGSharedSupport.h"
 
 // MARK: - 文件日志（可在 Filza 中查看）
@@ -54,6 +55,29 @@ NSMutableSet *sCCBgLoggedModules(void) {
         sSet = [NSMutableSet set];
     });
     return sSet;
+}
+
+// 运行时扫描所有包含 "Expanded" 或 "Extension" 的类名（用于发现展开模块的实际类）
+static void ccbgLogExpandedClasses() {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class *classes = NULL;
+        unsigned int numClasses = objc_getClassList(NULL, 0);
+        if (numClasses > 0) {
+            classes = (Class *)malloc(sizeof(Class) * numClasses);
+            numClasses = objc_getClassList(classes, numClasses);
+            NSMutableArray *expandedClasses = [NSMutableArray array];
+            for (unsigned int i = 0; i < numClasses; i++) {
+                NSString *name = NSStringFromClass(classes[i]);
+                if ([name rangeOfString:@"Expanded" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                    [name rangeOfString:@"Extension" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                    [expandedClasses addObject:name];
+                }
+            }
+            ccbg_log(@"runtime classes with Expanded/Extension: %@", expandedClasses);
+            free(classes);
+        }
+    });
 }
 
 // Darwin 通知回调 — 设置变更时跨进程通知 SpringBoard 重新加载
@@ -273,6 +297,7 @@ static NSArray *ccbgMediaModuleKeywords() {
 }
 
 // 媒体模块排除关键词（防止音量、亮度等被误匹配）
+// 注意：不能用 mediaremote，因为真正的播放控制模块 ID 也可能包含 mediaremote
 static NSArray *ccbgMediaModuleExcludeKeywords() {
     static NSArray *keywords = nil;
     static dispatch_once_t onceToken;
@@ -280,10 +305,12 @@ static NSArray *ccbgMediaModuleExcludeKeywords() {
         keywords = @[@"Volume", @"Brightness", @"Mirroring",
                      @"ScreenMirror", @"AirPlayReceiver",
                      @"volume", @"brightness", @"mirroring",
-                     // mediaremote 是音量模块，不是播放控制模块
-                     @"mediaremote",
-                     @"MRUVolume",
-                     @"MRUContinuousSlider",
+                     // 音量模块特定排除（MRU = MediaRemote Volume）
+                     @"MRUVolume", @"MRUContinuousSlider",
+                     @"cc-volume-slider", @"cc-secondary-volume-slider",
+                     @"cc-volume-stepper", @"cc-brightness-slider",
+                     // 音量模块 ID 特定排除
+                     @"controlcenter.audio",
                      // 模块标识符排除
                      @"com.apple.controlcenter.volume",
                      @"com.apple.controlcenter.brightness",
@@ -292,7 +319,6 @@ static NSArray *ccbgMediaModuleExcludeKeywords() {
                      @"com.apple.controlcenter.flashlight",
                      @"com.apple.controlcenter.calculator",
                      @"com.apple.controlcenter.camera",
-                     @"com.apple.mediaremote",
                      // iOS 17+ 标识排除
                      @"volume-control",
                      @"brightness-control",
@@ -300,11 +326,7 @@ static NSArray *ccbgMediaModuleExcludeKeywords() {
                      @"airplay",
                      @"flashlight",
                      @"calculator",
-                     @"camera",
-                     // accessibility ID 排除
-                     @"cc-volume-slider",
-                     @"cc-secondary-volume-slider",
-                     @"cc-brightness-slider"];
+                     @"camera"];
     });
     return keywords;
 }
@@ -1368,17 +1390,17 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     BOOL isConnect = self.connectEnabled && ccbgIsConnectModule(moduleView);
     BOOL isMedia = self.mediaEnabled && ccbgIsMediaModule(moduleView);
 
-    // 调试日志（首次出现的模块类名）
+    // 调试日志（按 moduleID 去重，因为所有模块类名相同）
     NSMutableSet *loggedModules = sCCBgLoggedModules();
     NSString *clsName = NSStringFromClass([moduleView class]);
+    NSString *moduleID = ccbgGetModuleIdentifier(moduleView);
+    NSString *dedupKey = moduleID ?: clsName;
     @synchronized(loggedModules) {
-        if (![loggedModules containsObject:clsName]) {
-            [loggedModules addObject:clsName];
-            // 获取模块标识符（调试用）
-            NSString *moduleID = ccbgGetModuleIdentifier(moduleView);
-            ccbg_log(@"module detected: class=%@ isConnect=%d isMedia=%d (connectEnabled=%d mediaEnabled=%d) moduleID=%@",
+        if (![loggedModules containsObject:dedupKey]) {
+            [loggedModules addObject:dedupKey];
+            ccbg_log(@"module detected: class=%@ isConnect=%d isMedia=%d (connectEnabled=%d mediaEnabled=%d) moduleID=%@ frame=%@",
                   clsName, isConnect, isMedia, self.connectEnabled, self.mediaEnabled,
-                  moduleID ?: @"nil");
+                  moduleID ?: @"nil", NSStringFromCGRect(moduleView.frame));
             // 查找所有可能的标识信息
             NSMutableString *identifiers = [NSMutableString string];
             if (moduleView.accessibilityIdentifier) {
@@ -1437,9 +1459,12 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     // 只处理看起来像模块容器的视图
     NSString *className = NSStringFromClass([view class]);
     BOOL isModuleContainer = [className rangeOfString:@"Module" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-                             [className rangeOfString:@"Container" options:NSCaseInsensitiveSearch].location != NSNotFound;
+                             [className rangeOfString:@"Container" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                             [className rangeOfString:@"Platter" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                             [className rangeOfString:@"Expanded" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                             [className rangeOfString:@"Extension" options:NSCaseInsensitiveSearch].location != NSNotFound;
 
-    // 必须是模块容器类，且有一定尺寸和子视图
+    // 必须有一定尺寸和子视图，或者本身就是模块容器类
     BOOL isContainerLike = isModuleContainer &&
                            view.subviews.count > 0 &&
                            CGRectGetWidth(view.bounds) > 40 &&
@@ -1451,6 +1476,8 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         BOOL isMedia = self.mediaEnabled && ccbgIsMediaModule(view);
 
         if (isConnect || isMedia) {
+            ccbg_log(@"scanView found module: class=%@ isConnect=%d isMedia=%d frame=%@",
+                  className, isConnect, isMedia, NSStringFromCGRect(view.frame));
             [self handleModuleView:view];
         }
     }
@@ -1465,16 +1492,16 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 - (void)handleExpandedModuleView:(UIView *)expandedView {
     if (!expandedView || (!self.connectEnabled && !self.mediaEnabled)) return;
 
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"expanded module view received, class=%@", NSStringFromClass([expandedView class]));
-        NSMutableString *tree = [NSMutableString string];
-        ccbgDumpSubviewTree(expandedView, @"", tree);
-        ccbg_log(@"  expanded view hierarchy:\n%@", tree);
-    });
+    ccbg_log(@"expanded module view received, class=%@ frame=%@", NSStringFromClass([expandedView class]), NSStringFromCGRect(expandedView.frame));
+    NSMutableString *tree = [NSMutableString string];
+    ccbgDumpSubviewTree(expandedView, @"  ", tree);
+    ccbg_log(@"  expanded view hierarchy:\n%@", tree);
 
     // 在展开视图中查找模块容器
-    [self scanView:expandedView depth:0 maxDepth:6];
+    [self scanView:expandedView depth:0 maxDepth:8];
+
+    // 同时也尝试直接处理这个视图本身
+    [self handleModuleView:expandedView];
 }
 
 // 智能计算模块圆角（处理胶囊形滑块等特殊形状）
@@ -1665,6 +1692,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     ccbg_log(@"CC overlay viewWillAppear");
+    ccbgLogExpandedClasses();
     [[CustomCCBgManager sharedInstance] setControlCenterVisible:YES];
     UIView *root = ((UIViewController *)self).view;
     [[CustomCCBgManager sharedInstance] attachToHostView:root];
@@ -1723,20 +1751,12 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)layoutSubviews {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIContentModuleContainerView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
-    });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     [mgr handleModuleView:(UIView *)self];
 }
 
 - (void)didMoveToWindow {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIContentModuleContainerView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
-    });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if ([(UIView *)self window]) {
         [mgr handleModuleView:(UIView *)self];
@@ -1745,8 +1765,6 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)willMoveToWindow:(UIWindow *)newWindow {
     %orig;
-    // 模块视图即将从窗口移除 → 控制中心正在关闭
-    // 比 viewWillDisappear: 更早触发，能立即隐藏背景
     if (!newWindow) {
         CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
         if (mgr.isControlCenterVisible) {
@@ -1763,20 +1781,13 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)layoutSubviews {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIModuleContainerView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
-    });
+    ccbg_log(@"hook fired: CCUIModuleContainerView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     [mgr handleModuleView:(UIView *)self];
 }
 
 - (void)didMoveToWindow {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIModuleContainerView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
-    });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if ([(UIView *)self window]) {
         [mgr handleModuleView:(UIView *)self];
@@ -1790,20 +1801,13 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)layoutSubviews {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIControlCenterModuleView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
-    });
+    ccbg_log(@"hook fired: CCUIControlCenterModuleView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     [mgr handleModuleView:(UIView *)self];
 }
 
 - (void)didMoveToWindow {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIControlCenterModuleView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
-    });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if ([(UIView *)self window]) {
         [mgr handleModuleView:(UIView *)self];
@@ -1817,20 +1821,13 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)layoutSubviews {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIExpandedModuleContainerView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
-    });
+    ccbg_log(@"hook fired: CCUIExpandedModuleContainerView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     [mgr handleModuleView:(UIView *)self];
 }
 
 - (void)didMoveToWindow {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIExpandedModuleContainerView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
-    });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if ([(UIView *)self window]) {
         [mgr handleModuleView:(UIView *)self];
@@ -1844,20 +1841,13 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)layoutSubviews {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIControlCenterPlatterView layoutSubviews, actual class=%@", NSStringFromClass([(id)self class]));
-    });
+    ccbg_log(@"hook fired: CCUIControlCenterPlatterView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     [mgr handleModuleView:(UIView *)self];
 }
 
 - (void)didMoveToWindow {
     %orig;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        ccbg_log(@"hook fired: CCUIControlCenterPlatterView didMoveToWindow, actual class=%@", NSStringFromClass([(id)self class]));
-    });
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if ([(UIView *)self window]) {
         [mgr handleModuleView:(UIView *)self];
@@ -1882,6 +1872,66 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     UIView *view = ((UIViewController *)self).view;
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     [mgr handleExpandedModuleView:view];
+}
+
+%end
+
+// 额外 hook: 展开模块 VC（iOS 17+ 可能的类名）
+%hook CCUIExpandedModuleViewController
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    ccbg_log(@"expanded module VC viewWillAppear: class=%@", NSStringFromClass([(id)self class]));
+    UIView *view = ((UIViewController *)self).view;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleExpandedModuleView:view];
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    UIView *view = ((UIViewController *)self).view;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleExpandedModuleView:view];
+}
+
+%end
+
+// 额外 hook: 模块扩展视图
+%hook CCUIContentExtensionView
+
+- (void)layoutSubviews {
+    %orig;
+    ccbg_log(@"hook fired: CCUIContentExtensionView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleModuleView:(UIView *)self];
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    if ([(UIView *)self window]) {
+        [mgr handleModuleView:(UIView *)self];
+    }
+}
+
+%end
+
+// 额外 hook: 模块扩展容器视图
+%hook CCUIModuleExtensionContainerView
+
+- (void)layoutSubviews {
+    %orig;
+    ccbg_log(@"hook fired: CCUIModuleExtensionContainerView layoutSubviews, class=%@ frame=%@", NSStringFromClass([(id)self class]), NSStringFromCGRect([(UIView *)self frame]));
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    [mgr handleModuleView:(UIView *)self];
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    if ([(UIView *)self window]) {
+        [mgr handleModuleView:(UIView *)self];
+    }
 }
 
 %end
