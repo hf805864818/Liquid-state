@@ -52,6 +52,27 @@ static NSArray<NSString *> *LGExportablePreferenceKeys(void) {
     return orderedKeys.array;
 }
 
+// 获取所有可导出参数的 key→默认值 映射
+// 用于导出备份时包含所有参数（包括用户未修改过的默认值）
+static NSDictionary<NSString *, id> *LGExportablePreferenceDefaults(void) {
+    NSMutableDictionary<NSString *, id> *defaults = [NSMutableDictionary dictionary];
+    NSArray<NSArray<NSDictionary *> *> *sources = @[
+        LGAllSurfaceItems(),
+        LGMoreOptionsItems(),
+        LGPrefsSettingsItems()
+    ];
+    for (NSArray<NSDictionary *> *items in sources) {
+        for (NSDictionary *item in items) {
+            NSString *key = item[@"key"];
+            id defaultValue = item[@"default"];
+            if (key.length && defaultValue && defaults[key] == nil) {
+                defaults[key] = defaultValue;
+            }
+        }
+    }
+    return [defaults copy];
+}
+
 static NSBundle *LGActiveLocalizationBundle(void) {
     NSString *languageCode = [LGPrefsUIStateDefaults() stringForKey:kLGPrefsLanguageKey];
     NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
@@ -1464,8 +1485,14 @@ NSString *LGDebugInfoString(void) {
 
 NSString *LGExportPreferencesJSONString(void) {
     NSMutableDictionary *preferences = [NSMutableDictionary dictionary];
+    NSDictionary<NSString *, id> *defaults = LGExportablePreferenceDefaults();
     for (NSString *key in LGExportablePreferenceKeys()) {
+        // 优先用用户设置的值，没有则用默认值
+        // 这样备份文件包含所有参数，导入后能完整恢复
         id value = LGReadPreferenceObject(key, nil);
+        if (!value) {
+            value = defaults[key];
+        }
         if (!value) continue;
         preferences[key] = value;
     }

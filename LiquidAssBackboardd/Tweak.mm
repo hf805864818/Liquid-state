@@ -1291,6 +1291,17 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     const LGHostParams *hp = lgHostParamsForAtom(ftype, &darkTint);
     float shortestF = fminf((float)w, (float)h);
 
+    // [DIAG] QuickActions 渲染调用计数
+    // 确认自定义渲染函数是否被 QuickActions 的滤镜调用
+    if (!strcmp(hp->prefPrefix, "QuickActions")) {
+        static int sQARenderCount = 0;
+        if (sQARenderCount < 10) {
+            sQARenderCount++;
+            lglog("[QA DIAG] render called #%d atom=0x%x dims=%llux%llu dark=%d",
+                  sQARenderCount, ftype, w, h, darkTint ? 1 : 0);
+        }
+    }
+
     auto radiusIt = g_radiusRoutes.find(ftype);
     float radiusRatio = radiusIt != g_radiusRoutes.end()
         ? radiusIt->second.radiusRatio : hp->radiusRatio;
@@ -1905,6 +1916,25 @@ static bool registerCustomFilter(void) {
     lglog("registerCustomFilter: done mode=%s descriptor=%p renderSlot=%d atom=0x%x hosts=%d",
           g_useHookPath ? "hook" : "clone", registrationDescriptor,
           renderSlot, atomId, kHostCount);
+
+    // [DIAG] QuickActions atom 注册诊断
+    // 确认 QuickActions 的各种变体 atom 是否被正确注册
+    {
+        int qaIdx = -1;
+        for (int i = 0; i < kHostCount; i++) {
+            if (!strcmp(kHostDefaults[i].prefPrefix, "QuickActions")) { qaIdx = i; break; }
+        }
+        if (qaIdx >= 0) {
+            uint32_t qaBase = g_hostParams[qaIdx].atom;
+            uint32_t qaDark = g_darkAtoms[qaIdx];
+            int qaRadiusCount = 0;
+            for (auto &pair : g_radiusRoutes) {
+                if (pair.second.host == qaIdx) qaRadiusCount++;
+            }
+            lglog("[QA DIAG] QuickActions registered: baseAtom=0x%x darkAtom=0x%x radiusVariants=%d (expected=%d)",
+                  qaBase, qaDark, qaRadiusCount, (kDynamicRadiusSteps / 2 + 1) * 2);
+        }
+    }
 
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
