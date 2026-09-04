@@ -37,7 +37,7 @@ typedef struct {
     X(Alerts,         "dylv.liquidglass.alerts",       "Alerts",        28.0f / 220.0f, (28.0f / 220.0f) * 1.8f,       20.0f, 1.5f, 1.50f, 3.0f, 1.0f,  0.0f, "#FFFFFFCC", "#0000004c") \
     X(QuickActions,   "dylv.liquidglass.quickaction",  "QuickActions",  0.50f,          (28.0f / 220.0f) * 1.8f,       22.0f, 2.0f, 1.55f, 3.0f, 1.0f,  0.0f, "#FFFFFF4C", "#00000026") \
     X(Passcode,       "dylv.liquidglass.passcode",     "Passcode",      0.50f,          (28.0f / 220.0f) * 2.52f,      16.0f, 1.4f, 1.60f, 1.0f, 1.0f,  0.0f, "#FFFFFF1A", "#0000001F") \
-    X(Clock,          "dylv.liquidglass.clock",        "Clock",         0.00f,          (28.0f / 220.0f) * 1.8f,       28.0f, 2.5f, 1.65f, 4.0f, 1.0f,  0.0f, "#FFFFFF66", "#FFFFFF66") \
+    X(Clock,          "dylv.liquidglass.clock",        "Clock",         0.00f,          (28.0f / 220.0f) * 1.8f,       50.0f, 5.0f, 1.75f, 2.5f, 1.0f,  0.8f, "#FFFFFF26", "#FFFFFF26") \
     X(PrefsSlider,    "dylv.liquidglass.prefsslider",  "PrefsSlider",   0.50f,          (28.0f / 220.0f) * 2.16f,      18.0f, 2.5f, 1.60f, 1.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
     X(PrefsSwitch,    "dylv.liquidglass.prefsswitch",  "PrefsSwitch",   0.50f,          (28.0f / 220.0f) * 1.62f,      18.0f, 2.5f, 1.60f, 1.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
     X(PrefsButton,    "dylv.liquidglass.prefsbutton",  "PrefsButton",   0.50f,          (28.0f / 220.0f) * 2.52f,      18.0f, 2.0f, 1.60f, 3.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \

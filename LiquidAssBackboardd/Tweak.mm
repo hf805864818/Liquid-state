@@ -1321,17 +1321,6 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
             float pixelsPerPoint = fminf(pixelsPerPointX, pixelsPerPointY);
             lu.bezelWidth = fmaxf(1.0f, g_clockMaskBezelWidthPoints * pixelsPerPoint);
         }
-
-        // [DIAG TEST 4] 强制 Clock 使用夸张参数，验证效果是否能明显感知
-        // 放在 mask 处理之后，确保不被覆盖
-        // 目的：确认"效果弱"是因为参数保守，还是渲染本身有问题
-        lu.glassThickness = 80.0f;        // 原 28.0
-        lu.refractionScale = 8.0f;        // 原 2.5
-        lu.refractiveIndex = 1.8f;        // 原 1.65
-        lu.dispersionStrength = 2.0f;     // 原 0.0
-        lu.bezelWidth = 40.0f;            // 原 ~13.5
-        lu.fresnelGlareStrength = 1.0f;   // 原 0.5
-        lu.tintColor = simd_make_float4(1.0f, 1.0f, 1.0f, 0.0f); // 完全透明 tint
     } else if (!strcmp(hp->prefPrefix, "CoverSheet")) {
 
         lu.useGlyphMask = -1.f;
