@@ -285,11 +285,17 @@ static NSArray *ccbgMediaModuleExcludeKeywords() {
                      @"com.apple.controlcenter.brightness",
                      @"com.apple.controlcenter.mirroring",
                      @"com.apple.controlcenter.airplay",
+                     @"com.apple.controlcenter.flashlight",
+                     @"com.apple.controlcenter.calculator",
+                     @"com.apple.controlcenter.camera",
                      // iOS 17+ 标识排除
                      @"volume-control",
                      @"brightness-control",
                      @"screen-mirroring",
-                     @"airplay"];
+                     @"airplay",
+                     @"flashlight",
+                     @"calculator",
+                     @"camera"];
     });
     return keywords;
 }
@@ -770,6 +776,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 - (void)attachToHostView:(UIView *)view;
 - (void)handleModuleView:(UIView *)moduleView;
 - (void)scanForModulesInView:(UIView *)rootView;
+- (CGFloat)calculateCornerRadiusForView:(UIView *)moduleView;
 - (void)setControlCenterVisible:(BOOL)visible;
 - (void)detachAllModules;
 - (void)detach;
@@ -1444,6 +1451,65 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 }
 
+// 智能计算模块圆角（处理胶囊形滑块等特殊形状）
+- (CGFloat)calculateCornerRadiusForView:(UIView *)moduleView {
+    CGFloat viewRadius = moduleView.layer.cornerRadius;
+    CGFloat width = CGRectGetWidth(moduleView.bounds);
+    CGFloat height = CGRectGetHeight(moduleView.bounds);
+    CGFloat minDim = fmin(width, height);
+    CGFloat maxDim = fmax(width, height);
+
+    // 方案1: 视图本身有 cornerRadius，直接用
+    if (viewRadius > 0) {
+        return viewRadius;
+    }
+
+    // 方案2: 递归查找子视图的 cornerRadius（系统模块常把圆角设在内容子视图上）
+    CGFloat subviewRadius = [self findMaxCornerRadiusInSubviews:moduleView depth:0 maxDepth:4];
+    if (subviewRadius > 0) {
+        return subviewRadius;
+    }
+
+    // 方案3: 根据形状判断
+    CGFloat ratio = maxDim / minDim;
+
+    // 胶囊形状（长宽比 > 2:1），比如亮度、音量滑块
+    if (ratio > 2.0 && minDim > 20) {
+        // 胶囊形：圆角等于短边的一半
+        return minDim * 0.5;
+    }
+
+    // 普通方形/长方形模块，使用 25% 圆角
+    return minDim * 0.25;
+}
+
+// 递归查找子视图中的最大 cornerRadius
+- (CGFloat)findMaxCornerRadiusInSubviews:(UIView *)view depth:(NSInteger)depth maxDepth:(NSInteger)maxDepth {
+    if (!view || depth > maxDepth) return 0;
+
+    CGFloat maxRadius = view.layer.cornerRadius;
+
+    // 如果找到一个接近胶囊形状的圆角（约等于短边的一半），直接返回
+    CGFloat minDim = fmin(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
+    if (maxRadius > 0 && fabs(maxRadius - minDim * 0.5) < 2.0) {
+        return maxRadius;
+    }
+
+    for (UIView *subview in view.subviews) {
+        CGFloat subRadius = [self findMaxCornerRadiusInSubviews:subview depth:depth + 1 maxDepth:maxDepth];
+        if (subRadius > maxRadius) {
+            maxRadius = subRadius;
+            // 找到胶囊形圆角就直接返回
+            CGFloat subMinDim = fmin(CGRectGetWidth(subview.bounds), CGRectGetHeight(subview.bounds));
+            if (fabs(subRadius - subMinDim * 0.5) < 2.0) {
+                return maxRadius;
+            }
+        }
+    }
+
+    return maxRadius;
+}
+
 // 更新单个模块背景
 - (void)updateModuleBackground:(UIView *)moduleView forType:(CCBgType)type {
     UIView *superview = moduleView.superview;
@@ -1456,19 +1522,15 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     CCBgModuleBackground *bg = bgDict[key];
 
     CGRect moduleFrame = moduleView.frame;
-    CGFloat cornerRadius = moduleView.layer.cornerRadius;
-    if (cornerRadius <= 0) {
-        CGFloat minDim = fmin(CGRectGetWidth(moduleView.bounds), CGRectGetHeight(moduleView.bounds));
-        cornerRadius = minDim * 0.25;
-    }
+    CGFloat cornerRadius = [self calculateCornerRadiusForView:moduleView];
 
     if (!bg) {
         bg = [[CCBgModuleBackground alloc] init];
         [superview.layer insertSublayer:bg.containerLayer below:moduleView.layer];
         bgDict[key] = bg;
-        ccbg_log(@"module bg CREATED: type=%ld class=%@ frame=%@ hasImage=%d hasVideo=%d",
+        ccbg_log(@"module bg CREATED: type=%ld class=%@ frame=%@ cornerRadius=%.1f hasImage=%d hasVideo=%d",
               (long)type, NSStringFromClass([moduleView class]),
-              NSStringFromCGRect(moduleFrame),
+              NSStringFromCGRect(moduleFrame), cornerRadius,
               (type == kCCBgTypeConnect) ? self.cachedConnectHasImage : self.cachedMediaHasImage,
               (type == kCCBgTypeConnect) ? self.cachedConnectHasVideo : self.cachedMediaHasVideo);
     }
