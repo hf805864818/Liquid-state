@@ -1566,23 +1566,20 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         ccbg_log(@"expanded module bg CREATED: type=%ld", (long)bgType);
     }
 
-    // 更新背景尺寸
-    bg.containerLayer.frame = platterFrame;
-    bg.containerLayer.cornerRadius = cornerRadius;
-
-    // 设置背景内容
+    // 更新背景内容（使用与小模块相同的 API）
     UIImage *image = [self getImageForType:bgType];
     NSURL *videoURL = [self getVideoURLForType:bgType];
     BOOL hasVideo = videoURL != nil;
     BOOL hasImage = image != nil;
 
+    // 获取预渲染模糊图
+    UIImage *blurredImage = nil;
+    if (blurAlpha > 0.01 && hasImage) {
+        blurredImage = [self getBlurredImageForType:bgType blurAlpha:blurAlpha];
+    }
+
     if (hasVideo) {
         // 视频背景：使用共享播放器
-        [bg setImage:nil];
-        [bg setupVideoLayer];
-        bg.videoLayer.hidden = NO;
-
-        // 使用共享播放器
         if (!self.sharedModuleVideoPlayer) {
             self.sharedModuleVideoPlayer = [AVQueuePlayer queuePlayerWithItems:@[]];
             self.sharedModuleVideoPlayer.muted = YES;
@@ -1590,41 +1587,20 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         }
         AVPlayerItem *item = [AVPlayerItem playerItemWithURL:videoURL];
         [self.sharedModuleVideoPlayer replaceCurrentItemWithPlayerItem:item];
-        bg.videoLayer.player = self.sharedModuleVideoPlayer;
-        bg.videoLayer.frame = bg.containerLayer.bounds;
 
         // 循环播放
         if (!self.sharedModuleLooper) {
             self.sharedModuleLooper = [AVPlayerLooper playerLooperWithPlayer:self.sharedModuleVideoPlayer templateItem:item];
         }
 
+        [bg updateWithPlayer:self.sharedModuleVideoPlayer blurredImage:blurredImage frame:platterFrame cornerRadius:cornerRadius];
+
         if (self.isControlCenterVisible) {
             [self.sharedModuleVideoPlayer play];
         }
-
-        // 模糊叠加
-        CGFloat finalBlurAlpha = blurAlpha;
-        if (finalBlurAlpha > 0.01) {
-            [bg setupBlurView];
-            bg.blurView.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
-            bg.blurView.alpha = finalBlurAlpha;
-        } else {
-            [bg cleanupBlur];
-        }
     } else if (hasImage) {
-        // 图片背景：使用预渲染的模糊图
-        [bg cleanupVideo];
-        [bg setImage:image];
-
-        if (blurAlpha > 0.01) {
-            UIImage *blurredImage = [self getBlurredImageForType:bgType];
-            if (blurredImage) {
-                [bg setBlurredImage:blurredImage];
-                bg.blurImageView.alpha = blurAlpha;
-            }
-        } else {
-            [bg setBlurredImage:nil];
-        }
+        // 图片背景
+        [bg updateWithImage:image blurredImage:blurredImage frame:platterFrame cornerRadius:cornerRadius];
     }
 }
 
@@ -1634,7 +1610,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     for (CCBgModuleBackground *bg in bgDict.allValues) {
         bg.containerLayer.hidden = YES;
     }
-    ccbg_log(@"hidden all small module backgrounds for type=%ld (%d modules)", (long)type, bgDict.count);
+    ccbg_log(@"hidden all small module backgrounds for type=%ld (%lu modules)", (long)type, (unsigned long)bgDict.count);
 }
 
 // 显示指定类型的所有小模块背景（收起时调用）
@@ -1643,7 +1619,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     for (CCBgModuleBackground *bg in bgDict.allValues) {
         bg.containerLayer.hidden = NO;
     }
-    ccbg_log(@"shown all small module backgrounds for type=%ld (%d modules)", (long)type, bgDict.count);
+    ccbg_log(@"shown all small module backgrounds for type=%ld (%lu modules)", (long)type, (unsigned long)bgDict.count);
 }
 
 // 清理展开模块背景（收起时调用）
