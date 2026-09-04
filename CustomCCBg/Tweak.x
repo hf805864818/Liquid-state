@@ -1504,7 +1504,19 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     if (!self.connectEnabled && !self.mediaEnabled) return;
     if (!self.isControlCenterVisible) return;
 
-    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+    UIWindow *keyWindow = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (scene.activationState == UISceneActivationStateForegroundActive) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *ws = (UIWindowScene *)scene;
+                for (UIWindow *window in ws.windows) {
+                    if (window.isKeyWindow) { keyWindow = window; break; }
+                }
+                if (!keyWindow && ws.windows.count > 0) keyWindow = ws.windows.firstObject;
+                if (keyWindow) break;
+            }
+        }
+    }
     if (!keyWindow) return;
 
     // 遍历窗口的子视图，查找包含 "Platter" 且尺寸较大的视图
