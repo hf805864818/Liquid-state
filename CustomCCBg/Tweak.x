@@ -767,6 +767,11 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 @property (nonatomic, strong) AVQueuePlayer *sharedModuleVideoPlayer;
 @property (nonatomic, strong) AVPlayerLooper *sharedModuleLooper;
 
+// 展开模块背景（每种类型一个，因为同一时间只展开一个模块）
+@property (nonatomic, strong) CCBgModuleBackground *expandedConnectBackground;
+@property (nonatomic, strong) CCBgModuleBackground *expandedMediaBackground;
+@property (nonatomic, assign) BOOL expandedModuleActive; // 是否有模块处于展开状态
+
 // 每种类型的媒体缓存
 @property (nonatomic, strong) UIImage *cachedFullscreenImage;
 @property (nonatomic, strong) UIImage *cachedFullscreenBlurredImage;
@@ -808,6 +813,10 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
 - (void)handleModuleView:(UIView *)moduleView;
 - (void)scanForModulesInView:(UIView *)rootView;
 - (void)handleExpandedModuleView:(UIView *)expandedView;
+- (void)updateExpandedPlatterView:(UIView *)platterView;
+- (void)hideAllSmallModuleBackgroundsForType:(CCBgType)type;
+- (void)showAllSmallModuleBackgroundsForType:(CCBgType)type;
+- (void)cleanupExpandedBackgroundForType:(CCBgType)type;
 - (CGFloat)calculateCornerRadiusForView:(UIView *)moduleView;
 - (void)setControlCenterVisible:(BOOL)visible;
 - (void)detachAllModules;
@@ -1493,15 +1502,170 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     if (!expandedView || (!self.connectEnabled && !self.mediaEnabled)) return;
 
     ccbg_log(@"expanded module view received, class=%@ frame=%@", NSStringFromClass([expandedView class]), NSStringFromCGRect(expandedView.frame));
-    NSMutableString *tree = [NSMutableString string];
-    ccbgDumpSubviewTree(expandedView, @"  ", tree);
-    ccbg_log(@"  expanded view hierarchy:\n%@", tree);
 
-    // 在展开视图中查找模块容器
-    [self scanView:expandedView depth:0 maxDepth:8];
+    // 在展开视图中查找 platter 视图并处理
+    [self scanForExpandedPlatterInView:expandedView depth:0 maxDepth:6];
+}
 
-    // 同时也尝试直接处理这个视图本身
-    [self handleModuleView:expandedView];
+// 扫描展开视图中的 platter 视图
+- (void)scanForExpandedPlatterInView:(UIView *)view depth:(NSInteger)depth maxDepth:(NSInteger)maxDepth {
+    if (!view || depth > maxDepth) return;
+
+    NSString *className = NSStringFromClass([view class]);
+    BOOL isPlatter = [className rangeOfString:@"Platter" options:NSCaseInsensitiveSearch].location != NSNotFound;
+
+    if (isPlatter && CGRectGetWidth(view.bounds) > 100 && CGRectGetHeight(view.bounds) > 100) {
+        [self updateExpandedPlatterView:view];
+        return; // 找到就不再继续深入
+    }
+
+    for (UIView *subview in view.subviews) {
+        [self scanForExpandedPlatterInView:subview depth:depth + 1 maxDepth:maxDepth];
+    }
+}
+
+// 更新展开 platter 视图的背景
+- (void)updateExpandedPlatterView:(UIView *)platterView {
+    UIView *superview = platterView.superview;
+    if (!superview) return;
+
+    // 判断展开模块类型
+    BOOL isConnect = self.connectEnabled && ccbgIsConnectModule(platterView);
+    BOOL isMedia = self.mediaEnabled && ccbgIsMediaModule(platterView);
+
+    if (!isConnect && !isMedia) return;
+
+    CCBgType bgType = isConnect ? kCCBgTypeConnect : kCCBgTypeMedia;
+    CCBgModuleBackground *bg = isConnect ? self.expandedConnectBackground : self.expandedMediaBackground;
+
+    CGFloat cornerRadius = [self calculateCornerRadiusForView:platterView];
+    CGFloat blurAlpha = isConnect ? self.connectBlurAlpha : self.mediaBlurAlpha;
+    CGRect platterFrame = platterView.frame;
+
+    // frame 太小跳过
+    if (CGRectGetWidth(platterFrame) < 50 || CGRectGetHeight(platterFrame) < 50) return;
+
+    ccbg_log(@"expanded platter bg: type=%ld class=%@ frame=%@ cornerRadius=%.1f",
+          (long)bgType, NSStringFromClass([platterView class]),
+          NSStringFromCGRect(platterFrame), cornerRadius);
+
+    if (!bg) {
+        bg = [[CCBgModuleBackground alloc] init];
+        [superview.layer insertSublayer:bg.containerLayer below:platterView.layer];
+
+        if (isConnect) {
+            self.expandedConnectBackground = bg;
+        } else {
+            self.expandedMediaBackground = bg;
+        }
+
+        // 展开时隐藏对应的小模块背景
+        [self hideAllSmallModuleBackgroundsForType:bgType];
+        self.expandedModuleActive = YES;
+
+        ccbg_log(@"expanded module bg CREATED: type=%ld", (long)bgType);
+    }
+
+    // 更新背景尺寸
+    bg.containerLayer.frame = platterFrame;
+    bg.containerLayer.cornerRadius = cornerRadius;
+
+    // 设置背景内容
+    UIImage *image = [self getImageForType:bgType];
+    NSURL *videoURL = [self getVideoURLForType:bgType];
+    BOOL hasVideo = videoURL != nil;
+    BOOL hasImage = image != nil;
+
+    if (hasVideo) {
+        // 视频背景：使用共享播放器
+        [bg setImage:nil];
+        [bg setupVideoLayer];
+        bg.videoLayer.hidden = NO;
+
+        // 使用共享播放器
+        if (!self.sharedModuleVideoPlayer) {
+            self.sharedModuleVideoPlayer = [AVQueuePlayer queuePlayerWithItems:@[]];
+            self.sharedModuleVideoPlayer.muted = YES;
+            self.sharedModuleVideoPlayer.actionAtItemEnd = AVPlayerActionAtItemEndAdvance;
+        }
+        AVPlayerItem *item = [AVPlayerItem playerItemWithURL:videoURL];
+        [self.sharedModuleVideoPlayer replaceCurrentItemWithPlayerItem:item];
+        bg.videoLayer.player = self.sharedModuleVideoPlayer;
+        bg.videoLayer.frame = bg.containerLayer.bounds;
+
+        // 循环播放
+        if (!self.sharedModuleLooper) {
+            self.sharedModuleLooper = [AVPlayerLooper playerLooperWithPlayer:self.sharedModuleVideoPlayer templateItem:item];
+        }
+
+        if (self.isControlCenterVisible) {
+            [self.sharedModuleVideoPlayer play];
+        }
+
+        // 模糊叠加
+        CGFloat finalBlurAlpha = blurAlpha;
+        if (finalBlurAlpha > 0.01) {
+            [bg setupBlurView];
+            bg.blurView.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+            bg.blurView.alpha = finalBlurAlpha;
+        } else {
+            [bg cleanupBlur];
+        }
+    } else if (hasImage) {
+        // 图片背景：使用预渲染的模糊图
+        [bg cleanupVideo];
+        [bg setImage:image];
+
+        if (blurAlpha > 0.01) {
+            UIImage *blurredImage = [self getBlurredImageForType:bgType];
+            if (blurredImage) {
+                [bg setBlurredImage:blurredImage];
+                bg.blurImageView.alpha = blurAlpha;
+            }
+        } else {
+            [bg setBlurredImage:nil];
+        }
+    }
+}
+
+// 隐藏指定类型的所有小模块背景（展开时调用）
+- (void)hideAllSmallModuleBackgroundsForType:(CCBgType)type {
+    NSDictionary *bgDict = (type == kCCBgTypeConnect) ? self.connectModuleBackgrounds : self.mediaModuleBackgrounds;
+    for (CCBgModuleBackground *bg in bgDict.allValues) {
+        bg.containerLayer.hidden = YES;
+    }
+    ccbg_log(@"hidden all small module backgrounds for type=%ld (%d modules)", (long)type, bgDict.count);
+}
+
+// 显示指定类型的所有小模块背景（收起时调用）
+- (void)showAllSmallModuleBackgroundsForType:(CCBgType)type {
+    NSDictionary *bgDict = (type == kCCBgTypeConnect) ? self.connectModuleBackgrounds : self.mediaModuleBackgrounds;
+    for (CCBgModuleBackground *bg in bgDict.allValues) {
+        bg.containerLayer.hidden = NO;
+    }
+    ccbg_log(@"shown all small module backgrounds for type=%ld (%d modules)", (long)type, bgDict.count);
+}
+
+// 清理展开模块背景（收起时调用）
+- (void)cleanupExpandedBackgroundForType:(CCBgType)type {
+    CCBgModuleBackground *bg = (type == kCCBgTypeConnect) ? self.expandedConnectBackground : self.expandedMediaBackground;
+    if (bg) {
+        [bg cleanup];
+        if (type == kCCBgTypeConnect) {
+            self.expandedConnectBackground = nil;
+        } else {
+            self.expandedMediaBackground = nil;
+        }
+        ccbg_log(@"cleaned up expanded module background for type=%ld", (long)type);
+    }
+
+    // 恢复小模块背景显示
+    [self showAllSmallModuleBackgroundsForType:type];
+
+    // 检查是否还有展开的模块
+    if (!self.expandedConnectBackground && !self.expandedMediaBackground) {
+        self.expandedModuleActive = NO;
+    }
 }
 
 // 智能计算模块圆角（处理胶囊形滑块等特殊形状）
@@ -1670,6 +1834,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 - (void)detachAllModules {
     [self detachConnectModules];
     [self detachMediaModules];
+    // 同时清理展开模块背景
+    [self cleanupExpandedBackgroundForType:kCCBgTypeConnect];
+    [self cleanupExpandedBackgroundForType:kCCBgTypeMedia];
     if (self.sharedModuleVideoPlayer) {
         [self.sharedModuleVideoPlayer pause];
         self.sharedModuleVideoPlayer = nil;
@@ -1931,6 +2098,59 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
     if ([(UIView *)self window]) {
         [mgr handleModuleView:(UIView *)self];
+    }
+}
+
+%end
+
+// 核心 hook: 展开模块 Platter 视图（实际展开模块使用的类）
+%hook PLExpandedPlatterView
+
+- (void)layoutSubviews {
+    %orig;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    UIView *view = (UIView *)self;
+    if (view.window && CGRectGetWidth(view.bounds) > 100) {
+        [mgr updateExpandedPlatterView:view];
+    }
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    UIView *view = (UIView *)self;
+    if (view.window) {
+        ccbg_log(@"PLExpandedPlatterView didMoveToWindow, frame=%@", NSStringFromCGRect(view.frame));
+    } else {
+        // 从窗口移除 = 模块收起，清理展开背景
+        ccbg_log(@"PLExpandedPlatterView removed from window → module dismissed");
+        [mgr cleanupExpandedBackgroundForType:kCCBgTypeConnect];
+        [mgr cleanupExpandedBackgroundForType:kCCBgTypeMedia];
+    }
+}
+
+%end
+
+// 额外 hook: NC 展开 platter 视图
+%hook NCExpandedPlatterView
+
+- (void)layoutSubviews {
+    %orig;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    UIView *view = (UIView *)self;
+    if (view.window && CGRectGetWidth(view.bounds) > 100) {
+        [mgr updateExpandedPlatterView:view];
+    }
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    UIView *view = (UIView *)self;
+    if (!view.window) {
+        ccbg_log(@"NCExpandedPlatterView removed from window → module dismissed");
+        [mgr cleanupExpandedBackgroundForType:kCCBgTypeConnect];
+        [mgr cleanupExpandedBackgroundForType:kCCBgTypeMedia];
     }
 }
 
