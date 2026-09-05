@@ -17,10 +17,6 @@
 #import <objc/runtime.h>
 #import "../Shared/LGSharedSupport.h"
 
-// CAFilter 是私有类，需要声明
-@interface CAFilter : NSObject
-@end
-
 // MARK: - 文件日志（可在 Filza 中查看）
 static NSString * const kCCBgLogFile = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media/debug.log";
 
@@ -164,55 +160,45 @@ static UIView *ccbgFindMaterialView(UIView *rootView) {
     return nil;
 }
 
-// 递归查找模块内部所有 MTMaterialView，将其系统模糊限制为 0
-// 这样自定义背景图片能透过液态玻璃层清晰显示
-static void ccbgClampMaterialBlurInModule(UIView *view) {
+// 递归查找模块内部所有 MTMaterialView 并直接隐藏
+// MTMaterialView 使用私有渲染管线，CAFilter 无法访问其模糊值
+// 直接隐藏是最可靠的方式：隐藏后系统模糊消失
+// 自定义背景在模块视图下方，隐藏 MTMaterialView 后仍然可见
+// 模块内容（图标/文字）在 MTMaterialView 上方，也不受影响
+static void ccbgHideMaterialBlurInModule(UIView *view) {
     if (!view) return;
     NSString *className = NSStringFromClass([view class]);
     if ([className containsString:@"MTMaterialView"]) {
-        // 遍历 layer.filters，将模糊半径设为 0
-        NSArray *filterArrays[] = {
-            view.layer.filters,
-            view.layer.backgroundFilters,
-        };
-        for (int fi = 0; fi < 2; fi++) {
-            NSArray *filters = filterArrays[fi];
-            if (!filters) continue;
-            for (id filter in filters) {
-                if (![filter isKindOfClass:[CAFilter class]]) continue;
-                for (NSString *key in @[@"inputRadius", @"radius", @"inputBlurRadius", @"blurRadius"]) {
-                    @try {
-                        id value = [filter valueForKey:key];
-                        if ([value respondsToSelector:@selector(doubleValue)] && [value doubleValue] > 0.01) {
-                            [filter setValue:@(0.0) forKey:key];
-                        }
-                    } @catch (__unused NSException *e) {}
-                }
-            }
-        }
-        // 设置标记，防止系统重新设置模糊
-        // 不隐藏整个 MTMaterialView，因为 LGLiveBackdropView 是它的子视图
+        // 直接隐藏，三重保障
+        view.hidden = YES;
+        view.layer.opacity = 0.0f;
+        view.layer.hidden = YES;
         return; // MTMaterialView 内部不需要继续递归
     }
     for (UIView *subview in view.subviews) {
-        ccbgClampMaterialBlurInModule(subview);
+        ccbgHideMaterialBlurInModule(subview);
     }
 }
 
-// 延迟重新限制模块内 MTMaterialView 的模糊
-// 系统会在布局后重新设置模糊值，需要延迟再次清除
+// 延迟重新隐藏模块内 MTMaterialView
+// 系统会在布局后重新显示 MTMaterialView，需要延迟再次隐藏
 static void ccbgScheduleMaterialBlurClamp(UIView *moduleView) {
     if (!moduleView) return;
     __weak UIView *weakModule = moduleView;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         UIView *m = weakModule;
-        if (m && m.window) ccbgClampMaterialBlurInModule(m);
+        if (m && m.window) ccbgHideMaterialBlurInModule(m);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         UIView *m = weakModule;
-        if (m && m.window) ccbgClampMaterialBlurInModule(m);
+        if (m && m.window) ccbgHideMaterialBlurInModule(m);
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *m = weakModule;
+        if (m && m.window) ccbgHideMaterialBlurInModule(m);
     });
 }
 
@@ -1353,19 +1339,15 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             }
         }
     } else {
-        // 控制中心不可见:立即移除背景，暂停视频
-        // 用 removeFromSuperview 物理移除，防止系统关闭动画通过嵌套 CATransaction 覆盖 hidden/opacity
-        [CATransaction begin];
-        [CATransaction setAnimationDuration:0];
-        [CATransaction setDisableActions:YES];
+        // 控制中心不可见:立即移除背景
+        // 不使用 CATransaction 包裹，避免被系统外层动画事务捕获导致延迟
 
         // --- 全屏背景 ---
         if (self.fullscreenEnabled) {
-            // 暂停视频
             if (self.videoView) [self.videoView pause];
-            // 物理移除 bgContainerView，系统动画无法再作用于已移除的视图
+            // 直接物理移除，不加任何事务包裹
             [self.bgContainerView removeFromSuperview];
-            // 立即恢复系统毛玻璃
+            // 恢复系统毛玻璃
             if (self.originalMaterialView) {
                 self.originalMaterialView.hidden = NO;
                 self.originalMaterialView.layer.opacity = 1.0f;
@@ -1374,7 +1356,6 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         }
 
         // --- 模块背景 ---
-        // 暂停每个模块的独立播放器
         for (CCBgModuleBackground *bg in self.connectModuleBackgrounds.allValues) {
             [bg pause];
             [bg setHidden:YES];
@@ -1392,9 +1373,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             [self.expandedMediaBackground setHidden:YES];
         }
 
-        [CATransaction commit];
-
-        // 兜底：在下一个 runloop 再次确保移除，防止系统动画上下文恢复视图
+        // 兜底：下一个 runloop 确保移除
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.fullscreenEnabled && self.bgContainerView && self.bgContainerView.superview) {
                 [self.bgContainerView removeFromSuperview];
@@ -1801,8 +1780,8 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         [bg updateWithImage:image blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
     }
     
-    // 限制展开模块内 MTMaterialView 的系统模糊为 0
-    ccbgClampMaterialBlurInModule(moduleView);
+    // 隐藏展开模块内 MTMaterialView，消除系统模糊
+    ccbgHideMaterialBlurInModule(moduleView);
     ccbgScheduleMaterialBlurClamp(moduleView);
 }
 
@@ -2020,9 +1999,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     [bg setHidden:moduleView.hidden];
     [bg setAlpha:moduleView.alpha];
     
-    // 限制模块内 MTMaterialView 的系统模糊为 0
-    // 这样自定义背景图片能透过液态玻璃层清晰显示
-    ccbgClampMaterialBlurInModule(moduleView);
+    // 隐藏模块内 MTMaterialView，消除系统模糊
+    // 这样自定义背景图片能清晰显示
+    ccbgHideMaterialBlurInModule(moduleView);
     ccbgScheduleMaterialBlurClamp(moduleView);
 }
 
