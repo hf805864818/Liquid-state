@@ -109,6 +109,17 @@ static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
 
     UIView *module = ccModuleAncestor(mat);
     if (module && ccIsModuleCandidate(module)) return ccModuleCornerRadius(module);
+
+    // 如果模块容器本身是大卡片（宽高都 >100），内部材质即使某一边 <100
+    // 也按大卡片处理，避免被内部矮/窄材质的 h/2 回退拉成椭圆。
+    // 例：CustomCCBg 隐藏主材质后，内部次级材质可能宽 >100 但高 <100，
+    // 此时若仍用 h*0.5 胶囊圆角，就会变成横向椭圆。
+    if (module) {
+        CGSize ms = module.bounds.size;
+        if (ms.width > 100.0 && ms.height > 100.0)
+            return ccLargeCardCornerRadius(mat, fmin(ms.width, ms.height));
+    }
+
     if (w > 100.0 && h < 100.0) return h * 0.5;
     if (h > 100.0 && w < 100.0) return w * 0.5;
 
