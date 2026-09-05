@@ -1513,24 +1513,56 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
             [self updatePanelsControlledByEnabledKey:item[@"key"] enabled:sender.isOn animated:YES];
         }
 
-        // 磨砂/液态互斥：开一个自动关另一个
+        // 磨砂/液态互斥：开一个自动关另一个，关一个自动开另一个
         // 注意：Clock.Enabled 在深浅模式编辑下会变成 Clock.Enabled.Light/.Dark
         // 所以用 hasPrefix 匹配，而不是 isEqualToString
+        NSString *itemKey = item[@"key"];
         if (sender.isOn) {
-            NSString *itemKey = item[@"key"];
+            // 开一个 → 关另一个
             if ([itemKey isEqualToString:@"Clock.FrostedMode"]) {
-                // 磨砂开 → 液态关（找到所有 Clock.Enabled.* 开关）
                 [self turnOffTogglesWithPrefix:@"Clock.Enabled"];
             } else if ([itemKey hasPrefix:@"Clock.Enabled"]) {
-                // 液态开 → 磨砂关
                 LGWritePreference(@"Clock.FrostedMode", @NO);
                 [self syncToggleForKey:@"Clock.FrostedMode" on:NO];
                 [self updatePanelsControlledByEnabledKey:@"Clock.FrostedMode" enabled:NO animated:YES];
+            }
+        } else {
+            // 关一个 → 开另一个
+            if ([itemKey isEqualToString:@"Clock.FrostedMode"]) {
+                // 磨砂关 → 液态开
+                [self turnOnTogglesWithPrefix:@"Clock.Enabled"];
+            } else if ([itemKey hasPrefix:@"Clock.Enabled"]) {
+                // 液态关 → 磨砂开
+                LGWritePreference(@"Clock.FrostedMode", @YES);
+                [self syncToggleForKey:@"Clock.FrostedMode" on:YES];
+                [self updatePanelsControlledByEnabledKey:@"Clock.FrostedMode" enabled:YES animated:YES];
             }
         }
     }] forControlEvents:UIControlEventValueChanged];
     objc_setAssociatedObject(toggle, kLGControlledByEnabledKey, item[@"controls_following_panel"], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return toggle;
+}
+
+// 查找并打开所有以指定前缀开头的开关（处理 Clock.Enabled.Light/.Dark 等变体）
+- (void)turnOnTogglesWithPrefix:(NSString *)prefix {
+    NSArray<NSDictionary *> *items = _items;
+    BOOL foundAny = NO;
+    for (NSDictionary *item in items) {
+        NSString *key = item[@"key"];
+        if (![item[@"type"] isEqualToString:@"switch"]) continue;
+        if (![key hasPrefix:prefix]) continue;
+
+        LGWritePreference(key, @YES);
+        [self syncToggleForKey:key on:YES];
+        [self updatePanelsControlledByEnabledKey:key enabled:YES animated:YES];
+        foundAny = YES;
+    }
+    // 也处理精确匹配的情况（Clock.Enabled 不带后缀）
+    if (!foundAny) {
+        LGWritePreference(prefix, @YES);
+        [self syncToggleForKey:prefix on:YES];
+        [self updatePanelsControlledByEnabledKey:prefix enabled:YES animated:YES];
+    }
 }
 
 // 查找并关闭所有以指定前缀开头的开关（处理 Clock.Enabled.Light/.Dark 等变体）
