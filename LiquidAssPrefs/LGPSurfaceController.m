@@ -548,19 +548,26 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
                          message:nil
                   preferredStyle:UIAlertControllerStyleActionSheet];
 
+    // 4 档字重依次递增（对应合成加粗量 0 / 0.5 / 1.0 / 1.67），保证每档肉眼可辨，
+    // 且“粗体”900 明显粗于默认值 750（旧预设粗体仅 700，反而比默认细，故选了像没效果）
+    CGFloat currentWeight = [LGReadPreference(@"Clock.VariableFont.Weight", @(750.0)) doubleValue];
     NSArray *presets = @[
         @{ @"title": LGLocalized(@"prefs.font_weight.regular"), @"value": @(400.0) },
-        @{ @"title": LGLocalized(@"prefs.font_weight.medium"), @"value": @(500.0) },
-        @{ @"title": LGLocalized(@"prefs.font_weight.semibold"), @"value": @(600.0) },
-        @{ @"title": LGLocalized(@"prefs.font_weight.bold"), @"value": @(700.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.medium"), @"value": @(550.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.semibold"), @"value": @(700.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.bold"), @"value": @(900.0) },
     ];
 
     for (NSDictionary *preset in presets) {
+        CGFloat weight = [preset[@"value"] doubleValue];
+        BOOL isCurrent = fabs(weight - currentWeight) < 25.0;
+        NSString *actionTitle = isCurrent
+            ? [NSString stringWithFormat:@"✓ %@", preset[@"title"]]
+            : preset[@"title"];
         [sheet addAction:[UIAlertAction
-            actionWithTitle:preset[@"title"]
+            actionWithTitle:actionTitle
                       style:UIAlertActionStyleDefault
                     handler:^(__unused UIAlertAction *_Nonnull action) {
-            CGFloat weight = [preset[@"value"] doubleValue];
             LGWritePreference(@"Clock.VariableFont.Weight", @(weight));
             [self reloadVisibleSettings];
             [self updateRespringBarAnimated:YES];

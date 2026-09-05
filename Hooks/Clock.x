@@ -2151,31 +2151,27 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
         CGFloat topInset = MAX(0.0, self.displayTopInset);
         baseline = floor(bounds.size.height - topInset - ascent);
     }
-    if (legacyHost) {
-        CGContextSetTextPosition(ctx, x, baseline);
-        CTLineDraw(line, ctx);
-    } else {
-        CGFloat embolden = LGClockModernSyntheticEmbolden();
-        if (embolden > 0.0) {
-            static const CGPoint offsets[] = {
-                {0.0, 0.0},
-                {-1.0, 0.0},
-                {1.0, 0.0},
-                {0.0, 1.0},
-                {0.0, -1.0},
-                {-0.7, -0.7},
-                {0.7, -0.7},
-                {-0.7, 0.7},
-                {0.7, 0.7},
-            };
-            for (NSUInteger i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
-                CGContextSetTextPosition(ctx, x + offsets[i].x * embolden, baseline + offsets[i].y * embolden);
-                CTLineDraw(line, ctx);
-            }
-        } else {
-            CGContextSetTextPosition(ctx, x, baseline);
+    // 字重合成加粗：现代与旧版时钟路径统一生效，保证“字重/字重预设”在所有模式下都有可见差异
+    CGFloat embolden = LGClockModernSyntheticEmbolden();
+    if (embolden > 0.0) {
+        static const CGPoint offsets[] = {
+            {0.0, 0.0},
+            {-1.0, 0.0},
+            {1.0, 0.0},
+            {0.0, 1.0},
+            {0.0, -1.0},
+            {-0.7, -0.7},
+            {0.7, -0.7},
+            {-0.7, 0.7},
+            {0.7, 0.7},
+        };
+        for (NSUInteger i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+            CGContextSetTextPosition(ctx, x + offsets[i].x * embolden, baseline + offsets[i].y * embolden);
             CTLineDraw(line, ctx);
         }
+    } else {
+        CGContextSetTextPosition(ctx, x, baseline);
+        CTLineDraw(line, ctx);
     }
 
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
