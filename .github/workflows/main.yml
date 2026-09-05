@@ -150,7 +150,8 @@ jobs:
             - **roothide**: 适用于 Palera1n roothide 越狱
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
-          allowUpdates: false
+          allowUpdates: true
+          replacesArtifacts: true
 
       - name: bump version and push
         run: |
