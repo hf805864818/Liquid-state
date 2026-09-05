@@ -565,21 +565,6 @@ static NSArray<NSDictionary *> *LGJoinItemGroups(NSArray<NSArray<NSDictionary *>
     return items;
 }
 
-// 给一组设置项添加可见性条件（visible_key/visible_values），实现互斥显示
-static NSArray<NSDictionary *> *LGItemsWithVisibility(NSArray<NSDictionary *> *items,
-                                                       NSString *visibleKey,
-                                                       NSArray *visibleValues,
-                                                       NSString *visibleDefault) {
-    NSMutableArray *result = [NSMutableArray array];
-    for (NSDictionary *item in items) {
-        NSMutableDictionary *mItem = [item mutableCopy];
-        mItem[@"visible_key"] = visibleKey;
-        mItem[@"visible_values"] = visibleValues;
-        if (visibleDefault) mItem[@"visible_default"] = visibleDefault;
-        [result addObject:mItem];
-    }
-    return result;
-}
 
 static NSDictionary *LGGlassBlurSetting(NSString *key, CGFloat fallback, CGFloat min, CGFloat max, NSInteger decimals) {
     return LGSliderSetting(key, LGLocalized(@"prefs.control.blur"), LGLocalized(@"prefs.subtitle.blur"), fallback, min, kLGUniversalBlurMax, decimals);
