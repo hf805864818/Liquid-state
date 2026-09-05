@@ -295,29 +295,25 @@ static void ctxHideBackdropsInSubtree(UIView *v) {
     for (UIView *c in v.subviews) ctxHideBackdropsInSubtree(c);
 }
 
-// 浅色模式下，除了 UIVisualEffectView 内部的材质层，菜单外层的 platter / 背景容器
-// 也可能带有白色/磨砂背景，它们位于玻璃背后，会被玻璃的 backdrop 一并采样进去，
-// 导致无论怎么调玻璃参数都呈奶白磨砂感。这里把容器自身和常见的背景/遮罩层清空。
+// 浅色模式下，除了 UIVisualEffectView 内部的材质层，菜单外层容器 / platter / 背景层
+// 也可能带有白色背景色，它们位于玻璃背后，会被玻璃的 backdrop 一并采样进去，
+// 导致无论怎么调玻璃参数都呈奶白磨砂感。
+//
+// 这里采用保守策略：只清背景色，不隐藏任何视图（避免误杀 UIAlertController /
+// 操作表等复用同类容器的系统弹窗，导致"应用"等确认框点不出来或看不见）。
+// 材质层（Backdrop / EffectSubview / EffectFilter）仍由 setBackdropHiddenInEffectView
+// 精确处理（只作用于 UIVisualEffectView 内部子视图，安全）。
 static void ctxStripContainerBackgrounds(UIView *root) {
     if (!root) return;
-    // 容器自身：清背景色，避免白色底色透进玻璃
+    // 跳过我们自己的玻璃和系统材质视图（后者由专门函数处理）
+    if ([root isKindOfClass:[LGLiveBackdropView class]]) return;
+    if ([root isKindOfClass:[UIVisualEffectView class]]) return;
+
     if (root.backgroundColor && CGColorGetAlpha(root.backgroundColor.CGColor) > 0.001) {
         ctxRememberBackgroundColor(root);
         root.backgroundColor = UIColor.clearColor;
     }
-    NSString *cls = NSStringFromClass(root.class);
-    // platter / background / dimming / backdrop 这类背景层直接压掉
-    if ([cls containsString:@"Platter"] || [cls containsString:@"Background"] ||
-        [cls containsString:@"Dimming"] || [cls containsString:@"BackdropView"]) {
-        if (![root isKindOfClass:[LGLiveBackdropView class]]) {
-            ctxRememberVisualState(root);
-            root.alpha = 0.0;
-            return; // 子视图一起隐藏，不必再遍历
-        }
-    }
     for (UIView *c in [root.subviews copy]) {
-        if ([c isKindOfClass:[LGLiveBackdropView class]]) continue;
-        if ([c isKindOfClass:[UIVisualEffectView class]]) continue; // 由 setBackdropHidden 处理
         ctxStripContainerBackgrounds(c);
     }
 }
