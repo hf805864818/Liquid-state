@@ -160,6 +160,37 @@ static UIView *ccbgFindMaterialView(UIView *rootView) {
     return nil;
 }
 
+// 【修复连接模块模糊】追踪已管理的模块视图
+// 原因：ccbgIsInsideManagedModule 依赖类名匹配 "ContentModuleContainer"，
+//       但连接模块的 MTMaterialView 可能不在该类名的视图内，
+//       或 ccbgIsConnectModule 在容器视图上检测失败（不同 iOS 版本关键词不同）。
+//       通过追踪 handleModuleView: 已处理的视图，提供可靠的 fallback。
+static NSHashTable<UIView *> *sCCBgManagedModules(void) {
+    static NSHashTable<UIView *> *table = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        table = [NSHashTable weakObjectsHashTable];
+    });
+    return table;
+}
+
+static void ccbgRegisterManagedModule(UIView *moduleView) {
+    if (!moduleView) return;
+    [sCCBgManagedModules() addObject:moduleView];
+}
+
+static BOOL ccbgIsDescendantOfManagedModule(UIView *view) {
+    if (!view) return NO;
+    UIView *v = view;
+    NSInteger depth = 0;
+    while (v && depth < 25) {
+        if ([sCCBgManagedModules() containsObject:v]) return YES;
+        v = v.superview;
+        depth++;
+    }
+    return NO;
+}
+
 // 【修复问题2&3】隐藏 MTMaterialView 同级的 LGLiveBackdropView（液态玻璃）
 // 原因：LiquidAss 通过 LGInjectGlassIntoMaterialGroupType 将 LGLiveBackdropView
 //       作为 MTMaterialView 的【兄弟视图】插入到父视图中（aboveSubview:mat），
@@ -207,21 +238,16 @@ static void ccbgHideMaterialBlurInModule(UIView *view) {
 static void ccbgScheduleMaterialBlurClamp(UIView *moduleView) {
     if (!moduleView) return;
     __weak UIView *weakModule = moduleView;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UIView *m = weakModule;
-        if (m && m.window) ccbgHideMaterialBlurInModule(m);
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UIView *m = weakModule;
-        if (m && m.window) ccbgHideMaterialBlurInModule(m);
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UIView *m = weakModule;
-        if (m && m.window) ccbgHideMaterialBlurInModule(m);
-    });
+    // 【修复连接模块模糊】增加更多重隐藏时间点
+    // 覆盖系统在模块动画/布局后重新显示 MTMaterialView 的更长时间窗口
+    CGFloat delays[] = {0.05, 0.15, 0.3, 0.5, 1.0, 2.0};
+    for (int i = 0; i < 6; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            UIView *m = weakModule;
+            if (m && m.window) ccbgHideMaterialBlurInModule(m);
+        });
+    }
 }
 
 // 模块类型识别
@@ -1607,6 +1633,12 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     BOOL isConnect = self.connectEnabled && ccbgIsConnectModule(moduleView);
     BOOL isMedia = self.mediaEnabled && ccbgIsMediaModule(moduleView);
 
+    // 【修复连接模块模糊】追踪已管理的模块视图
+    // 使 ccbgIsInsideManagedModule 的 MTMaterialView 持久隐藏 hook 能正确识别
+    if (isConnect || isMedia) {
+        ccbgRegisterManagedModule(moduleView);
+    }
+
     // 调试日志（按 moduleID 去重，因为所有模块类名相同）
     NSMutableSet *loggedModules = sCCBgLoggedModules();
     NSString *clsName = NSStringFromClass([moduleView class]);
@@ -1742,6 +1774,9 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 - (void)handleExpandedModuleViewController:(UIViewController *)vc type:(CCBgType)type {
     UIView *moduleView = vc.view;
     if (!moduleView || !moduleView.window) return;
+
+    // 【修复连接模块模糊】追踪已管理的展开模块视图
+    ccbgRegisterManagedModule(moduleView);
 
     // 找到展开模块内部实际的卡片视图（不是 VC 的全屏 view）
     // 展开后 VC 的 view 是全屏的，实际卡片是内部的 platter/content view
@@ -2105,6 +2140,12 @@ static BOOL ccbgIsInsideManagedModule(UIView *materialView) {
     // 快速窗口过滤：不在控制中心窗口内的 MTMaterialView 直接跳过
     // 避免对 Banner/Folder/Widget 等非控制中心的 MTMaterialView 做无谓的层级遍历
     if (mgr.hostView && materialView.window != mgr.hostView.window) return NO;
+
+    // 【修复连接模块模糊】优先检查是否在已追踪的管理模块内
+    // handleModuleView: 和 handleExpandedModuleViewController: 已成功检测的模块视图
+    // 会注册到 sCCBgManagedModules，这里通过祖先链查找匹配
+    // 这比类名匹配更可靠，因为不依赖 iOS 版本特定的类名/关键词
+    if (ccbgIsDescendantOfManagedModule(materialView)) return YES;
 
     // 向上遍历视图层级，查找模块容器
     UIView *v = materialView;
