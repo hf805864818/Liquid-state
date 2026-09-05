@@ -47,12 +47,49 @@ static BOOL ccIsInControlCenterModule(UIView *mat) {
     return NO;
 }
 
+// 播放控制（媒体）模块判定：沿祖先链匹配类名关键词，命中媒体词且不含音量/亮度/滑块等排除词。
+// 与 CustomCCBg 的媒体模块识别保持同一套关键词思路，避免把音量/亮度滑块误判成媒体模块。
+static BOOL ccIsMediaModuleMaterial(UIView *mat) {
+    static NSArray<NSString *> *mediaKW;
+    static NSArray<NSString *> *excludeKW;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        mediaKW = @[ @"NowPlaying", @"MediaControl", @"MediaModule",
+                     @"PlaybackControl", @"MRUNowPlaying", @"MPNowPlaying" ];
+        excludeKW = @[ @"Volume", @"Brightness", @"Slider", @"Mirroring",
+                       @"AirPlay", @"Flashlight", @"Calculator", @"Camera" ];
+    });
+    for (UIView *a = mat; a; a = a.superview) {
+        NSString *cls = NSStringFromClass([a class]);
+        if (!cls.length) continue;
+        BOOL excluded = NO;
+        for (NSString *ex in excludeKW) {
+            if ([cls rangeOfString:ex].location != NSNotFound) { excluded = YES; break; }
+        }
+        if (excluded) continue;
+        for (NSString *kw in mediaKW) {
+            if ([cls rangeOfString:kw].location != NSNotFound) return YES;
+        }
+    }
+    return NO;
+}
+
+// 仅判断“该材质是否需要装玻璃”，与圆角数值解耦：
+// 圆角返回 -1（跟随系统圆角）时仍应安装玻璃，故安装判断不能再用“圆角 >= 0”。
+// 这里等价于 ccGlassRadiusForMaterial 的前三道关卡——通过这三道关卡的材质当前都会装玻璃，
+// 因此拆分后装玻璃的视图集合保持不变。
+static BOOL ccMaterialWantsGlass(UIView *mat) {
+    if (!isExactClass(mat, @"MTMaterialView")) return NO;
+    if (!ccIsInControlCenterModule(mat)) return NO;
+    CGFloat w = CGRectGetWidth(mat.bounds), h = CGRectGetHeight(mat.bounds);
+    if (w < 30.0 || h < 30.0) return NO;
+    return YES;
+}
+
 static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
-    if (!isExactClass(mat, @"MTMaterialView")) return -1.0;
-    if (!ccIsInControlCenterModule(mat)) return -1.0;
+    if (!ccMaterialWantsGlass(mat)) return -1.0;
 
     CGFloat w = CGRectGetWidth(mat.bounds), h = CGRectGetHeight(mat.bounds);
-    if (w < 30.0 || h < 30.0) return -1.0;
 
     if (ccIsInsideSlider(mat)) {
         if (isExactClass(mat.superview, @"MRUContinuousSliderView")) return ccPillRadius(mat);
@@ -69,6 +106,14 @@ static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
     if (module && ccIsModuleCandidate(module)) return ccModuleCornerRadius(module);
     if (w > 100.0 && h < 100.0) return h * 0.5;
     if (h > 100.0 && w < 100.0) return w * 0.5;
+
+    // 播放控制（媒体）模块被 ccflex 等在网格内拉成大卡片（宽、高都 >100，如 4×3/3×2/4×4）时，
+    // 不再强制胶囊圆角（否则短边÷2 会把宽矩形拉成椭圆），返回 -1 让玻璃跟随系统/ccflex
+    // 设在材质上的圆角。折叠态媒体横条（高<100）已在上面横条分支处理，不受影响。
+    if (w > 100.0 && h > 100.0 && ccIsMediaModuleMaterial(mat)) {
+        return -1.0;
+    }
+
     return ccPillRadius(mat);
 }
 
@@ -1191,7 +1236,7 @@ static void ccSliderStopDisplayLink(UIView *slider) {
     });
 
     LGRegisterMaterialHost(@"ControlCenter", 110, ^BOOL(UIView *material) {
-        return ccGlassRadiusForMaterial(material) >= 0.0;
+        return ccMaterialWantsGlass(material);
     }, UIEdgeInsetsZero, ^CGFloat(UIView *material) {
         return ccGlassRadiusForMaterial(material);
     }, nil, nil);
