@@ -142,13 +142,31 @@ static void hideContextMenuSeparators(UIView *root) {
     }
 }
 
-static void setBackdropHiddenInEffectView(UIView *effectView) {
-    for (UIView *sub in effectView.subviews) {
-        if ([sub isKindOfClass:[LGLiveBackdropView class]]) continue;
-        if ([NSStringFromClass(sub.class) containsString:@"Backdrop"]) { ctxRememberVisualState(sub); sub.alpha = 0.0; return; }
-        for (UIView *inner in sub.subviews) {
-            if ([inner isKindOfClass:[LGLiveBackdropView class]]) continue;
-            if ([NSStringFromClass(inner.class) containsString:@"Backdrop"]) { ctxRememberVisualState(inner); inner.alpha = 0.0; return; }
+// 系统材质的视觉层：模糊采样层(Backdrop) + 着色/滤镜层(EffectSubview/EffectFilter)。
+// 浅色模式下着色层近白，若保留，我们注入的玻璃会把这层白一并 backdrop 采样进去，
+// 呈现奶白磨砂而非通透玻璃；这里把它们全部压掉，只保留 contentView(菜单内容) 和我们自己的玻璃，
+// 这样玻璃采样到的就是材质身后真实的桌面（与深色模式一致）。
+static BOOL ctxIsSystemMaterialLayer(UIView *view) {
+    if ([view isKindOfClass:[LGLiveBackdropView class]]) return NO;
+    NSString *cls = NSStringFromClass(view.class);
+    return [cls containsString:@"Backdrop"]
+        || [cls containsString:@"EffectSubview"]
+        || [cls containsString:@"EffectFilter"];
+}
+
+static void setBackdropHiddenInEffectView(UIVisualEffectView *effectView) {
+    UIView *contentView = effectView.contentView;
+    // 材质视觉层是 fx 的直接子视图，着色层在部分版本上位于 contentView 内，两处都处理。
+    NSMutableArray<UIView *> *roots = [NSMutableArray arrayWithObject:effectView];
+    if (contentView) [roots addObject:contentView];
+    for (UIView *root in roots) {
+        for (UIView *sub in root.subviews) {
+            if (sub == contentView) continue;
+            if ([sub isKindOfClass:[LGLiveBackdropView class]]) continue;
+            if (ctxIsSystemMaterialLayer(sub)) {
+                ctxRememberVisualState(sub);
+                sub.alpha = 0.0;
+            }
         }
     }
 }
