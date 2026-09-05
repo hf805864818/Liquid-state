@@ -175,7 +175,8 @@ static void ccbgClampMaterialBlurInModule(UIView *view) {
             view.layer.filters,
             view.layer.backgroundFilters,
         };
-        for (NSArray *filters in filterArrays) {
+        for (int fi = 0; fi < 2; fi++) {
+            NSArray *filters = filterArrays[fi];
             if (!filters) continue;
             for (id filter in filters) {
                 if (![filter isKindOfClass:[CAFilter class]]) continue;
