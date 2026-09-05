@@ -712,14 +712,14 @@ NSArray<NSDictionary *> *LGItemsWithAppearanceMode(NSArray<NSDictionary *> *item
         // Skip frosted mode - it's a feature switch, not appearance-specific
         if (key.length && ![key hasSuffix:suffix] &&
             ![key hasSuffix:@"LightTintColor"] && ![key hasSuffix:@"DarkTintColor"] &&
-            ![key hasSuffix:@".FrostedMode"]) {
+            ![key hasSuffix:@".FrostedMode"] && ![key containsString:@".Frosted."]) {
             mutableItem[@"key"] = [key stringByAppendingString:suffix];
         }
         // Also handle visible_key if present
         NSString *visibleKey = mutableItem[@"visible_key"];
         if (visibleKey.length && ![visibleKey hasSuffix:suffix] &&
             ![visibleKey hasSuffix:@"LightTintColor"] && ![visibleKey hasSuffix:@"DarkTintColor"] &&
-            ![visibleKey hasSuffix:@".FrostedMode"]) {
+            ![visibleKey hasSuffix:@".FrostedMode"] && ![visibleKey containsString:@".Frosted."]) {
             mutableItem[@"visible_key"] = [visibleKey stringByAppendingString:suffix];
         }
         [result addObject:[mutableItem copy]];
@@ -1039,6 +1039,53 @@ static NSArray<NSDictionary *> *LGClockDateFormatItems(void) {
     ];
 }
 
+static NSArray<NSDictionary *> *LGFrostedClockParamBlock(NSString *suffix,
+                                                         NSString *sectionTitleKey,
+                                                         NSString *tintTitleKey,
+                                                         NSString *tintSubtitleKey) {
+    NSString *(^key)(NSString *) = ^NSString *(NSString *field) {
+        return [NSString stringWithFormat:@"Clock.Frosted.%@%@", field, suffix];
+    };
+    return @[
+        LGSectionSetting(LGLocalized(sectionTitleKey), nil),
+        LGSliderSetting(key(@"GlassThickness"),
+                        LGLocalized(@"prefs.control.glass_thickness"),
+                        LGLocalized(@"prefs.subtitle.glass_thickness"),
+                        28.0f, 0.0, 220.0, 1),
+        LGSliderSetting(key(@"RefractionScale"),
+                        LGLocalized(@"prefs.control.refraction"),
+                        LGLocalized(@"prefs.subtitle.refraction"),
+                        2.5f, 0.0, 5.0, 2),
+        LGSliderSetting(key(@"RefractiveIndex"),
+                        LGLocalized(@"prefs.control.refractive_index"),
+                        LGLocalized(@"prefs.subtitle.refractive_index"),
+                        1.65f, 1.0, 3.0, 2),
+        LGSliderSetting(key(@"DispersionStrength"),
+                        LGLocalized(@"prefs.control.dispersion_strength"),
+                        LGLocalized(@"prefs.subtitle.dispersion_strength"),
+                        0.0f, 0.0, kLGUniversalDispersionMax, 1),
+        @{
+            @"type": @"color", @"key": key(@"TintColor"),
+            @"title": LGLocalized(tintTitleKey),
+            @"subtitle": LGLocalized(tintSubtitleKey),
+            @"default": @"#FFFFFF66"
+        },
+    ];
+}
+
+static NSArray<NSDictionary *> *LGFrostedClockItems(void) {
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    [items addObjectsFromArray:LGFrostedClockParamBlock(@".Light",
+                                                        @"prefs.section.frosted_light.title",
+                                                        @"prefs.control.light_tint_color",
+                                                        @"prefs.subtitle.light_tint_color")];
+    [items addObjectsFromArray:LGFrostedClockParamBlock(@".Dark",
+                                                        @"prefs.section.frosted_dark.title",
+                                                        @"prefs.control.dark_tint_color",
+                                                        @"prefs.subtitle.dark_tint_color")];
+    return items;
+}
+
 NSArray<NSDictionary *> *LGClockItems(void) {
     return LGJoinItemGroups(@[
         @[
@@ -1047,9 +1094,11 @@ NSArray<NSDictionary *> *LGClockItems(void) {
                             LGLocalized(@"prefs.subtitle.clock_frosted_mode"),
                             NO),
         ],
-        LGSettingsControlledByKey(
-            LGRendererItemsForHostPrefix(@"Clock"),
-            @"Clock.FrostedMode", @NO),
+        LGFrostedClockItems(),
+        @[
+            LGSectionSetting(LGLocalized(@"prefs.section.liquid_clock.title"), nil),
+        ],
+        LGRendererItemsForHostPrefix(@"Clock"),
         LGClockVariableFontItems(),
         LGClockDateFormatItems(),
         LGModuleResetItem(@"resetClockToDefault",

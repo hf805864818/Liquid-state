@@ -12,6 +12,9 @@
 "prefs.control.quality" = "质量";
 "prefs.control.variable_font" = "iOS 26 时钟";
 "prefs.control.clock_frosted_mode" = "磨砂模式";
+"prefs.section.frosted_light.title" = "磨砂 · 浅色";
+"prefs.section.frosted_dark.title" = "磨砂 · 深色";
+"prefs.section.liquid_clock.title" = "液态玻璃";
 "prefs.control.variable_font_name" = "字体";
 "prefs.control.variable_font_weight_preset" = "字重预设";
 "prefs.control.variable_font_size" = "字体大小";

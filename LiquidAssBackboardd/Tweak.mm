@@ -147,6 +147,19 @@ static MSHookFunctionFn g_hookFunction = nullptr;
 static bool             g_useHookPath = false;
 static bool             g_legacyRenderABI = false;
 static bool             g_clockFrostedMode = false;  // Clock 磨砂模式开关
+
+// 磨砂时钟独立参数（浅色/深色两套 + 着色），对应设置页 Clock.Frosted.* 键
+typedef struct {
+    float glassThickness;
+    float refractionScale;
+    float refractiveIndex;
+    float dispersionStrength;
+    float tintR, tintG, tintB, tintStrength;
+} LGFrostedClockVariant;
+
+static LGFrostedClockVariant g_frostedClockLight = { 28.0f, 2.5f, 1.65f, 0.0f, 1.0f, 1.0f, 1.0f, 0.4f };
+static LGFrostedClockVariant g_frostedClockDark  = { 28.0f, 2.5f, 1.65f, 0.0f, 1.0f, 1.0f, 1.0f, 0.4f };
+
 static thread_local bool g_inLegacyRender = false;
 static thread_local simd_float2 g_legacyRenderOffset = { 0.0f, 0.0f };
 static std::unordered_set<uint32_t> g_customAtoms;
@@ -893,11 +906,39 @@ static bool lgDecodeTintColor(NSString *hex, simd_float4 *out) {
     return true;
 }
 
+static void lgApplyFrostedVariant(NSDictionary *prefs, NSString *suffix, LGFrostedClockVariant *variant) {
+    if (!prefs || !variant) return;
+    static NSString * const kPrefix = @"Clock.Frosted";
+    id v;
+#define LG_FROSTED_NUM(field, name) \
+    do { \
+        v = prefs[[kPrefix stringByAppendingFormat:@".%@%@", name, suffix]]; \
+        if ([v isKindOfClass:[NSNumber class]]) variant->field = [(NSNumber *)v floatValue]; \
+    } while (0)
+    LG_FROSTED_NUM(glassThickness, @"GlassThickness");
+    LG_FROSTED_NUM(refractionScale, @"RefractionScale");
+    LG_FROSTED_NUM(refractiveIndex, @"RefractiveIndex");
+    LG_FROSTED_NUM(dispersionStrength, @"DispersionStrength");
+#undef LG_FROSTED_NUM
+    NSString *hexKey = [kPrefix stringByAppendingFormat:@".TintColor%@", suffix];
+    simd_float4 tint;
+    if (lgDecodeTintColor(prefs[hexKey], &tint)) {
+        variant->tintR = tint.x;
+        variant->tintG = tint.y;
+        variant->tintB = tint.z;
+        variant->tintStrength = tint.w;
+    }
+}
+
 static void lgReloadHostPrefs(void) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:lgPrefsPath()];
     NSNumber *fresnelStrength = prefs[@"Renderer.FresnelGlareStrength"];
     g_fresnelGlareStrength = [fresnelStrength isKindOfClass:NSNumber.class]
         ? fminf(1.0f, fmaxf(0.0f, fresnelStrength.floatValue)) : 0.5f;
+    // Clock 磨砂模式：提前读取开关，下方据此应用 v0.1.73b 的磨砂参数预设
+    NSNumber *frostedNum = prefs[@"Clock.FrostedMode"];
+    g_clockFrostedMode = [frostedNum isKindOfClass:[NSNumber class]] ? frostedNum.boolValue : false;
+    if (g_clockFrostedMode) lglog("Clock frosted mode: ON (v0.1.73b preset)");
     int overrides = 0;
     for (int i = 0; i < kHostCount; i++) {
         uint32_t keepAtom = g_hostParamsInit ? g_hostParams[i].atom : 0;
@@ -1192,6 +1233,17 @@ static void lgReloadHostPrefs(void) {
         }
     }
 
+    // Clock 磨砂模式：读取独立磨砂参数（浅色/深色两套），渲染时按当前深浅模式选用
+    if (g_clockFrostedMode && prefs) {
+        lgApplyFrostedVariant(prefs, @".Light", &g_frostedClockLight);
+        lgApplyFrostedVariant(prefs, @".Dark",  &g_frostedClockDark);
+        lglog("Clock frosted params: light={thick=%.1f refr=%.2f idx=%.2f disp=%.3f tint=%.3f} dark={thick=%.1f refr=%.2f idx=%.2f disp=%.3f tint=%.3f}",
+              g_frostedClockLight.glassThickness, g_frostedClockLight.refractionScale,
+              g_frostedClockLight.refractiveIndex, g_frostedClockLight.dispersionStrength, g_frostedClockLight.tintStrength,
+              g_frostedClockDark.glassThickness, g_frostedClockDark.refractionScale,
+              g_frostedClockDark.refractiveIndex, g_frostedClockDark.dispersionStrength, g_frostedClockDark.tintStrength);
+    }
+
     g_hostParamsInit = true;
 
     // 读取充电/热状态 (SpringBoard 写入，用于渲染降级)
@@ -1211,16 +1263,6 @@ static void lgReloadHostPrefs(void) {
     lglog("lgReloadHostPrefs: %s (%d hosts, %d overrides) banner.bezel=%.3f refr=%.2f",
           prefs ? "loaded prefs" : "defaults", kHostCount, overrides,
           g_hostParams[4].bezelRatio, g_hostParams[4].refractionScale);
-
-    // Clock 磨砂模式：从偏好设置读取
-    // 开启时跳过自定义液态渲染，走系统原生高斯模糊
-    if (prefs) {
-        NSNumber *frostedMode = prefs[@"Clock.FrostedMode"];
-        if ([frostedMode isKindOfClass:[NSNumber class]]) {
-            g_clockFrostedMode = frostedMode.boolValue;
-            lglog("Clock frosted mode: %s", g_clockFrostedMode ? "ON" : "OFF");
-        }
-    }
 }
 
 static void lgPrefsReloadCallback(CFNotificationCenterRef c, void *o, CFStringRef n,
@@ -1302,18 +1344,9 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     const LGHostParams *hp = lgHostParamsForAtom(ftype, &darkTint);
     float shortestF = fminf((float)w, (float)h);
 
-    // Clock 磨砂模式：开启时跳过自定义液态渲染，直接走系统原生高斯模糊
-    if (!strcmp(hp->prefPrefix, "Clock") && g_clockFrostedMode) {
-        R13TRACE("R13[%llu] Clock frosted mode ON, bypassing liquid render", callN);
-        if (g_inLegacyRender && g_origGaussR14) {
-            g_origGaussR14(self, filter, layer, ctx, opacity, surface,
-                           0.0f, g_legacyRenderOffset, cm, shape, out);
-        } else if (g_origGaussR13) {
-            g_origGaussR13(self, filter, layer, ctx, opacity, surface,
-                           0.0f, flag, cm, shape, out);
-        }
-        return;
-    }
+    // Clock 磨砂模式：不再跳过自定义液态渲染。
+    // 磨砂观感通过 lgReloadHostPrefs 里的 v0.1.73b 参数预设实现（弱折射/无色散/白色着色），
+    // 仍然走我们自己的渲染器，避免退回系统高斯模糊导致"还原成原版"的问题。
 
     // [DIAG] QuickActions 全链路诊断
     // 在 atom 层面直接统计，不依赖 host 路由结果
@@ -1365,6 +1398,16 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     lu.fresnelGlareStrength = g_fresnelGlareStrength;
     lu.tintColor          = darkTint ? simd_make_float4(hp->darkTintR, hp->darkTintG, hp->darkTintB, hp->darkTintStrength)
                                   : simd_make_float4(hp->tintR, hp->tintG, hp->tintB, hp->tintStrength);
+
+    // Clock 磨砂模式：用独立磨砂参数覆盖（浅色/深色各一套几何 + 着色）
+    if (g_clockFrostedMode && !strcmp(hp->prefPrefix, "Clock")) {
+        const LGFrostedClockVariant *fv = darkTint ? &g_frostedClockDark : &g_frostedClockLight;
+        lu.glassThickness     = fv->glassThickness;
+        lu.refractionScale    = fv->refractionScale;
+        lu.refractiveIndex    = fv->refractiveIndex;
+        lu.dispersionStrength = fv->dispersionStrength;
+        lu.tintColor          = simd_make_float4(fv->tintR, fv->tintG, fv->tintB, fv->tintStrength);
+    }
 
     lu.backdropZoom    = !strcmp(hp->prefPrefix, "PrefsSwitch") ? 0.75f : 1.0f;
 

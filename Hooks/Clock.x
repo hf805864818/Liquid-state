@@ -2615,15 +2615,15 @@ static void LGApplyClockReplacement(UIView *host) {
         [overlayContainer addSubview:overlay];
     }
 
-    // 磨砂模式切换：液态玻璃 ↔ 磨砂玻璃（高斯模糊 + 颜色层）
-    // 两种模式都用我们自己的渲染，不依赖系统原生效果
+    // 磨砂模式：始终使用我们自己的液态渲染 filter，不切换到系统高斯模糊。
+    // 磨砂观感由 backboardd 在渲染时用 v0.1.73b 参数预设（弱折射/无色散/#FFFFFF66 着色）实现。
     LGClockBackdropView *glassView = overlay.glassView;
     NSString *liquidFilterType = LGFilterTypeForHostPrefix(@"Clock");
-    NSString *targetFilterType = frostedMode ? @"gaussianBlur" : liquidFilterType;
+    NSString *targetFilterType = liquidFilterType;
     NSString *currentFilterType = glassView.lgFilterType;
     
     if (![currentFilterType isEqualToString:targetFilterType]) {
-        LGClockLog(@"clock mode switch: %@ → %@ (frosted=%d)",
+        LGClockLog(@"clock filter ensure: %@ → %@ (frosted=%d)",
                    currentFilterType ?: @"(nil)",
                    targetFilterType,
                    frostedMode);
@@ -2637,16 +2637,8 @@ static void LGApplyClockReplacement(UIView *host) {
         [glassView applyFilters];
     }
     
-    // 磨砂模式显示颜色覆盖层，液态模式隐藏
-    overlay.frostedTintView.hidden = !frostedMode;
-    if (frostedMode) {
-        // 根据深浅模式调整磨砂颜色（浅色=白底，深色=黑底）
-        BOOL isDark = overlay.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
-        CGFloat alpha = 0.4;  // 磨砂不透明度
-        overlay.frostedTintView.backgroundColor = isDark
-            ? [UIColor colorWithWhite:0.0 alpha:alpha]
-            : [UIColor colorWithWhite:1.0 alpha:alpha];
-    }
+    // 磨砂着色由 backboardd 参数预设处理，无需额外的颜色覆盖层
+    overlay.frostedTintView.hidden = YES;
 
     overlay.clockHost = host;
     LGAttachClockHostIfNeeded(host);

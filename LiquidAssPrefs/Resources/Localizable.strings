@@ -15,6 +15,9 @@
 "prefs.control.quality" = "Quality";
 "prefs.control.variable_font" = "iOS 26 Clock";
 "prefs.control.clock_frosted_mode" = "Frosted Mode";
+"prefs.section.frosted_light.title" = "Frosted · Light";
+"prefs.section.frosted_dark.title" = "Frosted · Dark";
+"prefs.section.liquid_clock.title" = "Liquid Glass";
 "prefs.control.variable_font_name" = "Font";
 "prefs.control.variable_font_weight_preset" = "Weight Presets";
 "prefs.control.variable_font_size" = "Font Size";
