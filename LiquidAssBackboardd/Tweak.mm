@@ -827,12 +827,13 @@ typedef struct {
     float       dispersionStrength;
     float       tintR, tintG, tintB, tintStrength;
     float       darkTintR, darkTintG, darkTintB, darkTintStrength;
-    float       centerTintFactor;
+    float       centerTintFactorLight;
+    float       centerTintFactorDark;
 } LGHostParams;
 
 static const LGHostParams kHostDefaults[] = {
-#define LG_BACKBOARDD_HOST(identifier, type, prefix, radius, bezel, thickness, refraction, index, blurValue, specular, dispersion, lightTint, darkTint) \
-    { type, prefix, 0, radius, bezel, thickness, refraction, index, blurValue, dispersion },
+#define LG_BACKBOARDD_HOST(identifier, type, prefix, radius, bezel, thickness, refraction, index, blurValue, specular, dispersion, ctLight, ctDark, lightTint, darkTint) \
+    { type, prefix, 0, radius, bezel, thickness, refraction, index, blurValue, dispersion, 0,0,0,0, 0,0,0,0, ctLight, ctDark },
     LG_HOST_REGISTRY(LG_BACKBOARDD_HOST)
 #undef LG_BACKBOARDD_HOST
 };
@@ -957,11 +958,6 @@ static void lgReloadHostPrefs(void) {
         g_hostParams[i].atom = keepAtom;
         g_darkAtoms[i] = keepDarkAtom;
         if (i > 0) { lgApplyHistoricalTintDefault(i, &g_hostParams[i], false); lgApplyHistoricalTintDefault(i, &g_hostParams[i], true); }
-        g_hostParams[i].centerTintFactor = 1.0f;
-        // 上下文菜单：中心区着色减弱，保持图标清晰可读
-        if (!strcmp(g_hostParams[i].prefPrefix, "ContextMenu")) {
-            g_hostParams[i].centerTintFactor = 0.20f;
-        }
         if (!prefs) continue;
         NSString *p = [NSString stringWithUTF8String:kHostDefaults[i].prefPrefix];
         NSNumber *v;
@@ -975,6 +971,7 @@ static void lgReloadHostPrefs(void) {
         LG_OVR(refractiveIndex,    @"RefractiveIndex");
         LG_OVR(dispersionStrength, @"DispersionStrength");
         LG_OVR(blur,               @"Blur");
+        LG_OVR(centerTintFactorLight, @"CenterTintFactor");
         LG_OVR(tintR,           @"TintR");
         LG_OVR(tintG,           @"TintG");
         LG_OVR(tintB,           @"TintB");
@@ -995,6 +992,12 @@ static void lgReloadHostPrefs(void) {
         if (lgDecodeTintColor(prefs[[p stringByAppendingString:@".DarkTintColor"]], &tint)) {
             g_hostParams[i].darkTintR = tint.x; g_hostParams[i].darkTintG = tint.y;
             g_hostParams[i].darkTintB = tint.z; g_hostParams[i].darkTintStrength = tint.w;
+            overrides++;
+        }
+        // 深浅模式分开时读取深色中心通透度
+        NSNumber *darkCTF = prefs[[p stringByAppendingString:@".CenterTintFactor.Dark"]];
+        if ([darkCTF isKindOfClass:[NSNumber class]]) {
+            g_hostParams[i].centerTintFactorDark = darkCTF.floatValue;
             overrides++;
         }
     }
@@ -1420,7 +1423,7 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     lu.refractiveIndex    = hp->refractiveIndex;
     lu.dispersionStrength = hp->dispersionStrength;
     lu.fresnelGlareStrength = g_fresnelGlareStrength;
-    lu.centerTintFactor     = hp->centerTintFactor;
+    lu.centerTintFactor     = darkTint ? hp->centerTintFactorDark : hp->centerTintFactorLight;
     lu.tintColor          = darkTint ? simd_make_float4(hp->darkTintR, hp->darkTintG, hp->darkTintB, hp->darkTintStrength)
                                   : simd_make_float4(hp->tintR, hp->tintG, hp->tintB, hp->tintStrength);
 
