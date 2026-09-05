@@ -97,6 +97,7 @@ typedef struct {
     float       useGlyphMask;
     float       dispersionStrength;
     float       fresnelGlareStrength;
+    float       centerTintFactor;
     simd_float4 tintColor;
 } LGUniforms;
 
@@ -245,6 +246,7 @@ struct Uniforms {
     float  useGlyphMask;
     float  dispersionStrength;
     float  fresnelGlareStrength;
+    float  centerTintFactor;
     float4 tintColor;
 };
 
@@ -531,7 +533,8 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
 
     if (R < shortest * 0.45 && distFromSide >= bezel) {
         float4 flat = src.sample(s, captureUV);
-        flat.rgb = mix(flat.rgb, u.tintColor.rgb, u.tintColor.a);
+        float centerTintAlpha = u.tintColor.a * u.centerTintFactor;
+        flat.rgb = mix(flat.rgb, u.tintColor.rgb, centerTintAlpha);
         return flat;
     }
 
@@ -592,7 +595,10 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
         bg.a = greenSample.a;
     }
 
-    float3 outRGB = mix(bg.rgb, u.tintColor.rgb, u.tintColor.a);
+    // 边框着色渐变：边缘全着色，向内逐渐过渡到中心低着色
+    // 让中心区更通透、能看清背景，同时边缘保留液态玻璃的着色与高光
+    float bezelTintAlpha = mix(u.tintColor.a * u.centerTintFactor, u.tintColor.a, 1.0 - bezelRatio);
+    float3 outRGB = mix(bg.rgb, u.tintColor.rgb, bezelTintAlpha);
     float fresnel = fresnelAtRatio(bezelRatio, u.refractiveIndex) * edgeOpacity;
     float luminance = dot(outRGB, float3(0.2126, 0.7152, 0.0722));
     float glare = clamp(fresnel * 0.70 * mix(0.40, 1.0, luminance), 0.0, 0.18)
@@ -788,6 +794,7 @@ static void ensureUniforms(__unsafe_unretained id<MTLDevice> device, uint64_t w,
     u->useGlyphMask            = 0.f;
     u->dispersionStrength      = 5.0f;
     u->fresnelGlareStrength    = 0.5f;
+    u->centerTintFactor        = 1.0f;
 
     lglog("uniforms buffer allocated (geometry refreshed per-frame)");
 }
@@ -820,6 +827,7 @@ typedef struct {
     float       dispersionStrength;
     float       tintR, tintG, tintB, tintStrength;
     float       darkTintR, darkTintG, darkTintB, darkTintStrength;
+    float       centerTintFactor;
 } LGHostParams;
 
 static const LGHostParams kHostDefaults[] = {
@@ -949,6 +957,11 @@ static void lgReloadHostPrefs(void) {
         g_hostParams[i].atom = keepAtom;
         g_darkAtoms[i] = keepDarkAtom;
         if (i > 0) { lgApplyHistoricalTintDefault(i, &g_hostParams[i], false); lgApplyHistoricalTintDefault(i, &g_hostParams[i], true); }
+        g_hostParams[i].centerTintFactor = 1.0f;
+        // 上下文菜单：中心区着色减弱，保持图标清晰可读
+        if (!strcmp(g_hostParams[i].prefPrefix, "ContextMenu")) {
+            g_hostParams[i].centerTintFactor = 0.20f;
+        }
         if (!prefs) continue;
         NSString *p = [NSString stringWithUTF8String:kHostDefaults[i].prefPrefix];
         NSNumber *v;
@@ -1407,6 +1420,7 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     lu.refractiveIndex    = hp->refractiveIndex;
     lu.dispersionStrength = hp->dispersionStrength;
     lu.fresnelGlareStrength = g_fresnelGlareStrength;
+    lu.centerTintFactor     = hp->centerTintFactor;
     lu.tintColor          = darkTint ? simd_make_float4(hp->darkTintR, hp->darkTintG, hp->darkTintB, hp->darkTintStrength)
                                   : simd_make_float4(hp->tintR, hp->tintG, hp->tintB, hp->tintStrength);
 
