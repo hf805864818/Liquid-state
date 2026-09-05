@@ -160,11 +160,31 @@ static UIView *ccbgFindMaterialView(UIView *rootView) {
     return nil;
 }
 
+// 【修复问题2&3】隐藏 MTMaterialView 同级的 LGLiveBackdropView（液态玻璃）
+// 原因：LiquidAss 通过 LGInjectGlassIntoMaterialGroupType 将 LGLiveBackdropView
+//       作为 MTMaterialView 的【兄弟视图】插入到父视图中（aboveSubview:mat），
+//       而非子视图。因此隐藏 MTMaterialView 不会影响 LGLiveBackdropView，
+//       液态玻璃继续渲染模糊+折射，导致自定义背景看起来模糊不清。
+static void ccbgHideGlassSiblingsOf(UIView *materialView) {
+    UIView *parent = materialView.superview;
+    if (!parent) return;
+    for (UIView *sibling in parent.subviews) {
+        NSString *siblingClass = NSStringFromClass([sibling class]);
+        if ([siblingClass containsString:@"LGLiveBackdropView"] ||
+            [siblingClass containsString:@"LGLiveBackdrop"]) {
+            sibling.hidden = YES;
+            sibling.layer.opacity = 0.0f;
+            sibling.layer.hidden = YES;
+        }
+    }
+}
+
 // 递归查找模块内部所有 MTMaterialView 并直接隐藏
 // MTMaterialView 使用私有渲染管线，CAFilter 无法访问其模糊值
 // 直接隐藏是最可靠的方式：隐藏后系统模糊消失
 // 自定义背景在模块视图下方，隐藏 MTMaterialView 后仍然可见
 // 模块内容（图标/文字）在 MTMaterialView 上方，也不受影响
+// 【修复问题2&3】同时隐藏同级的 LGLiveBackdropView 液态玻璃
 static void ccbgHideMaterialBlurInModule(UIView *view) {
     if (!view) return;
     NSString *className = NSStringFromClass([view class]);
@@ -173,6 +193,8 @@ static void ccbgHideMaterialBlurInModule(UIView *view) {
         view.hidden = YES;
         view.layer.opacity = 0.0f;
         view.layer.hidden = YES;
+        // 【修复问题2&3】同时隐藏同级的液态玻璃兄弟视图
+        ccbgHideGlassSiblingsOf(view);
         return; // MTMaterialView 内部不需要继续递归
     }
     for (UIView *subview in view.subviews) {
@@ -1395,6 +1417,16 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     // 全屏背景未开启则不挂载
     if (!self.fullscreenEnabled) {
         [self detachFullscreenViews];
+        return;
+    }
+
+    // 【修复问题1】控制中心正在关闭时，直接返回不重建背景
+    // 原因：关闭动画期间 layoutSubviews 仍会触发 attachToHostView:，
+    //       如果此时 bgContainerView.superview != view（视图层级正在拆除），
+    //       会走 detachFullscreenViews → 恢复系统毛玻璃(hidden=NO) → 重建背景，
+    //       导致系统模糊闪现 + 自定义背景延迟关闭
+    if (!self.isControlCenterVisible && self.bgContainerView) {
+        return;
     }
 
     if (self.hostView == view && self.bgContainerView.superview == view) {
@@ -1526,10 +1558,13 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 - (void)detachFullscreenViews {
     // 恢复系统毛玻璃背景
-    if (self.originalMaterialView) {
+    // 【修复问题1】控制中心不可见时（关闭动画期间）不恢复系统毛玻璃
+    // 否则 detachFullscreenViews 会将 originalMaterialView.hidden = NO，
+    // 导致系统模糊在关闭动画期间闪现
+    if (self.originalMaterialView && self.isControlCenterVisible) {
         self.originalMaterialView.hidden = NO;
-        self.originalMaterialView = nil;
     }
+    self.originalMaterialView = nil;
     [self detachMediaViews];
     if (self.bgContainerView) {
         [self.bgContainerView removeFromSuperview];
@@ -2248,6 +2283,8 @@ static BOOL ccbgIsInsideManagedModule(UIView *materialView) {
         selfView.hidden = YES;
         selfView.layer.opacity = 0.0f;
         selfView.layer.hidden = YES;
+        // 【修复问题2&3】同时隐藏同级的液态玻璃
+        ccbgHideGlassSiblingsOf(selfView);
     }
 }
 
@@ -2260,6 +2297,8 @@ static BOOL ccbgIsInsideManagedModule(UIView *materialView) {
         %orig(YES);
         selfView.layer.opacity = 0.0f;
         selfView.layer.hidden = YES;
+        // 【修复问题2&3】同时隐藏同级的液态玻璃
+        ccbgHideGlassSiblingsOf(selfView);
         return;
     }
     %orig;
@@ -2272,6 +2311,8 @@ static BOOL ccbgIsInsideManagedModule(UIView *materialView) {
         %orig(0.0f);
         selfView.layer.opacity = 0.0f;
         selfView.layer.hidden = YES;
+        // 【修复问题2&3】同时隐藏同级的液态玻璃
+        ccbgHideGlassSiblingsOf(selfView);
         return;
     }
     %orig;
@@ -2285,6 +2326,8 @@ static BOOL ccbgIsInsideManagedModule(UIView *materialView) {
         selfView.hidden = YES;
         selfView.layer.opacity = 0.0f;
         selfView.layer.hidden = YES;
+        // 【修复问题2&3】同时隐藏同级的液态玻璃
+        ccbgHideGlassSiblingsOf(selfView);
     }
 }
 
