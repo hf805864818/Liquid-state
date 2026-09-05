@@ -768,7 +768,7 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
     }
 }
 
-// 图片模式: 使用预渲染模糊图
+// 图片模式: 始终显示原始清晰图片
 - (void)updateWithImage:(UIImage *)image blurredImage:(UIImage *)blurredImage frame:(CGRect)frame cornerRadius:(CGFloat)radius {
     _containerLayer.frame = frame;
     _containerLayer.cornerRadius = radius;
@@ -779,8 +779,12 @@ static UIImage *ccbgBlurredImage(UIImage *image, CGFloat blurRadius) {
         _playerLayer = nil;
     }
 
-    // 显示预渲染模糊图(或原图)
-    UIImage *displayImage = blurredImage ?: image;
+    // 【修复图片模糊】始终显示原始图片，不使用 blurredImage
+    // 原因：blurredImage 是 blurAlpha * 20px 的预渲染模糊图，
+    //   - 视频模式：playerLayer 覆盖在 blurredImage 上方 → 视频清晰
+    //   - 图片模式：只有 imageLayer，显示 blurredImage → 图片模糊
+    // 修复：图片模式始终用原始图片；blurredImage 仅用于视频加载前的占位
+    UIImage *displayImage = image;
     if (!_imageLayer) {
         _imageLayer = [CALayer layer];
         _imageLayer.contentsGravity = kCAGravityResizeAspectFill;
