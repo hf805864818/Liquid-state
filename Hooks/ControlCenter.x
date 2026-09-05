@@ -47,28 +47,26 @@ static BOOL ccIsInControlCenterModule(UIView *mat) {
     return NO;
 }
 
-// 大型模块卡片（宽、高都 >100，如 ccflex 拉出的 4×3/3×2/4×4）的圆角。
-// 这类宽矩形绝不能用胶囊圆角（短边÷2 会变成椭圆）。系统/ccflex 会把正确的“卡片圆角”
-// 设在模块容器或其外层 platter 上，而不是材质自身，因此沿父链向上查找一个合理的圆角值：
-// 取值范围限定在 (1, 短边*0.45)，借此排除胶囊值(≈短边*0.5)；取其中最大者（最外层 platter）。
-// 读不到时回退到卡片级比例圆角（短边*0.20，上限 48pt，连续圆角观感）。
+// 大型模块卡片（宽、高都 >100，如 ccflex 拉出的 4×2/4×3/3×2/4×4）的圆角。
+// 这类宽矩形绝不能用胶囊/圆形圆角（短边÷2 会变成椭圆/圆）。
+// 只从 CCUIContentModuleContainerView（模块容器）及其外层 platter 上读取圆角，
+// 不看材质与模块容器之间的内层视图——避免被媒体模块内部的圆形控件（AirPlay 按钮等）
+// 污染，导致大卡片被误设成圆形。
+// 取值范围限定在 (1, 短边*0.30)，严格排除胶囊/圆形值(≈短边*0.5)。
+// 读不到时回退到卡片级比例圆角（短边*0.22，上限 44pt，连续圆角观感）。
 static CGFloat ccLargeCardCornerRadius(UIView *mat, CGFloat shortEdge) {
-    CGFloat pillLimit = shortEdge * 0.45;
+    CGFloat pillLimit = shortEdge * 0.30;
     CGFloat best = 0.0;
     UIView *module = ccModuleAncestor(mat);
-    // 从材质自身向上到模块容器（含）为止
-    for (UIView *v = mat, *stop = module ?: mat.superview; v; v = v.superview) {
+    if (!module) return fmin(shortEdge * 0.22, 44.0);
+    // 只看模块容器本身及其外层（最多再向上 3 层 platter）
+    UIView *v = module;
+    for (NSInteger i = 0; v && i < 4; i++, v = v.superview) {
         CGFloat r = v.layer.cornerRadius;
         if (r > 1.0 && r < pillLimit && r > best) best = r;
-        if (v == stop) break;
-    }
-    // 模块容器外层 platter 也看一层
-    if (best <= 0.0 && module.superview) {
-        CGFloat r = module.superview.layer.cornerRadius;
-        if (r > 1.0 && r < pillLimit) best = r;
     }
     if (best > 0.0) return best;
-    return fmin(shortEdge * 0.20, 48.0);
+    return fmin(shortEdge * 0.22, 44.0);
 }
 
 // 仅判断“该材质是否需要装玻璃”，与圆角数值解耦：

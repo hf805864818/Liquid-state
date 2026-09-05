@@ -193,16 +193,25 @@ static void injectGlassIntoContextEffectView(UIVisualEffectView *fx, int attempt
         return;
     }
 
+    // 采用与文件夹/控制中心一致的"兄弟视图 + 材质隐藏"模式：
+    // 玻璃作为 fx 的兄弟视图插在 fx 后面(below)，这样玻璃的 backdrop 采样到的是
+    // fx 身后的桌面（而不是 fx 自身的渲染输出），浅色模式下也能有真正通透的玻璃感。
+    // contentView 里的菜单内容仍在 fx 内部，显示在玻璃上方，不影响可读性。
+    // 同时继续隐藏 fx 内部的材质层（Backdrop/EffectSubview/EffectFilter），
+    // 让 fx 背景透明，露出下面的玻璃。
+    UIView *parent = fx.superview;
+    if (!parent) return;
+
     LGLiveBackdropView *glass = objc_getAssociatedObject(fx, kCtxGlassKey);
     if (!glass) {
-        glass = LGCreateRegisteredGlass(container.bounds, nil, @"ContextMenu");
+        glass = LGCreateRegisteredGlass(fx.bounds, nil, @"ContextMenu");
         if (!glass) return;
         glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [container insertSubview:glass atIndex:0];
+        [parent insertSubview:glass belowSubview:fx];
         objc_setAssociatedObject(fx, kCtxGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (glass.superview != container) [container insertSubview:glass atIndex:0];
-    glass.frame                = container.bounds;
+    if (glass.superview != parent) [parent insertSubview:glass belowSubview:fx];
+    glass.frame                = fx.frame;
     glass.layer.cornerRadius   = kCtxCornerRadius;
     glass.layer.cornerCurve    = kCACornerCurveContinuous;
     glass.layer.masksToBounds  = YES;
