@@ -1339,20 +1339,22 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             }
         }
     } else {
-        // 控制中心不可见:立即移除背景
-        // 不使用 CATransaction 包裹，避免被系统外层动画事务捕获导致延迟
+        // 控制中心不可见:立即隐藏背景
+        // 关键：不调用 removeFromSuperview，而是直接隐藏
+        // 因为 removeFromSuperview 会导致 bgContainerView.superview 变为 nil，
+        // 之后 layoutSubviews 触发 attachToHostView: 时检测到 superview 为 nil，
+        // 会重新创建并添加 bgContainerView，导致背景延迟关闭
 
         // --- 全屏背景 ---
         if (self.fullscreenEnabled) {
             if (self.videoView) [self.videoView pause];
-            // 直接物理移除，不加任何事务包裹
-            [self.bgContainerView removeFromSuperview];
-            // 恢复系统毛玻璃
-            if (self.originalMaterialView) {
-                self.originalMaterialView.hidden = NO;
-                self.originalMaterialView.layer.opacity = 1.0f;
-                self.originalMaterialView.layer.hidden = NO;
-            }
+            // 直接隐藏，不移除，保持 bgContainerView 在视图层级中
+            // 这样 attachToHostView 的 superview 检查会通过，不会重新创建
+            self.bgContainerView.layer.opacity = 0.0f;
+            self.bgContainerView.layer.hidden = YES;
+            self.bgContainerView.hidden = YES;
+            // 不恢复系统毛玻璃，保持隐藏状态
+            // 否则关闭动画期间会闪现系统模糊
         }
 
         // --- 模块背景 ---
@@ -1373,15 +1375,12 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             [self.expandedMediaBackground setHidden:YES];
         }
 
-        // 兜底：下一个 runloop 确保移除
+        // 兜底：下一个 runloop 确保隐藏（不移除）
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.fullscreenEnabled && self.bgContainerView && self.bgContainerView.superview) {
-                [self.bgContainerView removeFromSuperview];
-            }
-            if (self.originalMaterialView) {
-                self.originalMaterialView.hidden = NO;
-                self.originalMaterialView.layer.opacity = 1.0f;
-                self.originalMaterialView.layer.hidden = NO;
+            if (self.fullscreenEnabled && self.bgContainerView) {
+                self.bgContainerView.layer.opacity = 0.0f;
+                self.bgContainerView.layer.hidden = YES;
+                self.bgContainerView.hidden = YES;
             }
         });
 
@@ -2056,6 +2055,41 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
 @end
 
+// MARK: - MTMaterialView 管理辅助
+
+// 检查 MTMaterialView 是否位于连接模块或播放控制模块内部
+// 用于 hook MTMaterialView 的 layoutSubviews / setHidden: 持续隐藏系统模糊
+// 替代之前延迟重新隐藏的方案（延迟方案无法对抗系统持续布局）
+static BOOL ccbgIsInsideManagedModule(UIView *materialView) {
+    if (!materialView) return NO;
+
+    CustomCCBgManager *mgr = [CustomCCBgManager sharedInstance];
+    if (!(mgr.connectEnabled || mgr.mediaEnabled)) return NO;
+    if (!mgr.isControlCenterVisible) return NO;
+
+    // 快速窗口过滤：不在控制中心窗口内的 MTMaterialView 直接跳过
+    // 避免对 Banner/Folder/Widget 等非控制中心的 MTMaterialView 做无谓的层级遍历
+    if (mgr.hostView && materialView.window != mgr.hostView.window) return NO;
+
+    // 向上遍历视图层级，查找模块容器
+    UIView *v = materialView;
+    NSInteger depth = 0;
+    while (v && depth < 20) {
+        NSString *cls = NSStringFromClass([v class]);
+        // 找到模块容器视图
+        if ([cls containsString:@"ContentModuleContainer"] ||
+            [cls containsString:@"ModuleContainerView"]) {
+            // 用完整的模块检测逻辑判断是否为连接/媒体模块
+            if (mgr.connectEnabled && ccbgIsConnectModule(v)) return YES;
+            if (mgr.mediaEnabled && ccbgIsMediaModule(v)) return YES;
+            return NO; // 是模块容器但不是连接/媒体模块
+        }
+        v = v.superview;
+        depth++;
+    }
+    return NO;
+}
+
 // MARK: - Hooks
 
 // 主 hook: 控制中心 overlay controller
@@ -2192,6 +2226,61 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             ccbg_log(@"willMoveToWindow:nil → CC closing, hide bg immediately");
             [mgr setControlCenterVisible:NO];
         }
+    }
+}
+
+%end
+
+// MARK: - MTMaterialView 持续隐藏 hook
+// 核心方案：hook MTMaterialView 的 layoutSubviews / setHidden: / setAlpha:
+// 每次系统布局后或尝试显示时，如果该 MTMaterialView 在连接或媒体模块内，立即隐藏
+// 这能彻底解决系统持续重新显示 MTMaterialView 导致的模糊问题
+// 比 ccbgScheduleMaterialBlurClamp 的延迟方案更可靠
+%hook MTMaterialView
+
+// 系统布局完成后立即检查并隐藏
+- (void)layoutSubviews {
+    %orig;
+    if (ccbgIsInsideManagedModule(self)) {
+        // 使用 self.hidden = YES 会调用我们 hook 的 setHidden:
+        // setHidden: 内部会检查并处理，不会递归
+        self.hidden = YES;
+        self.layer.opacity = 0.0f;
+        self.layer.hidden = YES;
+    }
+}
+
+// 拦截系统尝试显示 MTMaterialView 的操作
+- (void)setHidden:(BOOL)hidden {
+    // 如果系统试图显示（hidden=NO），且该 MTMaterialView 在管理模块内，强制保持隐藏
+    if (!hidden && ccbgIsInsideManagedModule(self)) {
+        // 调用原始实现设置 hidden=YES，绕过我们的 hook 避免递归
+        %orig(YES);
+        self.layer.opacity = 0.0f;
+        self.layer.hidden = YES;
+        return;
+    }
+    %orig;
+}
+
+// 拦截系统通过 alpha 属性显示 MTMaterialView 的操作
+- (void)setAlpha:(CGFloat)alpha {
+    if (alpha > 0.01 && ccbgIsInsideManagedModule(self)) {
+        %orig(0.0f);
+        self.layer.opacity = 0.0f;
+        self.layer.hidden = YES;
+        return;
+    }
+    %orig;
+}
+
+// MTMaterialView 被添加到窗口时检查
+- (void)didMoveToWindow {
+    %orig;
+    if (ccbgIsInsideManagedModule(self)) {
+        self.hidden = YES;
+        self.layer.opacity = 0.0f;
+        self.layer.hidden = YES;
     }
 }
 
