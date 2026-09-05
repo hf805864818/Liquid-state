@@ -10,11 +10,16 @@
 //   H. 延迟释放: 控制中心关闭 30 秒后释放视频资源,降低后台功耗
 
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
 #import <CoreImage/CoreImage.h>
 #import <objc/runtime.h>
 #import "../Shared/LGSharedSupport.h"
+
+// CAFilter 是私有类，需要声明
+@interface CAFilter : NSObject
+@end
 
 // MARK: - 文件日志（可在 Filza 中查看）
 static NSString * const kCCBgLogFile = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media/debug.log";
@@ -157,6 +162,57 @@ static UIView *ccbgFindMaterialView(UIView *rootView) {
         if (found) return found;
     }
     return nil;
+}
+
+// 递归查找模块内部所有 MTMaterialView，将其系统模糊限制为 0
+// 这样自定义背景图片能透过液态玻璃层清晰显示
+static void ccbgClampMaterialBlurInModule(UIView *view) {
+    if (!view) return;
+    NSString *className = NSStringFromClass([view class]);
+    if ([className containsString:@"MTMaterialView"]) {
+        // 遍历 layer.filters，将模糊半径设为 0
+        NSArray *filterArrays[] = {
+            view.layer.filters,
+            view.layer.backgroundFilters,
+        };
+        for (NSArray *filters in filterArrays) {
+            if (!filters) continue;
+            for (id filter in filters) {
+                if (![filter isKindOfClass:[CAFilter class]]) continue;
+                for (NSString *key in @[@"inputRadius", @"radius", @"inputBlurRadius", @"blurRadius"]) {
+                    @try {
+                        id value = [filter valueForKey:key];
+                        if ([value respondsToSelector:@selector(doubleValue)] && [value doubleValue] > 0.01) {
+                            [filter setValue:@(0.0) forKey:key];
+                        }
+                    } @catch (__unused NSException *e) {}
+                }
+            }
+        }
+        // 设置标记，防止系统重新设置模糊
+        // 不隐藏整个 MTMaterialView，因为 LGLiveBackdropView 是它的子视图
+        return; // MTMaterialView 内部不需要继续递归
+    }
+    for (UIView *subview in view.subviews) {
+        ccbgClampMaterialBlurInModule(subview);
+    }
+}
+
+// 延迟重新限制模块内 MTMaterialView 的模糊
+// 系统会在布局后重新设置模糊值，需要延迟再次清除
+static void ccbgScheduleMaterialBlurClamp(UIView *moduleView) {
+    if (!moduleView) return;
+    __weak UIView *weakModule = moduleView;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *m = weakModule;
+        if (m && m.window) ccbgClampMaterialBlurInModule(m);
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *m = weakModule;
+        if (m && m.window) ccbgClampMaterialBlurInModule(m);
+    });
 }
 
 // 模块类型识别
@@ -1737,6 +1793,10 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     } else if (hasImage) {
         [bg updateWithImage:image blurredImage:blurredImage frame:bgFrame cornerRadius:cornerRadius];
     }
+    
+    // 限制展开模块内 MTMaterialView 的系统模糊为 0
+    ccbgClampMaterialBlurInModule(moduleView);
+    ccbgScheduleMaterialBlurClamp(moduleView);
 }
 
 // 隐藏指定类型的所有小模块背景（展开时调用）
@@ -1952,6 +2012,11 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
     [bg setHidden:moduleView.hidden];
     [bg setAlpha:moduleView.alpha];
+    
+    // 限制模块内 MTMaterialView 的系统模糊为 0
+    // 这样自定义背景图片能透过液态玻璃层清晰显示
+    ccbgClampMaterialBlurInModule(moduleView);
+    ccbgScheduleMaterialBlurClamp(moduleView);
 }
 
 // 优化 C: 判断模块是否在控制中心可见区域内
