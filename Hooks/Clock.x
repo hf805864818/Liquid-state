@@ -386,6 +386,10 @@ static void LGClockSeedObstacleRegistriesFromWindow(UIWindow *window) {
 
 #pragma mark - Variable font loading
 
+// 字体文件路径缓存：必须可随字体偏好切换而重置。
+// 不能用 dispatch_once——否则切换“柔和/自适应/纽约”字体后路径仍指向首次加载的旧文件，导致换字体无效。
+static NSString *sClockVariableFontResolvedPath = nil;
+
 static NSString *LGClockVariableFontFileName(void) {
     NSString *fontName = LGClockVariableFontName();
     if ([fontName isEqualToString:@"soft"]) return @"LWAdaptiveSoftNumeric.ttf";
@@ -425,27 +429,28 @@ static NSArray<NSString *> *LGClockVariableFontDylibRelativePaths(void) {
 }
 
 static NSString *LGClockVariableFontPath(void) {
-    static NSString *path = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSString *fontFileName = LGClockVariableFontFileName();
-        NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-        [candidates addObjectsFromArray:LGClockVariableFontDylibRelativePaths()];
-        [candidates addObjectsFromArray:@[
-            jbroot([@"/Library/PreferenceBundles/LiquidAssPrefs.bundle" stringByAppendingPathComponent:fontFileName]),
-        ]];
-        NSFileManager *fm = [NSFileManager defaultManager];
-        for (NSString *candidate in candidates) {
-            if ([fm fileExistsAtPath:candidate]) {
-                path = [candidate copy];
-                break;
-            }
+    // 已解析且文件仍存在则直接复用；否则按当前字体偏好重新查找（切换字体时重置函数会清空缓存）
+    if (sClockVariableFontResolvedPath.length &&
+        [[NSFileManager defaultManager] fileExistsAtPath:sClockVariableFontResolvedPath]) {
+        return sClockVariableFontResolvedPath;
+    }
+    NSString *fontFileName = LGClockVariableFontFileName();
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+    [candidates addObjectsFromArray:LGClockVariableFontDylibRelativePaths()];
+    [candidates addObjectsFromArray:@[
+        jbroot([@"/Library/PreferenceBundles/LiquidAssPrefs.bundle" stringByAppendingPathComponent:fontFileName]),
+    ]];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *candidate in candidates) {
+        if ([fm fileExistsAtPath:candidate]) {
+            sClockVariableFontResolvedPath = [candidate copy];
+            break;
         }
-        if (!path.length) {
-            LGClockLog(@"clock variable font path not found candidates=%@", candidates);
-        }
-    });
-    return path;
+    }
+    if (!sClockVariableFontResolvedPath.length) {
+        LGClockLog(@"clock variable font path not found candidates=%@", candidates);
+    }
+    return sClockVariableFontResolvedPath;
 }
 
 static BOOL LGAxisNameMatches(NSString *axisName, NSString *needle, NSString *shortNeedle) {
@@ -517,6 +522,7 @@ static void LGResetClockVariableFontMetadata(void) {
     sClockVariablePostScriptName = nil;
     sClockVariableAxisIdentifiers = nil;
     sClockVariableAxisRanges = nil;
+    sClockVariableFontResolvedPath = nil;  // 清空字体文件路径缓存，切换“柔和/自适应/纽约”字体后才会重新查找新文件
     sClockFontMetadataLoaded = NO;
     [LGClockVariableCTFontCache() removeAllObjects];
 }
