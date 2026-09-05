@@ -299,6 +299,11 @@ static BOOL LGClockFrostedModeEnabled(void) {
     return result;
 }
 
+// 时钟激活：液态玻璃或磨砂模式任一开启即为激活（互斥模式）
+static BOOL LGClockActive(void) {
+    return LGClockEnabled() || LGClockFrostedModeEnabled();
+}
+
 static NSHashTable<UIView *> *LGClockNotificationObstacleViews(void) {
     if (!sClockNotificationObstacleViews) {
         sClockNotificationObstacleViews = [NSHashTable weakObjectsHashTable];
@@ -774,7 +779,7 @@ static UIView *LGClockLegacyVisibleSourceViewForLabel(UILabel *label) {
 
 static void LGPositionLegacyDateSubtitleAboveClock(UIView *subtitleView) {
     if (!subtitleView || LGIsAtLeastiOS16()) return;
-    if (!LGClockEnabled()) return;
+    if (!LGClockActive()) return;
 
     UIView *clockHost = subtitleView;
     while (clockHost && !LGIsLegacyClockHost(clockHost)) {
@@ -893,7 +898,7 @@ static void LGApplyAbbreviatedDateTextToLabel(UILabel *label) {
 
     if ([objc_getAssociatedObject(label, kLGClockApplyingDateTextKey) boolValue]) return;
 
-    BOOL dateFormatEnabled = LGClockEnabled() && LGClockDateFormatEnabled();
+    BOOL dateFormatEnabled = LGClockActive() && LGClockDateFormatEnabled();
 
     if (!dateFormatEnabled) {
         NSString *lastCustomText = objc_getAssociatedObject(label, kLGClockLastCustomDateTextKey);
@@ -1017,7 +1022,7 @@ static UIView *LGClockFindModernClockHostInWindow(UIWindow *window) {
 static CGRect LGAdjustedLegacyNotificationListFrame(UIView *notificationListView, CGRect proposedFrame) {
     if (!notificationListView || !notificationListView.window) return proposedFrame;
     if (LGIsAtLeastiOS16()) return proposedFrame;
-    if (!LGClockEnabled()) return proposedFrame;
+    if (!LGClockActive()) return proposedFrame;
     if (!LGClockLegacyNotificationShiftEnabled()) return proposedFrame;
     NSValue *originalFrameValue = objc_getAssociatedObject(notificationListView, kLGClockLegacyNotificationOriginalFrameKey);
     if (!originalFrameValue) {
@@ -1071,7 +1076,7 @@ static CGRect LGAdjustedLegacyNotificationListFrame(UIView *notificationListView
 static void LGRelayoutLegacyNotificationListView(UIView *notificationListView) {
     if (!notificationListView || !notificationListView.window) return;
     if (LGIsAtLeastiOS16()) return;
-    if (!LGClockEnabled()) return;
+    if (!LGClockActive()) return;
     if (!LGClockLegacyNotificationShiftEnabled()) return;
     if ([objc_getAssociatedObject(notificationListView, kLGClockLegacyNotificationApplyingKey) boolValue]) return;
 
@@ -1134,7 +1139,7 @@ static void LGRelayoutLegacyNotificationListForController(UIViewController *cont
 }
 
 static void LGStartClockDisplayLink(void) {
-    if (sClockDisplayLink.link || !LGClockEnabled()) return;
+    if (sClockDisplayLink.link || !LGClockActive()) return;
     LGStartClockDisplayLinkDriver(&sClockDisplayLink, ^{
         BOOL activityChanged = NO;
         for (UIView *host in LGClockHostRegistry().allObjects) {
@@ -1186,7 +1191,7 @@ static void LGClockSyncDisplayLinkActivity(void) {
         if (LGClockHasBlockingPresentation(host)) continue;
         visibleHostCount++;
     }
-    if (visibleHostCount > 0 && LGClockEnabled()) {
+    if (visibleHostCount > 0 && LGClockActive()) {
         LGStartClockDisplayLink();
     } else {
         LGStopClockDisplayLink();
@@ -2504,10 +2509,10 @@ static void LGApplyClockReplacement(UIView *host) {
                overlayEligible,
                blocking,
                overlay ? 1 : 0);
-    // 磨砂模式不再移除 overlay，而是切换 filter 类型（液态玻璃 ↔ 磨砂玻璃）
-    // 两种模式都用我们自己的渲染，稳定可靠
-    if (!enabled || !overlayEligible || !sourceLabel || blocking) {
-        NSString *reason = !enabled ? @"disabled"
+    // 磨砂模式与液态玻璃互斥：任一开启即渲染 overlay
+    // 磨砂开 → 用磨砂参数渲染；液态开(磨砂关) → 用液态参数渲染；都关 → 不渲染
+    if ((!enabled && !frostedMode) || !overlayEligible || !sourceLabel || blocking) {
+        NSString *reason = (!enabled && !frostedMode) ? @"disabled"
             : !overlayEligible ? @"not-eligible"
             : !sourceLabel ? @"no-source"
             : @"blocked";

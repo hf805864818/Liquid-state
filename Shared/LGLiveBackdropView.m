@@ -64,8 +64,9 @@ static BOOL LGKeySupportsAppearanceMode(NSString *key) {
     if ([key hasPrefix:@"QuickToggle."]) return NO;
     if ([key hasPrefix:@"SurfaceSort."]) return NO;
     if ([key hasPrefix:@"SettingsControls."]) return NO;
-    // Skip frosted mode toggle - it's a feature switch, not appearance-specific
+    // Skip frosted mode toggle and frosted-specific params - they have their own .Light/.Dark keys
     if ([key hasSuffix:@".FrostedMode"]) return NO;
+    if ([key containsString:@".Frosted."]) return NO;
     // All per-surface parameters support appearance mode
     return YES;
 }
@@ -335,10 +336,42 @@ static BOOL LGUsesPrefsControlCaptureScale(NSString *filterType) {
     }
 }
 
+static BOOL LGGlassFrostedClockModeEnabled(void) {
+    CFTypeRef cfValue = CFPreferencesCopyAppValue(CFSTR("Clock.FrostedMode"),
+                                                   CFSTR("dylv.liquidassprefs"));
+    BOOL result = NO;
+    if (cfValue) {
+        if (CFGetTypeID(cfValue) == CFBooleanGetTypeID()) {
+            result = CFBooleanGetValue((CFBooleanRef)cfValue);
+        } else if (CFGetTypeID(cfValue) == CFNumberGetTypeID()) {
+            char boolVal = 0;
+            if (CFNumberGetValue((CFNumberRef)cfValue, kCFNumberCharType, &boolVal)) {
+                result = boolVal ? YES : NO;
+            }
+        }
+        CFRelease(cfValue);
+    }
+    return result;
+}
+
 static CGFloat LGNativeBlurRadiusForFilterType(NSString *filterType) {
     const LGHostDefinition *host = LGHostDefinitionForFilterType(filterType.UTF8String);
     if (!host) return 0.0;
     NSString *prefix = [NSString stringWithUTF8String:host->preferencePrefix];
+
+    // Clock 磨砂模式：使用磨砂专属 blur 值（Clock.Frosted.Blur.Light/.Dark）
+    if (strcmp(host->preferencePrefix, "Clock") == 0 && LGGlassFrostedClockModeEnabled()) {
+        BOOL isDark = UIScreen.mainScreen.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
+        NSString *frostedKey = isDark
+            ? @"Clock.Frosted.Blur.Dark"
+            : @"Clock.Frosted.Blur.Light";
+        id frostedBlur = LGGlassPreferenceValue(frostedKey);
+        if ([frostedBlur respondsToSelector:@selector(doubleValue)]) {
+            return MAX(0.0, [frostedBlur doubleValue]);
+        }
+        return 4.0;  // v0.1.73b 默认磨砂模糊值
+    }
+
     NSString *key = [prefix stringByAppendingString:@".Blur"];
     id value = LGGlassPreferenceValue(key);
     return [value respondsToSelector:@selector(doubleValue)]

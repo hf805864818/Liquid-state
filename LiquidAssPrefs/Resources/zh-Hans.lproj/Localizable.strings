@@ -40,7 +40,7 @@
 "prefs.subtitle.motion_highlights" = "通过设备指南针旋转玻璃边缘。";
 "prefs.subtitle.motion_highlights_sensitivity" = "设备指南针对高光的操控强度。";
 "prefs.subtitle.variable_font" = "可用时为玻璃时钟使用 iOS 26 风格的自适应字体。";
-"prefs.subtitle.clock_frosted_mode" = "时钟使用系统原生磨砂效果，而非液态玻璃。";
+"prefs.subtitle.clock_frosted_mode" = "时钟使用磨砂玻璃参数，与液态玻璃互斥。";
 "prefs.subtitle.variable_font_name" = "选择时钟使用的自适应字体。";
 "prefs.subtitle.variable_font_weight_preset" = "快速选择常用字重档位。";
 "prefs.subtitle.variable_font_size" = "iOS 26 时钟字体的点数大小倍率。";

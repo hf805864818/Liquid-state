@@ -565,6 +565,22 @@ static NSArray<NSDictionary *> *LGJoinItemGroups(NSArray<NSArray<NSDictionary *>
     return items;
 }
 
+// 给一组设置项添加可见性条件（visible_key/visible_values），实现互斥显示
+static NSArray<NSDictionary *> *LGItemsWithVisibility(NSArray<NSDictionary *> *items,
+                                                       NSString *visibleKey,
+                                                       NSArray *visibleValues,
+                                                       NSString *visibleDefault) {
+    NSMutableArray *result = [NSMutableArray array];
+    for (NSDictionary *item in items) {
+        NSMutableDictionary *mItem = [item mutableCopy];
+        mItem[@"visible_key"] = visibleKey;
+        mItem[@"visible_values"] = visibleValues;
+        if (visibleDefault) mItem[@"visible_default"] = visibleDefault;
+        [result addObject:mItem];
+    }
+    return result;
+}
+
 static NSDictionary *LGGlassBlurSetting(NSString *key, CGFloat fallback, CGFloat min, CGFloat max, NSInteger decimals) {
     return LGSliderSetting(key, LGLocalized(@"prefs.control.blur"), LGLocalized(@"prefs.subtitle.blur"), fallback, min, kLGUniversalBlurMax, decimals);
 }
@@ -1052,6 +1068,10 @@ static NSArray<NSDictionary *> *LGFrostedClockParamBlock(NSString *suffix,
                         LGLocalized(@"prefs.control.glass_thickness"),
                         LGLocalized(@"prefs.subtitle.glass_thickness"),
                         28.0f, 0.0, 220.0, 1),
+        LGSliderSetting(key(@"Blur"),
+                        LGLocalized(@"prefs.control.blur"),
+                        LGLocalized(@"prefs.subtitle.blur"),
+                        4.0f, 0.0, 50.0, 1),
         LGSliderSetting(key(@"RefractionScale"),
                         LGLocalized(@"prefs.control.refraction"),
                         LGLocalized(@"prefs.subtitle.refraction"),
@@ -1087,6 +1107,9 @@ static NSArray<NSDictionary *> *LGFrostedClockItems(void) {
 }
 
 NSArray<NSDictionary *> *LGClockItems(void) {
+    // 磨砂模式开 → 显示磨砂参数，隐藏液态玻璃参数
+    // 磨砂模式关 → 隐藏磨砂参数，显示液态玻璃参数
+    // 两种模式互斥
     return LGJoinItemGroups(@[
         @[
             LGSwitchSetting(@"Clock.FrostedMode",
@@ -1094,11 +1117,16 @@ NSArray<NSDictionary *> *LGClockItems(void) {
                             LGLocalized(@"prefs.subtitle.clock_frosted_mode"),
                             NO),
         ],
-        LGFrostedClockItems(),
-        @[
-            LGSectionSetting(LGLocalized(@"prefs.section.liquid_clock.title"), nil),
-        ],
-        LGRendererItemsForHostPrefix(@"Clock"),
+        // 磨砂参数：仅在磨砂模式开启时显示
+        LGItemsWithVisibility(LGFrostedClockItems(),
+                              @"Clock.FrostedMode", @[@"1"], @"0"),
+        // 液态玻璃参数：仅在磨砂模式关闭时显示
+        LGItemsWithVisibility(
+            LGJoinItemGroups(@[
+                @[LGSectionSetting(LGLocalized(@"prefs.section.liquid_clock.title"), nil)],
+                LGRendererItemsForHostPrefix(@"Clock"),
+            ]),
+            @"Clock.FrostedMode", @[@"0"], @"0"),
         LGClockVariableFontItems(),
         LGClockDateFormatItems(),
         LGModuleResetItem(@"resetClockToDefault",

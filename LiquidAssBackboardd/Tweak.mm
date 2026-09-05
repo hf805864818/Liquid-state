@@ -154,11 +154,12 @@ typedef struct {
     float refractionScale;
     float refractiveIndex;
     float dispersionStrength;
+    float blur;
     float tintR, tintG, tintB, tintStrength;
 } LGFrostedClockVariant;
 
-static LGFrostedClockVariant g_frostedClockLight = { 28.0f, 2.5f, 1.65f, 0.0f, 1.0f, 1.0f, 1.0f, 0.4f };
-static LGFrostedClockVariant g_frostedClockDark  = { 28.0f, 2.5f, 1.65f, 0.0f, 1.0f, 1.0f, 1.0f, 0.4f };
+static LGFrostedClockVariant g_frostedClockLight = { 28.0f, 2.5f, 1.65f, 0.0f, 4.0f, 1.0f, 1.0f, 1.0f, 0.4f };
+static LGFrostedClockVariant g_frostedClockDark  = { 28.0f, 2.5f, 1.65f, 0.0f, 4.0f, 1.0f, 1.0f, 1.0f, 0.4f };
 
 static thread_local bool g_inLegacyRender = false;
 static thread_local simd_float2 g_legacyRenderOffset = { 0.0f, 0.0f };
@@ -919,6 +920,7 @@ static void lgApplyFrostedVariant(NSDictionary *prefs, NSString *suffix, LGFrost
     LG_FROSTED_NUM(refractionScale, @"RefractionScale");
     LG_FROSTED_NUM(refractiveIndex, @"RefractiveIndex");
     LG_FROSTED_NUM(dispersionStrength, @"DispersionStrength");
+    LG_FROSTED_NUM(blur, @"Blur");
 #undef LG_FROSTED_NUM
     NSString *hexKey = [kPrefix stringByAppendingFormat:@".TintColor%@", suffix];
     simd_float4 tint;
@@ -1237,11 +1239,20 @@ static void lgReloadHostPrefs(void) {
     if (g_clockFrostedMode && prefs) {
         lgApplyFrostedVariant(prefs, @".Light", &g_frostedClockLight);
         lgApplyFrostedVariant(prefs, @".Dark",  &g_frostedClockDark);
-        lglog("Clock frosted params: light={thick=%.1f refr=%.2f idx=%.2f disp=%.3f tint=%.3f} dark={thick=%.1f refr=%.2f idx=%.2f disp=%.3f tint=%.3f}",
+        // 覆盖 Clock host 的 blur 参数（v0.1.73b 默认 4.0，当前液态默认 2.5）
+        // blur 不在 Metal shader uniforms 里，而是通过 LGNativeBlurRadiusForFilterType 读取
+        // 这里同步覆盖 g_hostParams 以保持日志一致，实际 blur 渲染在 SpringBoard 侧
+        for (int i = 0; i < kHostCount; i++) {
+            if (!strcmp(kHostDefaults[i].prefPrefix, "Clock")) {
+                g_hostParams[i].blur = g_frostedClockLight.blur;
+                break;
+            }
+        }
+        lglog("Clock frosted params: light={thick=%.1f refr=%.2f idx=%.2f disp=%.3f blur=%.1f tint=%.3f} dark={thick=%.1f refr=%.2f idx=%.2f disp=%.3f blur=%.1f tint=%.3f}",
               g_frostedClockLight.glassThickness, g_frostedClockLight.refractionScale,
-              g_frostedClockLight.refractiveIndex, g_frostedClockLight.dispersionStrength, g_frostedClockLight.tintStrength,
+              g_frostedClockLight.refractiveIndex, g_frostedClockLight.dispersionStrength, g_frostedClockLight.blur, g_frostedClockLight.tintStrength,
               g_frostedClockDark.glassThickness, g_frostedClockDark.refractionScale,
-              g_frostedClockDark.refractiveIndex, g_frostedClockDark.dispersionStrength, g_frostedClockDark.tintStrength);
+              g_frostedClockDark.refractiveIndex, g_frostedClockDark.dispersionStrength, g_frostedClockDark.blur, g_frostedClockDark.tintStrength);
     }
 
     g_hostParamsInit = true;
