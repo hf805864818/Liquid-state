@@ -1290,7 +1290,17 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             self.originalMaterialView.layer.hidden = YES;
         }
         if (self.fullscreenEnabled) {
-            // 恢复 opacity 和 hidden（与关闭时的设置对称）
+            // 如果 bgContainerView 被移除了（关闭时 removeFromSuperview），重新加回
+            if (self.hostView && self.bgContainerView.superview == nil) {
+                if (self.originalMaterialView && self.originalMaterialView.superview) {
+                    [self.hostView insertSubview:self.bgContainerView belowSubview:self.originalMaterialView];
+                } else {
+                    [self.hostView insertSubview:self.bgContainerView atIndex:0];
+                }
+                // 确保帧正确
+                self.bgContainerView.frame = self.hostView.bounds;
+            }
+            // 恢复可见
             self.bgContainerView.layer.opacity = 1.0f;
             self.bgContainerView.layer.hidden = NO;
             self.bgContainerView.hidden = NO;
@@ -1342,20 +1352,18 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
             }
         }
     } else {
-        // 控制中心不可见:立即隐藏背景，暂停视频
-        // 用显式 CATransaction + setAnimationDuration:0 确保 hidden 立即生效
-        // performWithoutAnimation 在系统动画上下文中可能被 UIViewAnimationState 覆盖
+        // 控制中心不可见:立即移除背景，暂停视频
+        // 用 removeFromSuperview 物理移除，防止系统关闭动画通过嵌套 CATransaction 覆盖 hidden/opacity
         [CATransaction begin];
         [CATransaction setAnimationDuration:0];
         [CATransaction setDisableActions:YES];
 
         // --- 全屏背景 ---
         if (self.fullscreenEnabled) {
-            // 直接操作 layer，绕过 UIView 动画系统
-            self.bgContainerView.layer.opacity = 0.0f;
-            self.bgContainerView.layer.hidden = YES;
-            self.bgContainerView.hidden = YES;
+            // 暂停视频
             if (self.videoView) [self.videoView pause];
+            // 物理移除 bgContainerView，系统动画无法再作用于已移除的视图
+            [self.bgContainerView removeFromSuperview];
             // 立即恢复系统毛玻璃
             if (self.originalMaterialView) {
                 self.originalMaterialView.hidden = NO;
@@ -1385,12 +1393,10 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 
         [CATransaction commit];
 
-        // 兜底：在下一个 runloop 再次强制设置，确保脱离系统动画上下文
+        // 兜底：在下一个 runloop 再次确保移除，防止系统动画上下文恢复视图
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.fullscreenEnabled && self.bgContainerView) {
-                self.bgContainerView.layer.opacity = 0.0f;
-                self.bgContainerView.layer.hidden = YES;
-                self.bgContainerView.hidden = YES;
+            if (self.fullscreenEnabled && self.bgContainerView && self.bgContainerView.superview) {
+                [self.bgContainerView removeFromSuperview];
             }
             if (self.originalMaterialView) {
                 self.originalMaterialView.hidden = NO;
