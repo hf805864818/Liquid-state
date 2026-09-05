@@ -957,7 +957,7 @@ static NSArray<NSDictionary *> *LGControlCenterSliderDisplayItems(void) {
         LGSliderSetting(@"ControlCenter.SliderCornerRadius",
                         LGLocalized(@"prefs.control.slider_corner_radius"),
                         LGLocalized(@"prefs.subtitle.slider_corner_radius"),
-                        -1.0, -1.0, 30.0, 1),
+                        -1.0, -1.0, 20.0, 1),
     ];
 }
 

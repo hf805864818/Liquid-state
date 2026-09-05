@@ -595,18 +595,24 @@ static void ccApplyOrRestoreRound(UIView *view, CGFloat radius, BOOL eligible) {
     lgRound(view, radius);
 }
 
+// 递归搜索: 在 slider 的整个子视图层级中查找所有 MTMaterialView
+// 不依赖固定深度，折叠/展开状态都能正确找到
+static void roundSliderFillRecursive(UIView *view, CGFloat customRadius, BOOL eligible) {
+    if (!view) return;
+    if (isExactClass(view, @"MTMaterialView")) {
+        CGFloat r = (customRadius >= 0.0) ? customRadius : ccPillRadius(view);
+        ccApplyOrRestoreRound(view, r, eligible);
+        return;  // MTMaterialView 内部不需要继续递归
+    }
+    for (UIView *child in view.subviews) {
+        roundSliderFillRecursive(child, customRadius, eligible);
+    }
+}
+
 static void roundSliderFill(UIView *slider) {
     BOOL eligible = YES;
     CGFloat customRadius = LG_prefFloat(@"ControlCenter.SliderCornerRadius", -1.0);
-    for (UIView *child in slider.subviews) {
-        if (!isExactClass(child, @"UIView")) continue;
-        for (UIView *gc in child.subviews) {
-            if (isExactClass(gc, @"MTMaterialView")) {
-                CGFloat r = (customRadius >= 0.0) ? customRadius : ccPillRadius(gc);
-                ccApplyOrRestoreRound(gc, r, eligible);
-            }
-        }
-    }
+    roundSliderFillRecursive(slider, customRadius, eligible);
 }
 
 // 延迟重新应用圆角: iOS 系统在 layoutSubviews 之后经常会重置 MTMaterialView
