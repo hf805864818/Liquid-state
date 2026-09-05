@@ -33,7 +33,7 @@ typedef struct {
     X(Spotlight,      "dylv.liquidglass.spotlight",    "Spotlight",     0.50f,          (28.0f / 220.0f) * 1.8f,       18.0f, 1.8f, 1.60f, 0.0f, 1.0f,  0.0f, "#FFFFFFCC", "#0000004d") \
     X(SearchPill,     "dylv.liquidglass.searchpill",   "SearchPill",    0.50f,          (28.0f / 220.0f) * 1.08f,      18.0f, 1.6f, 1.70f, 1.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
     X(Widgets,        "dylv.liquidglass.widget",       "Widgets",       28.0f / 220.0f, (28.0f / 220.0f) * 1.8f,       20.0f, 2.2f, 1.60f, 1.0f, 1.0f,  0.0f, "#FFFFFF1A", "#0000004D") \
-    X(ContextMenu,    "dylv.liquidglass.contextmenu",  "ContextMenu",   28.0f / 220.0f, (28.0f / 220.0f) * 1.8f,       20.0f, 1.5f, 1.50f, 8.0f, 1.0f,  0.0f, "#FFFFFFCC", "#0000004c") \
+    X(ContextMenu,    "dylv.liquidglass.contextmenu",  "ContextMenu",   28.0f / 220.0f, (28.0f / 220.0f) * 1.8f,       20.0f, 1.5f, 1.50f, 2.0f, 1.0f,  0.0f, "#FFFFFF1A", "#0000004c") \
     X(Alerts,         "dylv.liquidglass.alerts",       "Alerts",        28.0f / 220.0f, (28.0f / 220.0f) * 1.8f,       20.0f, 1.5f, 1.50f, 3.0f, 1.0f,  0.0f, "#FFFFFFCC", "#0000004c") \
     X(QuickActions,   "dylv.liquidglass.quickaction",  "QuickActions",  0.50f,          (28.0f / 220.0f) * 1.8f,       22.0f, 2.0f, 1.55f, 3.0f, 1.0f,  0.0f, "#FFFFFF4C", "#00000026") \
     X(Passcode,       "dylv.liquidglass.passcode",     "Passcode",      0.50f,          (28.0f / 220.0f) * 2.52f,      16.0f, 1.4f, 1.60f, 1.0f, 1.0f,  0.0f, "#FFFFFF1A", "#0000001F") \
