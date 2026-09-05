@@ -410,6 +410,8 @@ static const CGFloat kLGClockCaptureScale = 0.50;
 
 static const CGFloat kLGCoverSheetCaptureScale = 1.00;
 
+static const CGFloat kLGContextMenuCaptureScale = 1.20;
+
 static const CGFloat kLGPrefsControlScale = 1.50;
 static const CGFloat kLGDefaultScaleBudget = 8000.0;
 static CGFloat LGQualityValue(void) {
@@ -1046,6 +1048,9 @@ static void LGReportMemoryUsageIfNeeded(void) {
                 break;
             case LGHostIdentifierCoverSheet:
                 wantScale = kLGCoverSheetCaptureScale * thermalScale;
+                break;
+            case LGHostIdentifierContextMenu:
+                wantScale = kLGContextMenuCaptureScale * thermalScale;
                 break;
             default:
                 wantScale = LGUsesPrefsControlCaptureScale(_lgFilterType)
