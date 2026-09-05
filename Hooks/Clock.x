@@ -483,7 +483,8 @@ static CGFloat LGClockModernSyntheticEmbolden(void) {
     if (!LGClockVariableFontEnabled()) return 0.0;
     CGFloat weight = LGClockVariableFontWeight();
     if (weight <= 400.0) return 0.0;
-    return MIN(2.0, ((weight - 400.0) / 600.0) * 2.0);
+    // 封顶 2.5：9 点叠印在 2.5 以内边缘仍扎实；字重 1000→2.0，1150→2.5（特粗档）
+    return MIN(2.5, ((weight - 400.0) / 600.0) * 2.0);
 }
 static void LGApplyClockReplacement(UIView *host);
 

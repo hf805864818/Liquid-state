@@ -1000,7 +1000,7 @@ static NSArray<NSDictionary *> *LGClockVariableFontItems(void) {
         LGSettingControlledByKey(LGSliderSetting(@"Clock.VariableFont.Weight",
                                                   LGLocalized(@"prefs.control.variable_font_weight"),
                                                   LGLocalized(@"prefs.subtitle.variable_font_weight"),
-                                                  750.0, 1.0, 1000.0, 0), @"Clock.VariableFont.Enabled", @YES),
+                                                  750.0, 1.0, 1150.0, 0), @"Clock.VariableFont.Enabled", @YES),
         LGSettingControlledByKey(LGSliderSetting(@"Clock.VariableFont.SizeScale",
                                                   LGLocalized(@"prefs.control.variable_font_size"),
                                                   LGLocalized(@"prefs.subtitle.variable_font_size"),

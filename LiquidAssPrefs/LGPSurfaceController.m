@@ -550,14 +550,15 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 
     // 字重预设（默认 750，加粗量 1.17）：
     // 常规 600(0.67) 比默认细一点；从中等起逐档比默认粗：
-    // 中等 800(1.33) / 半粗 900(1.67) / 粗体 1000(2.0 封顶最粗)。
-    // 加粗量公式 (w-400)/600*2。
+    // 中等 800(1.33) / 半粗 900(1.67) / 粗体 1000(2.0) / 特粗 1150(2.5)。
+    // 加粗量公式 (w-400)/600*2，封顶 2.5。
     CGFloat currentWeight = [LGReadPreference(@"Clock.VariableFont.Weight", @(750.0)) doubleValue];
     NSArray *presets = @[
         @{ @"title": LGLocalized(@"prefs.font_weight.regular"), @"value": @(600.0) },
         @{ @"title": LGLocalized(@"prefs.font_weight.medium"), @"value": @(800.0) },
         @{ @"title": LGLocalized(@"prefs.font_weight.semibold"), @"value": @(900.0) },
         @{ @"title": LGLocalized(@"prefs.font_weight.bold"), @"value": @(1000.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.black"), @"value": @(1150.0) },
     ];
 
     for (NSDictionary *preset in presets) {

@@ -163,6 +163,7 @@
 "prefs.font_weight.medium" = "中等";
 "prefs.font_weight.semibold" = "半粗";
 "prefs.font_weight.bold" = "粗体";
+"prefs.font_weight.black" = "特粗";
 "prefs.misc.import_export_section.title" = "导入/导出偏好设置";
 "prefs.misc.import_export_section.subtitle" = "分享你的配置或从 JSON 文件恢复配置。";
 "prefs.misc.export_prefs.title" = "导出偏好设置";

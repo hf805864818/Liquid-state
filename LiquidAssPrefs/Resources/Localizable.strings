@@ -331,6 +331,7 @@
 "prefs.font_weight.medium" = "Medium";
 "prefs.font_weight.semibold" = "Semibold";
 "prefs.font_weight.bold" = "Bold";
+"prefs.font_weight.black" = "Black";
 "prefs.misc.import_export_section.title" = "Import/Export preferences";
 "prefs.misc.import_export_section.subtitle" = "Share your setup or restore one from a JSON file.";
 "prefs.misc.export_prefs.title" = "Export Preferences";
