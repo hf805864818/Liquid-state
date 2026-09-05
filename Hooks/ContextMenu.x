@@ -154,8 +154,8 @@ static BOOL ctxIsSystemMaterialLayer(UIView *view) {
         || [cls containsString:@"EffectFilter"];
 }
 
-static void setBackdropHiddenInEffectView(UIVisualEffectView *effectView) {
-    UIView *contentView = effectView.contentView;
+static void setBackdropHiddenInEffectView(UIView *effectView) {
+    UIView *contentView = [(UIVisualEffectView *)effectView contentView];
     // 材质视觉层是 fx 的直接子视图，着色层在部分版本上位于 contentView 内，两处都处理。
     NSMutableArray<UIView *> *roots = [NSMutableArray arrayWithObject:effectView];
     if (contentView) [roots addObject:contentView];
