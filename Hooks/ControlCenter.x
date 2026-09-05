@@ -99,18 +99,20 @@ static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
         return ccPillRadius(mat);
     }
 
+    // 大型模块卡片：宽、高都 >100 的材质一定是卡片（2×2/3×2/4×3/4×4 等）。
+    // 这类宽矩形绝不能用胶囊/圆形圆角（短边÷2 会拉成椭圆/圆）。
+    // 此判断放在 ccIsModuleCandidate 之前：ccflex 等插件可能改变外层容器尺寸，
+    // 导致 CCUIContentModuleContainerView 的尺寸与实际显示不一致而被误判为正方形，
+    // 进而走 ccModuleCornerRadius 的 h/2 回退 → 大卡片变圆形。
+    // 只要两边都 >100，直接按大卡片处理，最稳妥。
+    if (w > 100.0 && h > 100.0) {
+        return ccLargeCardCornerRadius(mat, fmin(w, h));
+    }
+
     UIView *module = ccModuleAncestor(mat);
     if (module && ccIsModuleCandidate(module)) return ccModuleCornerRadius(module);
     if (w > 100.0 && h < 100.0) return h * 0.5;
     if (h > 100.0 && w < 100.0) return w * 0.5;
-
-    // 大型模块卡片：宽、高都 >100 且非正方形（正方形已在上面 ccIsModuleCandidate 处理）。
-    // 典型为 ccflex 在网格内拉出的 4×3/3×2/4×4 等大卡片。这类宽矩形不能用胶囊圆角
-    // （短边÷2 会拉成椭圆），改为读取系统/ccflex 设在卡片容器上的真实圆角，回退到卡片比例圆角。
-    // 折叠态横条/竖条（另一边<100）已在上面两条分支处理，小模块/按钮/滑块也都提前返回，不受影响。
-    if (w > 100.0 && h > 100.0) {
-        return ccLargeCardCornerRadius(mat, fmin(w, h));
-    }
 
     return ccPillRadius(mat);
 }

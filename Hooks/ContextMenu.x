@@ -15,6 +15,7 @@ static void *kCtxOriginalHiddenKey = &kCtxOriginalHiddenKey;
 static void *kCtxOriginalRadiusKey = &kCtxOriginalRadiusKey;
 static void *kCtxOriginalCurveKey = &kCtxOriginalCurveKey;
 static void *kCtxOriginalFrameKey = &kCtxOriginalFrameKey;
+static void *kCtxOriginalBgColorKey = &kCtxOriginalBgColorKey;
 
 static void ctxRememberVisualState(UIView *view) {
     if (!view) return;
@@ -23,6 +24,14 @@ static void ctxRememberVisualState(UIView *view) {
         objc_setAssociatedObject(view, kCtxOriginalHiddenKey, @(view.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(view, kCtxOriginalRadiusKey, @(view.layer.cornerRadius), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(view, kCtxOriginalCurveKey, view.layer.cornerCurve ?: @"", OBJC_ASSOCIATION_COPY_NONATOMIC);
+    }
+}
+
+static void ctxRememberBackgroundColor(UIView *view) {
+    if (!view) return;
+    if (!objc_getAssociatedObject(view, kCtxOriginalBgColorKey)) {
+        UIColor *bg = view.backgroundColor;
+        objc_setAssociatedObject(view, kCtxOriginalBgColorKey, bg ?: [UIColor clearColor], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 }
 
@@ -263,6 +272,8 @@ static void restoreContextMenuSubtree(UIView *view) {
     if (frame) { view.frame = frame.CGRectValue; objc_setAssociatedObject(view, kCtxOriginalFrameKey, nil, OBJC_ASSOCIATION_ASSIGN); }
     UIColor *background = objc_getAssociatedObject(view, kCtxGapOriginalBgKey);
     if (background) { view.backgroundColor = background; objc_setAssociatedObject(view, kCtxGapOriginalBgKey, nil, OBJC_ASSOCIATION_ASSIGN); }
+    UIColor *origBg = objc_getAssociatedObject(view, kCtxOriginalBgColorKey);
+    if (origBg) { view.backgroundColor = origBg; objc_setAssociatedObject(view, kCtxOriginalBgColorKey, nil, OBJC_ASSOCIATION_ASSIGN); }
     UIView *divider = [view viewWithTag:kCtxDividerTag];
     [divider removeFromSuperview];
     for (UIView *sub in [view.subviews copy]) restoreContextMenuSubtree(sub);
@@ -282,6 +293,33 @@ static void ctxRoundSubtree(UIView *v) {
 static void ctxHideBackdropsInSubtree(UIView *v) {
     if ([v isKindOfClass:[UIVisualEffectView class]]) setBackdropHiddenInEffectView(v);
     for (UIView *c in v.subviews) ctxHideBackdropsInSubtree(c);
+}
+
+// 浅色模式下，除了 UIVisualEffectView 内部的材质层，菜单外层的 platter / 背景容器
+// 也可能带有白色/磨砂背景，它们位于玻璃背后，会被玻璃的 backdrop 一并采样进去，
+// 导致无论怎么调玻璃参数都呈奶白磨砂感。这里把容器自身和常见的背景/遮罩层清空。
+static void ctxStripContainerBackgrounds(UIView *root) {
+    if (!root) return;
+    // 容器自身：清背景色，避免白色底色透进玻璃
+    if (root.backgroundColor && CGColorGetAlpha(root.backgroundColor.CGColor) > 0.001) {
+        ctxRememberBackgroundColor(root);
+        root.backgroundColor = UIColor.clearColor;
+    }
+    NSString *cls = NSStringFromClass(root.class);
+    // platter / background / dimming / backdrop 这类背景层直接压掉
+    if ([cls containsString:@"Platter"] || [cls containsString:@"Background"] ||
+        [cls containsString:@"Dimming"] || [cls containsString:@"BackdropView"]) {
+        if (![root isKindOfClass:[LGLiveBackdropView class]]) {
+            ctxRememberVisualState(root);
+            root.alpha = 0.0;
+            return; // 子视图一起隐藏，不必再遍历
+        }
+    }
+    for (UIView *c in [root.subviews copy]) {
+        if ([c isKindOfClass:[LGLiveBackdropView class]]) continue;
+        if ([c isKindOfClass:[UIVisualEffectView class]]) continue; // 由 setBackdropHidden 处理
+        ctxStripContainerBackgrounds(c);
+    }
 }
 
 static void styleContextMenuListSubviews(UIView *listView) {
@@ -346,8 +384,12 @@ static void styleContextMenuListSubviews(UIView *listView) {
 %hook _UIContextMenuContainerView
 - (void)layoutSubviews {
     %orig;
-    if (lgHostEnabled(@"ContextMenu")) ctxHideBackdropsInSubtree((UIView *)self);
-    else restoreContextMenuSubtree((UIView *)self);
+    if (lgHostEnabled(@"ContextMenu")) {
+        ctxHideBackdropsInSubtree((UIView *)self);
+        ctxStripContainerBackgrounds((UIView *)self);
+    } else {
+        restoreContextMenuSubtree((UIView *)self);
+    }
 }
 %end
 
