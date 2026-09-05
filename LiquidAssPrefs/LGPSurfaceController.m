@@ -1512,9 +1512,57 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
         if ([item[@"controls_following_panel"] boolValue]) {
             [self updatePanelsControlledByEnabledKey:item[@"key"] enabled:sender.isOn animated:YES];
         }
+
+        // 磨砂/液态互斥：开一个自动关另一个
+        if (sender.isOn) {
+            if ([item[@"key"] isEqualToString:@"Clock.FrostedMode"]) {
+                // 磨砂开 → 液态关
+                LGWritePreference(@"Clock.Enabled", @NO);
+                [self syncToggleForKey:@"Clock.Enabled" on:NO];
+                [self updatePanelsControlledByEnabledKey:@"Clock.Enabled" enabled:NO animated:YES];
+            } else if ([item[@"key"] isEqualToString:@"Clock.Enabled"]) {
+                // 液态开 → 磨砂关
+                LGWritePreference(@"Clock.FrostedMode", @NO);
+                [self syncToggleForKey:@"Clock.FrostedMode" on:NO];
+                [self updatePanelsControlledByEnabledKey:@"Clock.FrostedMode" enabled:NO animated:YES];
+            }
+        }
     }] forControlEvents:UIControlEventValueChanged];
     objc_setAssociatedObject(toggle, kLGControlledByEnabledKey, item[@"controls_following_panel"], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return toggle;
+}
+
+// 按偏好键查找 UISwitch 并设置开关状态（不触发 ValueChanged 事件）
+- (void)syncToggleForKey:(NSString *)prefKey on:(BOOL)on {
+    UISwitch *found = [self findSwitchForKey:prefKey inView:_contentStack];
+    if (found) {
+        [found setOn:on animated:YES];
+    }
+}
+
+- (UISwitch *)findSwitchForKey:(NSString *)prefKey inView:(UIView *)view {
+    for (UIView *subview in view.subviews) {
+        NSDictionary *item = objc_getAssociatedObject(subview, kLGPanelItemKey);
+        if (item && [[item objectForKey:@"key"] isEqualToString:prefKey]
+            && [item[@"type"] isEqualToString:@"switch"]) {
+            // 在此 subview 内查找 UISwitch
+            UISwitch *toggle = [self findUISwitchInView:subview];
+            if (toggle) return toggle;
+        }
+        // 递归搜索子视图
+        UISwitch *found = [self findSwitchForKey:prefKey inView:subview];
+        if (found) return found;
+    }
+    return nil;
+}
+
+- (UISwitch *)findUISwitchInView:(UIView *)view {
+    if ([view isKindOfClass:[UISwitch class]]) return (UISwitch *)view;
+    for (UIView *sub in view.subviews) {
+        UISwitch *found = [self findUISwitchInView:sub];
+        if (found) return found;
+    }
+    return nil;
 }
 
 - (UIButton *)sliderInfoButtonForItem:(NSDictionary *)item

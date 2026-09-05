@@ -1107,9 +1107,8 @@ static NSArray<NSDictionary *> *LGFrostedClockItems(void) {
 }
 
 NSArray<NSDictionary *> *LGClockItems(void) {
-    // 磨砂模式开 → 显示磨砂参数，隐藏液态玻璃参数
-    // 磨砂模式关 → 隐藏磨砂参数，显示液态玻璃参数
-    // 两种模式互斥
+    // 磨砂/液态互斥：关掉的那个模式参数自动变暗(alpha=0.42)，但不隐藏
+    // 切换开关时自动关闭另一个（在 LGPSurfaceController 的 switch handler 中处理）
     return LGJoinItemGroups(@[
         @[
             LGSwitchSetting(@"Clock.FrostedMode",
@@ -1117,16 +1116,13 @@ NSArray<NSDictionary *> *LGClockItems(void) {
                             LGLocalized(@"prefs.subtitle.clock_frosted_mode"),
                             NO),
         ],
-        // 磨砂参数：仅在磨砂模式开启时显示
-        LGItemsWithVisibility(LGFrostedClockItems(),
-                              @"Clock.FrostedMode", @[@"1"], @"0"),
-        // 液态玻璃参数：仅在磨砂模式关闭时显示
-        LGItemsWithVisibility(
-            LGJoinItemGroups(@[
-                @[LGSectionSetting(LGLocalized(@"prefs.section.liquid_clock.title"), nil)],
-                LGRendererItemsForHostPrefix(@"Clock"),
-            ]),
-            @"Clock.FrostedMode", @[@"0"], @"0"),
+        // 磨砂参数：磨砂模式关时变暗（enabled_key 机制）
+        LGSettingsControlledByKey(LGFrostedClockItems(), @"Clock.FrostedMode", @NO),
+        // 液态玻璃参数：磨砂模式开时变暗（Clock.Enabled 关时自动变暗）
+        LGJoinItemGroups(@[
+            @[LGSectionSetting(LGLocalized(@"prefs.section.liquid_clock.title"), nil)],
+            LGRendererItemsForHostPrefix(@"Clock"),
+        ]),
         LGClockVariableFontItems(),
         LGClockDateFormatItems(),
         LGModuleResetItem(@"resetClockToDefault",
