@@ -505,6 +505,9 @@ static NSHashTable<UIView *> *LGClockHostRegistry(void) {
 // 原因：原 dispatch_once 只执行一次，切换字体后元数据不刷新
 static BOOL sClockFontMetadataLoaded = NO;
 
+// 前向声明：LGClockVariableCTFontCache 在后面定义，重置函数需要用到
+static NSCache<NSString *, id> *LGClockVariableCTFontCache(void);
+
 static void LGResetClockVariableFontMetadata(void) {
     if (sClockVariableCGFont) {
         CTFontManagerUnregisterGraphicsFont(sClockVariableCGFont, NULL);
