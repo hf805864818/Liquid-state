@@ -1525,6 +1525,8 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
                 LGWritePreference(@"Clock.FrostedMode", @NO);
                 [self syncToggleForKey:@"Clock.FrostedMode" on:NO];
                 [self updatePanelsControlledByEnabledKey:@"Clock.FrostedMode" enabled:NO animated:YES];
+                // 确保不带后缀的 Clock.Enabled 也写入 YES（渲染端读的是不带后缀的 key）
+                LGWritePreference(@"Clock.Enabled", @YES);
             }
         } else {
             // 关一个 → 开另一个
@@ -1546,23 +1548,20 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 // 查找并打开所有以指定前缀开头的开关（处理 Clock.Enabled.Light/.Dark 等变体）
 - (void)turnOnTogglesWithPrefix:(NSString *)prefix {
     NSArray<NSDictionary *> *items = _items;
-    BOOL foundAny = NO;
     for (NSDictionary *item in items) {
         NSString *key = item[@"key"];
         if (![item[@"type"] isEqualToString:@"switch"]) continue;
         if (![key hasPrefix:prefix]) continue;
+        if ([key isEqualToString:prefix]) continue; // exact match handled separately
 
         LGWritePreference(key, @YES);
         [self syncToggleForKey:key on:YES];
         [self updatePanelsControlledByEnabledKey:key enabled:YES animated:YES];
-        foundAny = YES;
     }
-    // 也处理精确匹配的情况（Clock.Enabled 不带后缀）
-    if (!foundAny) {
-        LGWritePreference(prefix, @YES);
-        [self syncToggleForKey:prefix on:YES];
-        [self updatePanelsControlledByEnabledKey:prefix enabled:YES animated:YES];
-    }
+    // 始终写不带后缀的 key（渲染端读 Clock.Enabled，不带 .Light/.Dark 后缀）
+    LGWritePreference(prefix, @YES);
+    [self syncToggleForKey:prefix on:YES];
+    [self updatePanelsControlledByEnabledKey:prefix enabled:YES animated:YES];
 }
 
 // 查找并关闭所有以指定前缀开头的开关（处理 Clock.Enabled.Light/.Dark 等变体）
