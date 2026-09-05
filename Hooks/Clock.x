@@ -579,17 +579,16 @@ static void LGEnsureClockVariableFontMetadata(void) {
         else if (LGAxisNameMatches(name, @"soft", @"soft")) key = @"softness";
         if (!key.length) continue;
 
-            ids[key] = identifier;
-            ranges[key] = @[
-                @([minimum isKindOfClass:[NSNumber class]] ? minimum.doubleValue : -CGFLOAT_MAX),
-                @([maximum isKindOfClass:[NSNumber class]] ? maximum.doubleValue : CGFLOAT_MAX),
-            ];
-        }
-        sClockVariableAxisIdentifiers = [ids copy];
-        sClockVariableAxisRanges = [ranges copy];
+        ids[key] = identifier;
+        ranges[key] = @[
+            @([minimum isKindOfClass:[NSNumber class]] ? minimum.doubleValue : -CGFLOAT_MAX),
+            @([maximum isKindOfClass:[NSNumber class]] ? maximum.doubleValue : CGFLOAT_MAX),
+        ];
+    }
+    sClockVariableAxisIdentifiers = [ids copy];
+    sClockVariableAxisRanges = [ranges copy];
 
-        if (baseFont) CFRelease(baseFont);
-    });
+    if (baseFont) CFRelease(baseFont);
 }
 
 static CGFloat LGClockClampedAxisValue(NSString *axisKey, CGFloat value) {
