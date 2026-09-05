@@ -2236,28 +2236,30 @@ static BOOL ccbgIsInsideManagedModule(UIView *materialView) {
 // 每次系统布局后或尝试显示时，如果该 MTMaterialView 在连接或媒体模块内，立即隐藏
 // 这能彻底解决系统持续重新显示 MTMaterialView 导致的模糊问题
 // 比 ccbgScheduleMaterialBlurClamp 的延迟方案更可靠
+// 注意：MTMaterialView 是私有类，编译器不知道其继承链
+// 需要将 self 强转为 UIView * 才能访问 hidden / layer 等属性
 %hook MTMaterialView
 
 // 系统布局完成后立即检查并隐藏
 - (void)layoutSubviews {
     %orig;
-    if (ccbgIsInsideManagedModule(self)) {
-        // 使用 self.hidden = YES 会调用我们 hook 的 setHidden:
-        // setHidden: 内部会检查并处理，不会递归
-        self.hidden = YES;
-        self.layer.opacity = 0.0f;
-        self.layer.hidden = YES;
+    UIView *selfView = (UIView *)self;
+    if (ccbgIsInsideManagedModule(selfView)) {
+        selfView.hidden = YES;
+        selfView.layer.opacity = 0.0f;
+        selfView.layer.hidden = YES;
     }
 }
 
 // 拦截系统尝试显示 MTMaterialView 的操作
 - (void)setHidden:(BOOL)hidden {
+    UIView *selfView = (UIView *)self;
     // 如果系统试图显示（hidden=NO），且该 MTMaterialView 在管理模块内，强制保持隐藏
-    if (!hidden && ccbgIsInsideManagedModule(self)) {
+    if (!hidden && ccbgIsInsideManagedModule(selfView)) {
         // 调用原始实现设置 hidden=YES，绕过我们的 hook 避免递归
         %orig(YES);
-        self.layer.opacity = 0.0f;
-        self.layer.hidden = YES;
+        selfView.layer.opacity = 0.0f;
+        selfView.layer.hidden = YES;
         return;
     }
     %orig;
@@ -2265,10 +2267,11 @@ static BOOL ccbgIsInsideManagedModule(UIView *materialView) {
 
 // 拦截系统通过 alpha 属性显示 MTMaterialView 的操作
 - (void)setAlpha:(CGFloat)alpha {
-    if (alpha > 0.01 && ccbgIsInsideManagedModule(self)) {
+    UIView *selfView = (UIView *)self;
+    if (alpha > 0.01 && ccbgIsInsideManagedModule(selfView)) {
         %orig(0.0f);
-        self.layer.opacity = 0.0f;
-        self.layer.hidden = YES;
+        selfView.layer.opacity = 0.0f;
+        selfView.layer.hidden = YES;
         return;
     }
     %orig;
@@ -2277,10 +2280,11 @@ static BOOL ccbgIsInsideManagedModule(UIView *materialView) {
 // MTMaterialView 被添加到窗口时检查
 - (void)didMoveToWindow {
     %orig;
-    if (ccbgIsInsideManagedModule(self)) {
-        self.hidden = YES;
-        self.layer.opacity = 0.0f;
-        self.layer.hidden = YES;
+    UIView *selfView = (UIView *)self;
+    if (ccbgIsInsideManagedModule(selfView)) {
+        selfView.hidden = YES;
+        selfView.layer.opacity = 0.0f;
+        selfView.layer.hidden = YES;
     }
 }
 
