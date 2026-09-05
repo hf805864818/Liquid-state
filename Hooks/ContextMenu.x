@@ -15,7 +15,6 @@ static void *kCtxOriginalHiddenKey = &kCtxOriginalHiddenKey;
 static void *kCtxOriginalRadiusKey = &kCtxOriginalRadiusKey;
 static void *kCtxOriginalCurveKey = &kCtxOriginalCurveKey;
 static void *kCtxOriginalFrameKey = &kCtxOriginalFrameKey;
-static void *kCtxOriginalBgColorKey = &kCtxOriginalBgColorKey;
 
 static void ctxRememberVisualState(UIView *view) {
     if (!view) return;
@@ -24,14 +23,6 @@ static void ctxRememberVisualState(UIView *view) {
         objc_setAssociatedObject(view, kCtxOriginalHiddenKey, @(view.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(view, kCtxOriginalRadiusKey, @(view.layer.cornerRadius), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(view, kCtxOriginalCurveKey, view.layer.cornerCurve ?: @"", OBJC_ASSOCIATION_COPY_NONATOMIC);
-    }
-}
-
-static void ctxRememberBackgroundColor(UIView *view) {
-    if (!view) return;
-    if (!objc_getAssociatedObject(view, kCtxOriginalBgColorKey)) {
-        UIColor *bg = view.backgroundColor;
-        objc_setAssociatedObject(view, kCtxOriginalBgColorKey, bg ?: [UIColor clearColor], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 }
 
@@ -151,31 +142,13 @@ static void hideContextMenuSeparators(UIView *root) {
     }
 }
 
-// 系统材质的视觉层：模糊采样层(Backdrop) + 着色/滤镜层(EffectSubview/EffectFilter)。
-// 浅色模式下着色层近白，若保留，我们注入的玻璃会把这层白一并 backdrop 采样进去，
-// 呈现奶白磨砂而非通透玻璃；这里把它们全部压掉，只保留 contentView(菜单内容) 和我们自己的玻璃，
-// 这样玻璃采样到的就是材质身后真实的桌面（与深色模式一致）。
-static BOOL ctxIsSystemMaterialLayer(UIView *view) {
-    if ([view isKindOfClass:[LGLiveBackdropView class]]) return NO;
-    NSString *cls = NSStringFromClass(view.class);
-    return [cls containsString:@"Backdrop"]
-        || [cls containsString:@"EffectSubview"]
-        || [cls containsString:@"EffectFilter"];
-}
-
 static void setBackdropHiddenInEffectView(UIView *effectView) {
-    UIView *contentView = [(UIVisualEffectView *)effectView contentView];
-    // 材质视觉层是 fx 的直接子视图，着色层在部分版本上位于 contentView 内，两处都处理。
-    NSMutableArray<UIView *> *roots = [NSMutableArray arrayWithObject:effectView];
-    if (contentView) [roots addObject:contentView];
-    for (UIView *root in roots) {
-        for (UIView *sub in root.subviews) {
-            if (sub == contentView) continue;
-            if ([sub isKindOfClass:[LGLiveBackdropView class]]) continue;
-            if (ctxIsSystemMaterialLayer(sub)) {
-                ctxRememberVisualState(sub);
-                sub.alpha = 0.0;
-            }
+    for (UIView *sub in effectView.subviews) {
+        if ([sub isKindOfClass:[LGLiveBackdropView class]]) continue;
+        if ([NSStringFromClass(sub.class) containsString:@"Backdrop"]) { ctxRememberVisualState(sub); sub.alpha = 0.0; return; }
+        for (UIView *inner in sub.subviews) {
+            if ([inner isKindOfClass:[LGLiveBackdropView class]]) continue;
+            if ([NSStringFromClass(inner.class) containsString:@"Backdrop"]) { ctxRememberVisualState(inner); inner.alpha = 0.0; return; }
         }
     }
 }
@@ -193,25 +166,16 @@ static void injectGlassIntoContextEffectView(UIVisualEffectView *fx, int attempt
         return;
     }
 
-    // 采用与文件夹/控制中心一致的"兄弟视图 + 材质隐藏"模式：
-    // 玻璃作为 fx 的兄弟视图插在 fx 后面(below)，这样玻璃的 backdrop 采样到的是
-    // fx 身后的桌面（而不是 fx 自身的渲染输出），浅色模式下也能有真正通透的玻璃感。
-    // contentView 里的菜单内容仍在 fx 内部，显示在玻璃上方，不影响可读性。
-    // 同时继续隐藏 fx 内部的材质层（Backdrop/EffectSubview/EffectFilter），
-    // 让 fx 背景透明，露出下面的玻璃。
-    UIView *parent = fx.superview;
-    if (!parent) return;
-
     LGLiveBackdropView *glass = objc_getAssociatedObject(fx, kCtxGlassKey);
     if (!glass) {
-        glass = LGCreateRegisteredGlass(fx.bounds, nil, @"ContextMenu");
+        glass = LGCreateRegisteredGlass(container.bounds, nil, @"ContextMenu");
         if (!glass) return;
         glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [parent insertSubview:glass belowSubview:fx];
+        [container insertSubview:glass atIndex:0];
         objc_setAssociatedObject(fx, kCtxGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (glass.superview != parent) [parent insertSubview:glass belowSubview:fx];
-    glass.frame                = fx.frame;
+    if (glass.superview != container) [container insertSubview:glass atIndex:0];
+    glass.frame                = container.bounds;
     glass.layer.cornerRadius   = kCtxCornerRadius;
     glass.layer.cornerCurve    = kCACornerCurveContinuous;
     glass.layer.masksToBounds  = YES;
@@ -281,8 +245,6 @@ static void restoreContextMenuSubtree(UIView *view) {
     if (frame) { view.frame = frame.CGRectValue; objc_setAssociatedObject(view, kCtxOriginalFrameKey, nil, OBJC_ASSOCIATION_ASSIGN); }
     UIColor *background = objc_getAssociatedObject(view, kCtxGapOriginalBgKey);
     if (background) { view.backgroundColor = background; objc_setAssociatedObject(view, kCtxGapOriginalBgKey, nil, OBJC_ASSOCIATION_ASSIGN); }
-    UIColor *origBg = objc_getAssociatedObject(view, kCtxOriginalBgColorKey);
-    if (origBg) { view.backgroundColor = origBg; objc_setAssociatedObject(view, kCtxOriginalBgColorKey, nil, OBJC_ASSOCIATION_ASSIGN); }
     UIView *divider = [view viewWithTag:kCtxDividerTag];
     [divider removeFromSuperview];
     for (UIView *sub in [view.subviews copy]) restoreContextMenuSubtree(sub);
@@ -302,29 +264,6 @@ static void ctxRoundSubtree(UIView *v) {
 static void ctxHideBackdropsInSubtree(UIView *v) {
     if ([v isKindOfClass:[UIVisualEffectView class]]) setBackdropHiddenInEffectView(v);
     for (UIView *c in v.subviews) ctxHideBackdropsInSubtree(c);
-}
-
-// 浅色模式下，除了 UIVisualEffectView 内部的材质层，菜单外层容器 / platter / 背景层
-// 也可能带有白色背景色，它们位于玻璃背后，会被玻璃的 backdrop 一并采样进去，
-// 导致无论怎么调玻璃参数都呈奶白磨砂感。
-//
-// 这里采用保守策略：只清背景色，不隐藏任何视图（避免误杀 UIAlertController /
-// 操作表等复用同类容器的系统弹窗，导致"应用"等确认框点不出来或看不见）。
-// 材质层（Backdrop / EffectSubview / EffectFilter）仍由 setBackdropHiddenInEffectView
-// 精确处理（只作用于 UIVisualEffectView 内部子视图，安全）。
-static void ctxStripContainerBackgrounds(UIView *root) {
-    if (!root) return;
-    // 跳过我们自己的玻璃和系统材质视图（后者由专门函数处理）
-    if ([root isKindOfClass:[LGLiveBackdropView class]]) return;
-    if ([root isKindOfClass:[UIVisualEffectView class]]) return;
-
-    if (root.backgroundColor && CGColorGetAlpha(root.backgroundColor.CGColor) > 0.001) {
-        ctxRememberBackgroundColor(root);
-        root.backgroundColor = UIColor.clearColor;
-    }
-    for (UIView *c in [root.subviews copy]) {
-        ctxStripContainerBackgrounds(c);
-    }
 }
 
 static void styleContextMenuListSubviews(UIView *listView) {
@@ -389,12 +328,8 @@ static void styleContextMenuListSubviews(UIView *listView) {
 %hook _UIContextMenuContainerView
 - (void)layoutSubviews {
     %orig;
-    if (lgHostEnabled(@"ContextMenu")) {
-        ctxHideBackdropsInSubtree((UIView *)self);
-        ctxStripContainerBackgrounds((UIView *)self);
-    } else {
-        restoreContextMenuSubtree((UIView *)self);
-    }
+    if (lgHostEnabled(@"ContextMenu")) ctxHideBackdropsInSubtree((UIView *)self);
+    else restoreContextMenuSubtree((UIView *)self);
 }
 %end
 
