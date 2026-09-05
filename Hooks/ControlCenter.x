@@ -47,31 +47,28 @@ static BOOL ccIsInControlCenterModule(UIView *mat) {
     return NO;
 }
 
-// 播放控制（媒体）模块判定：沿祖先链匹配类名关键词，命中媒体词且不含音量/亮度/滑块等排除词。
-// 与 CustomCCBg 的媒体模块识别保持同一套关键词思路，避免把音量/亮度滑块误判成媒体模块。
-static BOOL ccIsMediaModuleMaterial(UIView *mat) {
-    static NSArray<NSString *> *mediaKW;
-    static NSArray<NSString *> *excludeKW;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        mediaKW = @[ @"NowPlaying", @"MediaControl", @"MediaModule",
-                     @"PlaybackControl", @"MRUNowPlaying", @"MPNowPlaying" ];
-        excludeKW = @[ @"Volume", @"Brightness", @"Slider", @"Mirroring",
-                       @"AirPlay", @"Flashlight", @"Calculator", @"Camera" ];
-    });
-    for (UIView *a = mat; a; a = a.superview) {
-        NSString *cls = NSStringFromClass([a class]);
-        if (!cls.length) continue;
-        BOOL excluded = NO;
-        for (NSString *ex in excludeKW) {
-            if ([cls rangeOfString:ex].location != NSNotFound) { excluded = YES; break; }
-        }
-        if (excluded) continue;
-        for (NSString *kw in mediaKW) {
-            if ([cls rangeOfString:kw].location != NSNotFound) return YES;
-        }
+// 大型模块卡片（宽、高都 >100，如 ccflex 拉出的 4×3/3×2/4×4）的圆角。
+// 这类宽矩形绝不能用胶囊圆角（短边÷2 会变成椭圆）。系统/ccflex 会把正确的“卡片圆角”
+// 设在模块容器或其外层 platter 上，而不是材质自身，因此沿父链向上查找一个合理的圆角值：
+// 取值范围限定在 (1, 短边*0.45)，借此排除胶囊值(≈短边*0.5)；取其中最大者（最外层 platter）。
+// 读不到时回退到卡片级比例圆角（短边*0.20，上限 48pt，连续圆角观感）。
+static CGFloat ccLargeCardCornerRadius(UIView *mat, CGFloat shortEdge) {
+    CGFloat pillLimit = shortEdge * 0.45;
+    CGFloat best = 0.0;
+    UIView *module = ccModuleAncestor(mat);
+    // 从材质自身向上到模块容器（含）为止
+    for (UIView *v = mat, *stop = module ?: mat.superview; v; v = v.superview) {
+        CGFloat r = v.layer.cornerRadius;
+        if (r > 1.0 && r < pillLimit && r > best) best = r;
+        if (v == stop) break;
     }
-    return NO;
+    // 模块容器外层 platter 也看一层
+    if (best <= 0.0 && module.superview) {
+        CGFloat r = module.superview.layer.cornerRadius;
+        if (r > 1.0 && r < pillLimit) best = r;
+    }
+    if (best > 0.0) return best;
+    return fmin(shortEdge * 0.20, 48.0);
 }
 
 // 仅判断“该材质是否需要装玻璃”，与圆角数值解耦：
@@ -107,11 +104,12 @@ static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
     if (w > 100.0 && h < 100.0) return h * 0.5;
     if (h > 100.0 && w < 100.0) return w * 0.5;
 
-    // 播放控制（媒体）模块被 ccflex 等在网格内拉成大卡片（宽、高都 >100，如 4×3/3×2/4×4）时，
-    // 不再强制胶囊圆角（否则短边÷2 会把宽矩形拉成椭圆），返回 -1 让玻璃跟随系统/ccflex
-    // 设在材质上的圆角。折叠态媒体横条（高<100）已在上面横条分支处理，不受影响。
-    if (w > 100.0 && h > 100.0 && ccIsMediaModuleMaterial(mat)) {
-        return -1.0;
+    // 大型模块卡片：宽、高都 >100 且非正方形（正方形已在上面 ccIsModuleCandidate 处理）。
+    // 典型为 ccflex 在网格内拉出的 4×3/3×2/4×4 等大卡片。这类宽矩形不能用胶囊圆角
+    // （短边÷2 会拉成椭圆），改为读取系统/ccflex 设在卡片容器上的真实圆角，回退到卡片比例圆角。
+    // 折叠态横条/竖条（另一边<100）已在上面两条分支处理，小模块/按钮/滑块也都提前返回，不受影响。
+    if (w > 100.0 && h > 100.0) {
+        return ccLargeCardCornerRadius(mat, fmin(w, h));
     }
 
     return ccPillRadius(mat);
