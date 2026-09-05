@@ -1230,6 +1230,8 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
         // --- 全屏背景 ---
         if (self.fullscreenEnabled && self.originalMaterialView) {
             self.originalMaterialView.hidden = YES;
+            self.originalMaterialView.layer.opacity = 0.0f;
+            self.originalMaterialView.layer.hidden = YES;
         }
         if (self.fullscreenEnabled) {
             // 恢复 opacity 和 hidden（与关闭时的设置对称）
@@ -1412,6 +1414,24 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     self.bgContainerView.layer.opacity = 1.0f;
     self.bgContainerView.layer.hidden = NO;
     self.bgContainerView.hidden = NO;
+
+    // 每次更新都强制重新隐藏系统毛玻璃层
+    // 系统会在布局过程中重新显示 MTMaterialView，导致模糊覆盖在自定义背景上
+    if (self.originalMaterialView) {
+        self.originalMaterialView.hidden = YES;
+        self.originalMaterialView.layer.opacity = 0.0f;
+        self.originalMaterialView.layer.hidden = YES;
+    }
+    // 延迟再次隐藏，防止系统在布局后重新显示
+    __weak UIView *weakMat = self.originalMaterialView;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIView *mat = weakMat;
+        if (mat) {
+            mat.hidden = YES;
+            mat.layer.opacity = 0.0f;
+            mat.layer.hidden = YES;
+        }
+    });
 
     [self ensureCacheValidForType:kCCBgTypeFullscreen];
 
