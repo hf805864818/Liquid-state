@@ -290,7 +290,7 @@ static void styleContextMenuListSubviews(UIView *listView) {
     if (!self_.window) { removeGlassFromContextEffectView((UIVisualEffectView *)self_); return; }
     if (!isInsideContextMenu(self_)) return;
     if (!lgHostEnabled(@"ContextMenu")) { restoreContextMenuSubtree(self_); return; }
-    setBackdropHiddenInEffectView(self_);
+    setBackdropHiddenInEffectView((UIVisualEffectView *)self_);
     if (!hasAncestorOfClassName(self_, @"_UIContextMenuListView")) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -302,7 +302,7 @@ static void styleContextMenuListSubviews(UIView *listView) {
     UIView *self_ = (UIView *)self;
     if (!isInsideContextMenu(self_)) return;
     if (!lgHostEnabled(@"ContextMenu")) { restoreContextMenuSubtree(self_); return; }
-    setBackdropHiddenInEffectView(self_);
+    setBackdropHiddenInEffectView((UIVisualEffectView *)self_);
     if (hasAncestorOfClassName(self_, @"_UIContextMenuListView"))
         injectGlassIntoContextEffectView((UIVisualEffectView *)self_, 10);
 }
