@@ -595,7 +595,7 @@ static void ccApplyOrRestoreRound(UIView *view, CGFloat radius, BOOL eligible) {
     lgRound(view, radius);
 }
 
-static void roundContinuousSliderFill(UIView *slider) {
+static void roundSliderFill(UIView *slider) {
     BOOL eligible = YES;
     CGFloat customRadius = LG_prefFloat(@"ControlCenter.SliderCornerRadius", -1.0);
     for (UIView *child in slider.subviews) {
@@ -609,18 +609,28 @@ static void roundContinuousSliderFill(UIView *slider) {
     }
 }
 
-static void roundMRUSliderFill(UIView *slider) {
-    BOOL eligible = YES;
-    CGFloat customRadius = LG_prefFloat(@"ControlCenter.SliderCornerRadius", -1.0);
-    for (UIView *child in slider.subviews) {
-        if (!isExactClass(child, @"UIView")) continue;
-        for (UIView *gc in child.subviews) {
-            if (isExactClass(gc, @"MTMaterialView")) {
-                CGFloat r = (customRadius >= 0.0) ? customRadius : ccPillRadius(gc);
-                ccApplyOrRestoreRound(gc, r, eligible);
-            }
-        }
-    }
+// 延迟重新应用圆角: iOS 系统在 layoutSubviews 之后经常会重置 MTMaterialView
+// 的 cornerRadius (通过后续布局代码、隐式动画或属性设置器)。
+// 延迟重新应用可以捕获这些后续重置，确保圆角始终生效。
+static void ccScheduleSliderReRound(UIView *slider) {
+    if (!slider) return;
+    __weak UIView *weakSlider = slider;
+
+    // 50ms: 捕获 layoutSubviews 后立即发生的属性重置
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *s = weakSlider;
+        if (!s || !s.window) return;
+        roundSliderFill(s);
+    });
+
+    // 200ms: 捕获动画完成后的属性重置
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *s = weakSlider;
+        if (!s || !s.window) return;
+        roundSliderFill(s);
+    });
 }
 
 #pragma mark - Slider Percentage Display
@@ -962,13 +972,15 @@ static void ccSliderStopDisplayLink(UIView *slider) {
 %hook CCUIContinuousSliderView
 - (void)layoutSubviews {
     %orig;
-    roundContinuousSliderFill((UIView *)self);
+    roundSliderFill((UIView *)self);
     ccSliderUpdateAll((UIView *)self);
+    ccScheduleSliderReRound((UIView *)self);
 }
 - (void)didMoveToWindow {
     %orig;
-    roundContinuousSliderFill((UIView *)self);
+    roundSliderFill((UIView *)self);
     ccSliderUpdatePercentLabel((UIView *)self);
+    ccScheduleSliderReRound((UIView *)self);
     if ([(UIView *)self window]) {
         ccSliderStartDisplayLink((UIView *)self); // 滑块可见时持续运行,捕获按键驱动的值变化
     } else {
@@ -1002,13 +1014,15 @@ static void ccSliderStopDisplayLink(UIView *slider) {
 %hook MRUContinuousSliderView
 - (void)layoutSubviews {
     %orig;
-    roundMRUSliderFill((UIView *)self);
+    roundSliderFill((UIView *)self);
     ccSliderUpdateAll((UIView *)self);
+    ccScheduleSliderReRound((UIView *)self);
 }
 - (void)didMoveToWindow {
     %orig;
-    roundMRUSliderFill((UIView *)self);
+    roundSliderFill((UIView *)self);
     ccSliderUpdatePercentLabel((UIView *)self);
+    ccScheduleSliderReRound((UIView *)self);
     if ([(UIView *)self window]) {
         ccSliderStartDisplayLink((UIView *)self);
     } else {
