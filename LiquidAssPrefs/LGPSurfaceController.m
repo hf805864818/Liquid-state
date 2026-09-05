@@ -1514,13 +1514,14 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
         }
 
         // 磨砂/液态互斥：开一个自动关另一个
+        // 注意：Clock.Enabled 在深浅模式编辑下会变成 Clock.Enabled.Light/.Dark
+        // 所以用 hasPrefix 匹配，而不是 isEqualToString
         if (sender.isOn) {
-            if ([item[@"key"] isEqualToString:@"Clock.FrostedMode"]) {
-                // 磨砂开 → 液态关
-                LGWritePreference(@"Clock.Enabled", @NO);
-                [self syncToggleForKey:@"Clock.Enabled" on:NO];
-                [self updatePanelsControlledByEnabledKey:@"Clock.Enabled" enabled:NO animated:YES];
-            } else if ([item[@"key"] isEqualToString:@"Clock.Enabled"]) {
+            NSString *itemKey = item[@"key"];
+            if ([itemKey isEqualToString:@"Clock.FrostedMode"]) {
+                // 磨砂开 → 液态关（找到所有 Clock.Enabled.* 开关）
+                [self turnOffTogglesWithPrefix:@"Clock.Enabled"];
+            } else if ([itemKey hasPrefix:@"Clock.Enabled"]) {
                 // 液态开 → 磨砂关
                 LGWritePreference(@"Clock.FrostedMode", @NO);
                 [self syncToggleForKey:@"Clock.FrostedMode" on:NO];
@@ -1530,6 +1531,28 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     }] forControlEvents:UIControlEventValueChanged];
     objc_setAssociatedObject(toggle, kLGControlledByEnabledKey, item[@"controls_following_panel"], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return toggle;
+}
+
+// 查找并关闭所有以指定前缀开头的开关（处理 Clock.Enabled.Light/.Dark 等变体）
+- (void)turnOffTogglesWithPrefix:(NSString *)prefix {
+    NSArray<NSDictionary *> *items = _items;
+    for (NSDictionary *item in items) {
+        NSString *key = item[@"key"];
+        if (![item[@"type"] isEqualToString:@"switch"]) continue;
+        if (![key hasPrefix:prefix]) continue;
+        if ([key isEqualToString:prefix]) continue; // exact match handled separately
+
+        // 写入偏好
+        LGWritePreference(key, @NO);
+        // 更新开关 UI
+        [self syncToggleForKey:key on:NO];
+        // 更新依赖此开关的面板
+        [self updatePanelsControlledByEnabledKey:key enabled:NO animated:YES];
+    }
+    // 也处理精确匹配的情况（Clock.Enabled 不带后缀）
+    LGWritePreference(prefix, @NO);
+    [self syncToggleForKey:prefix on:NO];
+    [self updatePanelsControlledByEnabledKey:prefix enabled:NO animated:YES];
 }
 
 // 按偏好键查找 UISwitch 并设置开关状态（不触发 ValueChanged 事件）
