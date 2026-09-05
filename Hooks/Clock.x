@@ -501,62 +501,83 @@ static NSHashTable<UIView *> *LGClockHostRegistry(void) {
     return sClockHosts;
 }
 
+// 【修复字体选择无效】重置字体元数据，允许重新加载
+// 原因：原 dispatch_once 只执行一次，切换字体后元数据不刷新
+static BOOL sClockFontMetadataLoaded = NO;
+
+static void LGResetClockVariableFontMetadata(void) {
+    if (sClockVariableCGFont) {
+        CTFontManagerUnregisterGraphicsFont(sClockVariableCGFont, NULL);
+        CGFontRelease(sClockVariableCGFont);
+        sClockVariableCGFont = NULL;
+    }
+    sClockVariablePostScriptName = nil;
+    sClockVariableAxisIdentifiers = nil;
+    sClockVariableAxisRanges = nil;
+    sClockFontMetadataLoaded = NO;
+    [LGClockVariableCTFontCache() removeAllObjects];
+}
+
 static void LGEnsureClockVariableFontMetadata(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSString *fontPath = LGClockVariableFontPath();
-        if (!fontPath.length) return;
+    if (sClockFontMetadataLoaded) return;
+    sClockFontMetadataLoaded = YES;
 
-        NSURL *fontURL = [NSURL fileURLWithPath:fontPath];
-        NSData *fontData = [NSData dataWithContentsOfURL:fontURL];
-        if (![fontData isKindOfClass:[NSData class]] || fontData.length == 0) {
-            LGClockLog(@"clock variable font read failed path=%@", fontPath);
-            return;
-        }
+    NSString *fontPath = LGClockVariableFontPath();
+    if (!fontPath.length) return;
 
-        CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)fontData);
-        if (!provider) {
-            LGClockLog(@"clock variable font provider create failed path=%@", fontPath);
-            return;
-        }
-        CGFontRef cgFont = CGFontCreateWithDataProvider(provider);
-        CGDataProviderRelease(provider);
-        if (!cgFont) {
-            LGClockLog(@"clock variable font CGFont create failed path=%@", fontPath);
-            return;
-        }
-        sClockVariableCGFont = cgFont;
+    NSURL *fontURL = [NSURL fileURLWithPath:fontPath];
+    NSData *fontData = [NSData dataWithContentsOfURL:fontURL];
+    if (![fontData isKindOfClass:[NSData class]] || fontData.length == 0) {
+        LGClockLog(@"clock variable font read failed path=%@", fontPath);
+        sClockFontMetadataLoaded = NO;
+        return;
+    }
 
-        sClockVariablePostScriptName = CFBridgingRelease(CGFontCopyPostScriptName(cgFont));
-        CFErrorRef registerError = NULL;
-        BOOL registered = CTFontManagerRegisterGraphicsFont(cgFont, &registerError);
-        if (!registered && registerError) {
-            NSError *error = CFBridgingRelease(registerError);
-            LGClockLog(@"clock variable font register failed postscript=%@ error=%@",
-                  sClockVariablePostScriptName ?: @"(null)",
-                  error);
-        }
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)fontData);
+    if (!provider) {
+        LGClockLog(@"clock variable font provider create failed path=%@", fontPath);
+        sClockFontMetadataLoaded = NO;
+        return;
+    }
+    CGFontRef cgFont = CGFontCreateWithDataProvider(provider);
+    CGDataProviderRelease(provider);
+    if (!cgFont) {
+        LGClockLog(@"clock variable font CGFont create failed path=%@", fontPath);
+        sClockFontMetadataLoaded = NO;
+        return;
+    }
+    sClockVariableCGFont = cgFont;
 
-        CTFontRef baseFont = CTFontCreateWithGraphicsFont(cgFont, 60.0, NULL, NULL);
-        NSArray *axes = baseFont ? CFBridgingRelease(CTFontCopyVariationAxes(baseFont)) : nil;
-        if (!axes.count) {
-            LGClockLog(@"clock variable font has no variation axes postscript=%@", sClockVariablePostScriptName ?: @"(null)");
-        }
-        NSMutableDictionary<NSString *, NSNumber *> *ids = [NSMutableDictionary dictionary];
-        NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *ranges = [NSMutableDictionary dictionary];
-        for (NSDictionary *axis in axes) {
-            NSString *name = axis[(id)kCTFontVariationAxisNameKey];
-            NSNumber *identifier = axis[(id)kCTFontVariationAxisIdentifierKey];
-            NSNumber *minimum = axis[(id)kCTFontVariationAxisMinimumValueKey];
-            NSNumber *maximum = axis[(id)kCTFontVariationAxisMaximumValueKey];
-            if (![identifier isKindOfClass:[NSNumber class]]) continue;
+    sClockVariablePostScriptName = CFBridgingRelease(CGFontCopyPostScriptName(cgFont));
+    CFErrorRef registerError = NULL;
+    BOOL registered = CTFontManagerRegisterGraphicsFont(cgFont, &registerError);
+    if (!registered && registerError) {
+        NSError *error = CFBridgingRelease(registerError);
+        LGClockLog(@"clock variable font register failed postscript=%@ error=%@",
+              sClockVariablePostScriptName ?: @"(null)",
+              error);
+    }
 
-            NSString *key = nil;
-            if (LGAxisNameMatches(name, @"weight", @"wght")) key = @"weight";
-            else if (LGAxisNameMatches(name, @"width", @"wdth")) key = @"width";
-            else if (LGAxisNameMatches(name, @"height", @"hght")) key = @"height";
-            else if (LGAxisNameMatches(name, @"soft", @"soft")) key = @"softness";
-            if (!key.length) continue;
+    CTFontRef baseFont = CTFontCreateWithGraphicsFont(cgFont, 60.0, NULL, NULL);
+    NSArray *axes = baseFont ? CFBridgingRelease(CTFontCopyVariationAxes(baseFont)) : nil;
+    if (!axes.count) {
+        LGClockLog(@"clock variable font has no variation axes postscript=%@", sClockVariablePostScriptName ?: @"(null)");
+    }
+    NSMutableDictionary<NSString *, NSNumber *> *ids = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *ranges = [NSMutableDictionary dictionary];
+    for (NSDictionary *axis in axes) {
+        NSString *name = axis[(id)kCTFontVariationAxisNameKey];
+        NSNumber *identifier = axis[(id)kCTFontVariationAxisIdentifierKey];
+        NSNumber *minimum = axis[(id)kCTFontVariationAxisMinimumValueKey];
+        NSNumber *maximum = axis[(id)kCTFontVariationAxisMaximumValueKey];
+        if (![identifier isKindOfClass:[NSNumber class]]) continue;
+
+        NSString *key = nil;
+        if (LGAxisNameMatches(name, @"weight", @"wght")) key = @"weight";
+        else if (LGAxisNameMatches(name, @"width", @"wdth")) key = @"width";
+        else if (LGAxisNameMatches(name, @"height", @"hght")) key = @"height";
+        else if (LGAxisNameMatches(name, @"soft", @"soft")) key = @"softness";
+        if (!key.length) continue;
 
             ids[key] = identifier;
             ranges[key] = @[
@@ -3038,6 +3059,10 @@ static void LGRefreshAllClockHosts(void) {
 %ctor {
     if (!LGIsSpringBoardProcess()) return;
     lgObservePreferenceReload(^{
+        // 【修复字体选择无效】重置字体元数据，使下次调用重新加载
+        // 这样新的字体名称和字重设置能立即生效（无需注销）
+        LGResetClockVariableFontMetadata();
+
         // 诊断: 打印所有 Clock 相关的偏好设置
         NSDictionary *allPrefs = [NSDictionary dictionaryWithContentsOfFile:
             jbroot(@"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist")] ?: @{};
