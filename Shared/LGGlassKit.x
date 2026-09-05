@@ -109,6 +109,31 @@ void lgSuppressStock(UIView *v, NSString *prefix, BOOL setHidden) {
     [sSuppressed setObject:prefix forKey:v];
 }
 
+// 已安装玻璃的材质在尺寸/形态变化后（典型：ccflex 在玻璃安装后才把模块从小尺寸拉成 4×3），
+// 用所属宿主“当前”的圆角 provider 重新计算圆角并同步几何。否则快速路径只会沿用安装那一刻
+// 锁定的圆角（当时模块还是小方块/胶囊，算出来是圆形/胶囊值），模块放大后大卡片上就套了个圆。
+static void lgResyncInstalledGlass(UIView *material) {
+    LGLiveBackdropView *glass = objc_getAssociatedObject(material, kGlassKey);
+    if (!glass) return;
+    LGGlassRec *rec = sGlassRecs ? [sGlassRecs objectForKey:glass] : nil;
+    NSString *prefix = rec.prefix;
+    LGMaterialHostRoute *route = nil;
+    if (prefix.length) {
+        for (LGMaterialHostRoute *r in sMaterialHostRoutes) {
+            if ([r.prefix isEqualToString:prefix]) { route = r; break; }
+        }
+    }
+    if (route && route.cornerRadiusProvider) {
+        CGFloat radius = route.cornerRadiusProvider(material);
+        NSString *filterType = LGFilterTypeForHostPrefix(prefix);
+        // 复用安装函数：玻璃已存在时只更新 frame/圆角并持久化新值，不会重复创建。
+        LGInjectGlassIntoMaterialGroupType(material, kGlassKey, route.outset,
+                                           radius, route.groupName, filterType);
+        return;
+    }
+    LGResyncGlassGeometry(material, kGlassKey);
+}
+
 #pragma mark - registered material lifecycle
 
 LGLiveBackdropView *LGCreateRegisteredGlass(CGRect frame,
@@ -190,9 +215,10 @@ static void lgRouteMaterialHost(UIView *material) {
         LGRemoveGlassFromMaterial(material, kGlassKey);
         return;
     }
-    // Fast path: if glass is already injected, just resync geometry (skip route matching)
+    // Fast path: if glass is already injected, resync geometry and re-evaluate
+    // the corner radius for the CURRENT bounds (size may have changed since install).
     if (LGMaterialHasGlass(material, kGlassKey)) {
-        LGResyncGlassGeometry(material, kGlassKey);
+        lgResyncInstalledGlass(material);
         return;
     }
     for (LGMaterialHostRoute *route in sMaterialHostRoutes) {
@@ -265,15 +291,15 @@ __attribute__((constructor)) static void lgGlassInitEnableObserver(void) {
 
 - (void)setFrame:(CGRect)frame {
     %orig;
-    LGResyncGlassGeometry((UIView *)self, kGlassKey);
+    lgResyncInstalledGlass((UIView *)self);
 }
 - (void)setBounds:(CGRect)bounds {
     %orig;
-    LGResyncGlassGeometry((UIView *)self, kGlassKey);
+    lgResyncInstalledGlass((UIView *)self);
 }
 - (void)setCenter:(CGPoint)center {
     %orig;
-    LGResyncGlassGeometry((UIView *)self, kGlassKey);
+    lgResyncInstalledGlass((UIView *)self);
 }
 
 %end
