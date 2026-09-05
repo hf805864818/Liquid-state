@@ -15,6 +15,7 @@ static void *kCtxOriginalHiddenKey = &kCtxOriginalHiddenKey;
 static void *kCtxOriginalRadiusKey = &kCtxOriginalRadiusKey;
 static void *kCtxOriginalCurveKey = &kCtxOriginalCurveKey;
 static void *kCtxOriginalFrameKey = &kCtxOriginalFrameKey;
+static void *kCtxOriginalEffectKey = &kCtxOriginalEffectKey;
 
 static void ctxRememberVisualState(UIView *view) {
     if (!view) return;
@@ -142,14 +143,15 @@ static void hideContextMenuSeparators(UIView *root) {
     }
 }
 
-static void setBackdropHiddenInEffectView(UIView *effectView) {
-    for (UIView *sub in effectView.subviews) {
-        if ([sub isKindOfClass:[LGLiveBackdropView class]]) continue;
-        if ([NSStringFromClass(sub.class) containsString:@"Backdrop"]) { ctxRememberVisualState(sub); sub.alpha = 0.0; return; }
-        for (UIView *inner in sub.subviews) {
-            if ([inner isKindOfClass:[LGLiveBackdropView class]]) continue;
-            if ([NSStringFromClass(inner.class) containsString:@"Backdrop"]) { ctxRememberVisualState(inner); inner.alpha = 0.0; return; }
-        }
+static void setBackdropHiddenInEffectView(UIVisualEffectView *fx) {
+    // 直接清除系统 UIVisualEffect 的 effect，彻底移除系统材质的模糊和着色
+    // 只隐藏 backdrop 子视图是不够的，系统材质的着色层还在
+    if (!fx || ![fx isKindOfClass:[UIVisualEffectView class]]) return;
+    UIVisualEffect *existing = objc_getAssociatedObject(fx, kCtxOriginalEffectKey);
+    if (existing) return; // 已经保存过，说明已经清除过了
+    if (fx.effect) {
+        objc_setAssociatedObject(fx, kCtxOriginalEffectKey, fx.effect, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        fx.effect = nil;
     }
 }
 
@@ -245,6 +247,14 @@ static void restoreContextMenuSubtree(UIView *view) {
     if (frame) { view.frame = frame.CGRectValue; objc_setAssociatedObject(view, kCtxOriginalFrameKey, nil, OBJC_ASSOCIATION_ASSIGN); }
     UIColor *background = objc_getAssociatedObject(view, kCtxGapOriginalBgKey);
     if (background) { view.backgroundColor = background; objc_setAssociatedObject(view, kCtxGapOriginalBgKey, nil, OBJC_ASSOCIATION_ASSIGN); }
+    // 恢复系统 UIVisualEffect 的原始 effect
+    if ([view isKindOfClass:[UIVisualEffectView class]]) {
+        UIVisualEffect *originalEffect = objc_getAssociatedObject(view, kCtxOriginalEffectKey);
+        if (originalEffect) {
+            ((UIVisualEffectView *)view).effect = originalEffect;
+            objc_setAssociatedObject(view, kCtxOriginalEffectKey, nil, OBJC_ASSOCIATION_ASSIGN);
+        }
+    }
     UIView *divider = [view viewWithTag:kCtxDividerTag];
     [divider removeFromSuperview];
     for (UIView *sub in [view.subviews copy]) restoreContextMenuSubtree(sub);
@@ -262,7 +272,7 @@ static void ctxRoundSubtree(UIView *v) {
 }
 
 static void ctxHideBackdropsInSubtree(UIView *v) {
-    if ([v isKindOfClass:[UIVisualEffectView class]]) setBackdropHiddenInEffectView(v);
+    if ([v isKindOfClass:[UIVisualEffectView class]]) setBackdropHiddenInEffectView((UIVisualEffectView *)v);
     for (UIView *c in v.subviews) ctxHideBackdropsInSubtree(c);
 }
 
