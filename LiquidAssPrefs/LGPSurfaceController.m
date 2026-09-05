@@ -548,14 +548,15 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
                          message:nil
                   preferredStyle:UIAlertControllerStyleActionSheet];
 
-    // 4 档字重依次递增（对应合成加粗量 0 / 0.5 / 1.0 / 1.67），保证每档肉眼可辨，
-    // 且“粗体”900 明显粗于默认值 750（旧预设粗体仅 700，反而比默认细，故选了像没效果）
+    // 4 档字重在 400~1000 全范围均匀分布，合成加粗量 (w-400)/600*2 依次为
+    // 0 / 0.67 / 1.33 / 2.0，相邻档差 0.67px、肉眼清晰可辨；默认 750(加粗1.17)
+    // 落在“中等~半粗”之间，“粗体”1000 顶到最粗，避免出现预设比默认还细的情况。
     CGFloat currentWeight = [LGReadPreference(@"Clock.VariableFont.Weight", @(750.0)) doubleValue];
     NSArray *presets = @[
         @{ @"title": LGLocalized(@"prefs.font_weight.regular"), @"value": @(400.0) },
-        @{ @"title": LGLocalized(@"prefs.font_weight.medium"), @"value": @(550.0) },
-        @{ @"title": LGLocalized(@"prefs.font_weight.semibold"), @"value": @(700.0) },
-        @{ @"title": LGLocalized(@"prefs.font_weight.bold"), @"value": @(900.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.medium"), @"value": @(600.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.semibold"), @"value": @(800.0) },
+        @{ @"title": LGLocalized(@"prefs.font_weight.bold"), @"value": @(1000.0) },
     ];
 
     for (NSDictionary *preset in presets) {
