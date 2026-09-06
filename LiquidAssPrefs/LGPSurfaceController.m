@@ -853,6 +853,12 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
         BOOL success = LGClockSaveUserPreset(name);
         if (success) {
             [weakSelf reloadVisibleSettings];
+            UIAlertController *tip = [UIAlertController
+                alertControllerWithTitle:@"保存成功"
+                                 message:@"已保存当前时钟风格。下次想用时直接在预设列表里点击应用即可，应用需要注销生效。"
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [tip addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
+            [weakSelf presentViewController:tip animated:YES completion:nil];
         }
     }]];
     [self presentViewController:alert animated:YES completion:nil];
