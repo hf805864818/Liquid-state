@@ -1516,10 +1516,10 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     R13TRACE("R13[%llu] before g_origGaussR13(%p)", callN, (void *)g_origGaussR13);
     if (g_inLegacyRender && g_origGaussR14) {
         g_origGaussR14(self, filter, layer, ctx, opacity, surface,
-                       0.0f, g_legacyRenderOffset, cm, shape, out);
+                       scale, g_legacyRenderOffset, cm, shape, out);
     } else if (g_origGaussR13) {
         g_origGaussR13(self, filter, layer, ctx, opacity, surface,
-                       0.0f, flag, cm, shape, out);
+                       scale, flag, cm, shape, out);
     }
     uint64_t t_afterGauss = mach_absolute_time();
     R13TRACE("R13[%llu] after g_origGaussR13", callN);
