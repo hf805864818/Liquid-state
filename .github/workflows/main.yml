@@ -116,6 +116,9 @@ jobs:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     permissions:
       contents: write
     steps:
@@ -128,6 +131,30 @@ jobs:
           path: ./all-packages
           pattern: "*-package"
           merge-multiple: true
+
+      - name: verify and rename packages
+        run: |
+          ls -la ./all-packages/
+          # 重新命名确保中文文件名正确（Ubuntu 下可能有编码问题）
+          cd ./all-packages
+          for f in *.deb; do
+            [ -f "$f" ] || continue
+            # 提取版本号和 scheme
+            SCHEME=""
+            if echo "$f" | grep -q "rootless"; then SCHEME="rootless"
+            elif echo "$f" | grep -q "roothide"; then SCHEME="roothide"
+            elif echo "$f" | grep -q "rootful"; then SCHEME="rootful"
+            fi
+            VERSION=$(echo "$f" | sed -n 's/.*_\([0-9.]*[a-z]*\)_.*/\1/p')
+            if [ -z "$VERSION" ]; then
+              VERSION=$(echo "$f" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[a-z]?' | head -1)
+            fi
+            if [ -n "$SCHEME" ] && [ -n "$VERSION" ] && [ "$f" != "Ai液态玻璃_${VERSION}_${SCHEME}.deb" ]; then
+              mv "$f" "Ai液态玻璃_${VERSION}_${SCHEME}.deb"
+              echo "Renamed: $f -> Ai液态玻璃_${VERSION}_${SCHEME}.deb"
+            fi
+          done
+          ls -la
 
       - name: read version
         id: version
