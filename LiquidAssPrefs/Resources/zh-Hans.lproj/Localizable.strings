@@ -179,6 +179,7 @@
 "prefs.misc.copy_debug_info.subtitle" = "将设备和设置信息复制到剪贴板。";
 "prefs.misc.debug_info.copied_title" = "调试信息已复制";
 "prefs.misc.debug_info.copied_message" = "调试信息已复制到剪贴板。";
+"prefs.misc.lobster.subtitle" = "跳转至 Ai龙虾 APP 下载页面。";
 "prefs.common.ok" = "好的";
 "prefs.button.confirm" = "确认";
 "prefs.button.save" = "保存";

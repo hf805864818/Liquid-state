@@ -453,6 +453,12 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)openLobsterReleases {
+    NSURL *url = [NSURL URLWithString:@"https://github.com/vbox-Ai/Lobster-APP/releases"];
+    if (!url) return;
+    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+}
+
 - (void)editThirdPartyAppRWB {
     LGPresentThirdPartyRWBEditor(self);
 }
