@@ -103,7 +103,8 @@ jobs:
             [ -f "$f" ] || continue
             base=$(basename "$f")
             ver=$(echo "$base" | sed -n 's/.*_\([^_]*\)_.*/\1/p')
-            mv "$f" "packages/Ai液态玻璃_${ver}_${{ matrix.scheme }}.deb"
+            # 先用 ASCII 安全名，避免 artifact 传输损坏中文
+            mv "$f" "packages/liquidglass_${ver}_${{ matrix.scheme }}.deb"
           done
 
       - name: upload package (${{ matrix.scheme }})
@@ -135,9 +136,8 @@ jobs:
       - name: verify and rename packages
         run: |
           ls -la ./all-packages/
-          # 重新命名确保中文文件名正确（Ubuntu 下可能有编码问题）
           cd ./all-packages
-          for f in *.deb; do
+          for f in liquidglass_*.deb; do
             [ -f "$f" ] || continue
             # 提取版本号和 scheme
             SCHEME=""
@@ -149,9 +149,10 @@ jobs:
             if [ -z "$VERSION" ]; then
               VERSION=$(echo "$f" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[a-z]?' | head -1)
             fi
-            if [ -n "$SCHEME" ] && [ -n "$VERSION" ] && [ "$f" != "Ai液态玻璃_${VERSION}_${SCHEME}.deb" ]; then
-              mv "$f" "Ai液态玻璃_${VERSION}_${SCHEME}.deb"
-              echo "Renamed: $f -> Ai液态玻璃_${VERSION}_${SCHEME}.deb"
+            if [ -n "$SCHEME" ] && [ -n "$VERSION" ]; then
+              NEWNAME="Ai液态玻璃_${VERSION}_${SCHEME}.deb"
+              mv "$f" "$NEWNAME"
+              echo "Renamed: $f -> $NEWNAME"
             fi
           done
           ls -la
