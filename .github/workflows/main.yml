@@ -97,6 +97,15 @@ jobs:
             FINALPACKAGE=1 \
             $SCHEME_FLAG
 
+      - name: rename deb (${{ matrix.scheme }})
+        run: |
+          for f in packages/*.deb; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            ver=$(echo "$base" | sed -n 's/.*_\([^_]*\)_.*/\1/p')
+            mv "$f" "packages/Ai液态玻璃_${ver}_${{ matrix.scheme }}.deb"
+          done
+
       - name: upload package (${{ matrix.scheme }})
         uses: actions/upload-artifact@v4
         with:
@@ -139,7 +148,7 @@ jobs:
         with:
           artifacts: "./all-packages/*.deb"
           tag: ${{ steps.version.outputs.tag }}
-          name: "LiquidAss ${{ steps.version.outputs.version }}"
+          name: "Ai液态玻璃 ${{ steps.version.outputs.version }}"
           body: |
             **版本:** ${{ steps.version.outputs.version }}
             **Commit:** ${{ github.sha }}
