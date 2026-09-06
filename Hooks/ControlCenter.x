@@ -144,7 +144,7 @@ static NSHashTable<UIView *> *ccOverlayRoots(void) {
 }
 
 static CGFloat ccFullscreenBlurRadius(void) {
-    return fmax(0.0, LG_prefFloat(@"ControlCenter.FullscreenBackdropBlurRadius", 8.0));
+    return fmax(0.0, LG_prefFloat(LGEffectivePrefKey(@"ControlCenter.FullscreenBackdropBlurRadius"), 8.0));
 }
 
 static UIColor *ccColorFromRGBAHex(NSString *hex, NSString *fallback) {
@@ -177,7 +177,7 @@ static UIColor *ccColorFromRGBAHex(NSString *hex, NSString *fallback) {
 
 static UIColor *ccFullscreenDimColor(void) {
     NSString *fallback = @"#00000033";
-    return ccColorFromRGBAHex(LG_prefString(@"ControlCenter.FullscreenBackdropDimColor", fallback), fallback);
+    return ccColorFromRGBAHex(LG_prefString(LGEffectivePrefKey(@"ControlCenter.FullscreenBackdropDimColor"), fallback), fallback);
 }
 
 static CGFloat ccFullscreenDimTargetAlpha(void) {
@@ -666,7 +666,7 @@ static void roundSliderFillRecursive(UIView *view, CGFloat customRadius, BOOL el
 
 static void roundSliderFill(UIView *slider) {
     BOOL eligible = YES;
-    CGFloat customRadius = LG_prefFloat(@"ControlCenter.SliderCornerRadius", -1.0);
+    CGFloat customRadius = LG_prefFloat(LGEffectivePrefKey(@"ControlCenter.SliderCornerRadius"), -1.0);
     roundSliderFillRecursive(slider, customRadius, eligible);
 }
 
@@ -699,11 +699,11 @@ static void ccScheduleSliderReRound(UIView *slider) {
 static const void *kCCSliderPercentLabelKey = &kCCSliderPercentLabelKey;
 
 static BOOL ccSliderPercentEnabled(void) {
-    return LG_prefBool(@"ControlCenter.SliderPercent.Enabled", YES);
+    return LG_prefBool(LGEffectivePrefKey(@"ControlCenter.SliderPercent.Enabled"), YES);
 }
 
 static BOOL ccSliderRandomColorEnabled(void) {
-    return LG_prefBool(@"ControlCenter.SliderPercent.RandomColor", NO);
+    return LG_prefBool(LGEffectivePrefKey(@"ControlCenter.SliderPercent.RandomColor"), NO);
 }
 
 // 预定义的鲜艳色板,确保可读性
@@ -844,15 +844,15 @@ static const void *kCCSliderHapticFeedbackKey = &kCCSliderHapticFeedbackKey;
 static const void *kCCSliderLastPercentTextKey = &kCCSliderLastPercentTextKey;
 
 static BOOL ccSliderHapticsEnabled(void) {
-    return LG_prefBool(@"ControlCenter.SliderHaptics.Enabled", YES);
+    return LG_prefBool(LGEffectivePrefKey(@"ControlCenter.SliderHaptics.Enabled"), YES);
 }
 
 static CGFloat ccSliderHapticIntensity(void) {
-    return LG_prefFloat(@"ControlCenter.SliderHaptics.Intensity", 0.6); // 中等强度
+    return LG_prefFloat(LGEffectivePrefKey(@"ControlCenter.SliderHaptics.Intensity"), 0.6); // 中等强度
 }
 
 static BOOL ccSliderEdgeFeedbackEnabled(void) {
-    return LG_prefBool(@"ControlCenter.SliderHaptics.EdgeFeedback", YES);
+    return LG_prefBool(LGEffectivePrefKey(@"ControlCenter.SliderHaptics.EdgeFeedback"), YES);
 }
 
 static UIImpactFeedbackGenerator *ccSliderHapticGenerator(UIView *slider) {
