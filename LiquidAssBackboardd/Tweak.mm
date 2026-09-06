@@ -947,8 +947,11 @@ static void lgReloadHostPrefs(void) {
     g_fresnelGlareStrength = [fresnelStrength isKindOfClass:NSNumber.class]
         ? fminf(1.0f, fmaxf(0.0f, fresnelStrength.floatValue)) : 0.5f;
     // Clock 磨砂模式：提前读取开关，下方据此应用 v0.1.73b 的磨砂参数预设
+    // iOS 26 时钟开关（Clock.VariableFont.Enabled）关闭时禁用磨砂模式，恢复原生时钟
     NSNumber *frostedNum = prefs[@"Clock.FrostedMode"];
-    g_clockFrostedMode = [frostedNum isKindOfClass:[NSNumber class]] ? frostedNum.boolValue : false;
+    NSNumber *variableFontNum = prefs[@"Clock.VariableFont.Enabled"];
+    BOOL variableFontEnabled = variableFontNum ? [variableFontNum isKindOfClass:[NSNumber class]] ? [variableFontNum boolValue] : YES : YES;
+    g_clockFrostedMode = (frostedNum && [frostedNum isKindOfClass:[NSNumber class]] && frostedNum.boolValue && variableFontEnabled);
     if (g_clockFrostedMode) lglog("Clock frosted mode: ON (v0.1.73b preset)");
     int overrides = 0;
     for (int i = 0; i < kHostCount; i++) {
