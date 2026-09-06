@@ -787,34 +787,28 @@ static void ccSliderUpdatePercentLabel(UIView *slider) {
     label.text = percentText;
     label.hidden = NO;
 
-    // 随机颜色: 百分比值变化时换一个新颜色, 平滑过渡
+    // 随机颜色: 百分比值变化时换一个新颜色
     if (ccSliderRandomColorEnabled()) {
         NSString *lastPercent = objc_getAssociatedObject(slider, kCCSliderLastColorPercentKey);
-        if (lastPercent && ![percentText isEqualToString:lastPercent]) {
-            // 百分比变了 → 换新颜色, 带平滑动画
+        BOOL percentChanged = lastPercent && ![percentText isEqualToString:lastPercent];
+        BOOL isFirstTime = !lastPercent;
+        // 安全网: 如果当前颜色仍是默认白色但随机颜色已开启，强制设置一次
+        BOOL colorIsStillDefault = CGColorEqualToColor(label.textColor.CGColor, UIColor.whiteColor.CGColor);
+
+        if (percentChanged || isFirstTime || colorIsStillDefault) {
             UIColor *newColor = ccPickRandomPaletteColor();
-            // 确保不和上一个颜色重复
-            if ([newColor isEqual:label.textColor]) {
+            // 百分比变化时，确保不和当前颜色重复
+            if (percentChanged && CGColorEqualToColor(newColor.CGColor, label.textColor.CGColor)) {
                 newColor = ccPickRandomPaletteColor();
             }
-            [UIView animateWithDuration:0.3
-                                  delay:0.0
-                                options:UIViewAnimationOptionCurveEaseInOut
-                             animations:^{
-                label.textColor = newColor;
-            } completion:nil];
-        } else if (!lastPercent) {
-            // 首次显示: 直接设随机色
-            label.textColor = ccPickRandomPaletteColor();
+            label.textColor = newColor;
         }
         objc_setAssociatedObject(slider, kCCSliderLastColorPercentKey,
                                  percentText, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     } else {
         // 随机颜色关闭: 恢复白色
-        if (![label.textColor isEqual:[UIColor whiteColor]]) {
-            [UIView animateWithDuration:0.2 animations:^{
-                label.textColor = [UIColor whiteColor];
-            }];
+        if (!CGColorEqualToColor(label.textColor.CGColor, UIColor.whiteColor.CGColor)) {
+            label.textColor = [UIColor whiteColor];
         }
     }
 
