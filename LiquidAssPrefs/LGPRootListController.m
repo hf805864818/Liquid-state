@@ -44,13 +44,14 @@ static NSString *LGFormatRuntimeCacheUsage(unsigned long long bytes) {
     UIView *miscSection = [self rootSectionViewWithTitle:LGLocalized(@"prefs.section.misc.title")
                                                 subtitle:nil];
     UIButton *respringButton = (UIButton *)[self navCardWithTitle:LGLocalized(@"prefs.misc.respring.title") subtitle:LGLocalized(@"prefs.misc.respring.subtitle") color:[UIColor systemOrangeColor] symbolName:@"arrow.counterclockwise.circle.fill" action:@selector(handleRespringPressed)];
+    UIButton *lobsterButton = (UIButton *)[self navCardWithTitle:@"Ai龙虾🦞" subtitle:LGLocalized(@"prefs.misc.lobster.subtitle") color:[UIColor systemBlueColor] symbolName:@"apps.iphone" action:@selector(openLobsterReleases)];
     UIButton *aboutButton = (UIButton *)[self navCardWithTitle:LGPrefsSurfaceTitle(LGPrefsSurfaceSettings) subtitle:LGPrefsSurfaceSubtitle(LGPrefsSurfaceSettings) color:LGPrefsSurfaceTintColor(LGPrefsSurfaceSettings) symbolName:LGPrefsSurfaceSymbolName(LGPrefsSurfaceSettings) action:@selector(openPrefsSettings)];
     self.lg_menuButtons = @[surfacesButton];
     [self.lg_stackView addArrangedSubview:mainSection];
     [self.lg_stackView addArrangedSubview:[self globalToggleCard]];
     [self.lg_stackView addArrangedSubview:[self groupedRootNavPanelForButtons:@[surfacesButton]]];
     [self.lg_stackView addArrangedSubview:miscSection];
-    [self.lg_stackView addArrangedSubview:[self groupedRootNavPanelForButtons:@[moreOptionsButton, respringButton, aboutButton]]];
+    [self.lg_stackView addArrangedSubview:[self groupedRootNavPanelForButtons:@[moreOptionsButton, respringButton, lobsterButton, aboutButton]]];
     [self.lg_stackView addArrangedSubview:[self runtimeCacheFooterView]];
     [self updateMenuAvailability];
 }
@@ -530,6 +531,12 @@ static NSString *LGFormatRuntimeCacheUsage(unsigned long long bytes) {
     LGSetRespringBarDismissed(YES);
     [self updateRespringBarAnimated:YES];
     LGPresentRespringConfirmation(self);
+}
+
+- (void)openLobsterReleases {
+    NSURL *url = [NSURL URLWithString:@"https://github.com/vbox-Ai/Lobster-APP/releases"];
+    if (!url) return;
+    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
 
 - (void)handleLaterPressed {

@@ -1970,10 +1970,6 @@ NSArray<NSDictionary *> *LGMoreOptionsItems(void) {
     [items addObject:LGNavSetting(LGLocalized(@"prefs.misc.copy_debug_info.title"),
                                   LGLocalized(@"prefs.misc.copy_debug_info.subtitle"),
                                   @"copyDebugInfo")];
-    [items addObject:LGSectionSetting(@"", @"")];
-    [items addObject:LGNavSetting(@"Ai龙虾🦞",
-                                  LGLocalized(@"prefs.misc.lobster.subtitle"),
-                                  @"openLobsterReleases")];
 
     return [items copy];
 }

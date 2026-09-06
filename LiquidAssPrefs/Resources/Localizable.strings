@@ -347,7 +347,7 @@
 "prefs.misc.copy_debug_info.subtitle" = "Copy device and settings info to clipboard.";
 "prefs.misc.debug_info.copied_title" = "Debug Info Copied";
 "prefs.misc.debug_info.copied_message" = "Debug information has been copied to the clipboard.";
-"prefs.misc.lobster.subtitle" = "Open Ai Lobster APP download page.";
+"prefs.misc.lobster.subtitle" = "Ai developer essential tool.";
 "prefs.common.ok" = "OK";
 "prefs.button.confirm" = "Confirm";
 "prefs.button.save" = "Save";
