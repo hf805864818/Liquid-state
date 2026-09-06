@@ -16,7 +16,15 @@
 #import <CoreImage/CoreImage.h>
 #import <objc/runtime.h>
 #import "../Shared/LGSharedSupport.h"
-#import "../Shared/LGGlassKit.h"
+
+// 本地实现：检查视图祖先链中是否包含指定类名的视图
+static BOOL ccbgHasAncestorOfClassName(UIView *v, NSString *clsName) {
+    Class cls = NSClassFromString(clsName);
+    if (!cls) return NO;
+    for (UIView *cur = v; cur; cur = cur.superview)
+        if ([cur isKindOfClass:cls]) return YES;
+    return NO;
+}
 
 // MARK: - 文件日志（可在 Filza 中查看）
 static NSString * const kCCBgLogFile = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media/debug.log";
@@ -1954,7 +1962,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     // 判断是否为模块容器（CCUIContentModuleContainerView）内的卡片视图
     // 模块卡片（如播放控制模块）虽然是宽扁矩形（长宽比 > 2:1），但绝不是胶囊形滑块
     // 必须用卡片圆角，否则会变成横向椭圆
-    BOOL isInsideModuleContainer = hasAncestorOfClassName(moduleView, @"CCUIContentModuleContainerView");
+    BOOL isInsideModuleContainer = ccbgHasAncestorOfClassName(moduleView, @"CCUIContentModuleContainerView");
 
     // 胶囊形状（长宽比 > 2:1），比如亮度、音量滑块
     // 但排除模块容器内的视图——它们是卡片而非滑块
