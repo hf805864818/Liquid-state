@@ -16,6 +16,7 @@
 #import <CoreImage/CoreImage.h>
 #import <objc/runtime.h>
 #import "../Shared/LGSharedSupport.h"
+#import "../Shared/LGGlassKit.h"
 
 // MARK: - 文件日志（可在 Filza 中查看）
 static NSString * const kCCBgLogFile = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media/debug.log";
@@ -1941,6 +1942,7 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     }
 
     // 方案2: 递归查找子视图的 cornerRadius（系统模块常把圆角设在内容子视图上）
+    // 跳过按钮等小圆形控件，只取卡片级圆角
     CGFloat subviewRadius = [self findMaxCornerRadiusInSubviews:moduleView depth:0 maxDepth:4];
     if (subviewRadius > 0) {
         return subviewRadius;
@@ -1949,8 +1951,14 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
     // 方案3: 根据形状判断
     CGFloat ratio = maxDim / minDim;
 
+    // 判断是否为模块容器（CCUIContentModuleContainerView）内的卡片视图
+    // 模块卡片（如播放控制模块）虽然是宽扁矩形（长宽比 > 2:1），但绝不是胶囊形滑块
+    // 必须用卡片圆角，否则会变成横向椭圆
+    BOOL isInsideModuleContainer = hasAncestorOfClassName(moduleView, @"CCUIContentModuleContainerView");
+
     // 胶囊形状（长宽比 > 2:1），比如亮度、音量滑块
-    if (ratio > 2.0 && minDim > 20) {
+    // 但排除模块容器内的视图——它们是卡片而非滑块
+    if (ratio > 2.0 && minDim > 20 && !isInsideModuleContainer) {
         // 胶囊形：圆角等于短边的一半
         return minDim * 0.5;
     }
@@ -1960,23 +1968,39 @@ static const NSTimeInterval kCCBgDeferredReleaseDelay = 10.0;
 }
 
 // 递归查找子视图中的最大 cornerRadius
+// 跳过按钮等小圆形控件，只取卡片级圆角
 - (CGFloat)findMaxCornerRadiusInSubviews:(UIView *)view depth:(NSInteger)depth maxDepth:(NSInteger)maxDepth {
     if (!view || depth > maxDepth) return 0;
+    
+    CGFloat viewWidth = CGRectGetWidth(view.bounds);
+    CGFloat viewHeight = CGRectGetHeight(view.bounds);
+    CGFloat viewMinDim = fmin(viewWidth, viewHeight);
+    
+    // 跳过小尺寸视图（按钮、图标等），它们的圆角不代表模块卡片圆角
+    if (depth > 0 && viewMinDim > 0 && viewMinDim < 50.0) {
+        return 0;
+    }
+    
     CGFloat maxRadius = view.layer.cornerRadius;
-
+    
     // 如果找到一个接近胶囊形状的圆角（约等于短边的一半），直接返回
-    CGFloat minDim = fmin(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
-    if (maxRadius > 0 && fabs(maxRadius - minDim * 0.5) < 2.0) {
+    // 但只对较大视图（minDim >= 50）才做此判断，避免误取小按钮的圆形角
+    if (maxRadius > 0 && viewMinDim >= 50.0 && fabs(maxRadius - viewMinDim * 0.5) < 2.0) {
         return maxRadius;
     }
-
+    
+    // 如果视图本身有较大圆角但不是胶囊形，也记录
+    if (maxRadius > 0 && viewMinDim >= 50.0) {
+        // 继续搜索子视图，但保留当前值作为候选
+    }
+    
     for (UIView *subview in view.subviews) {
         CGFloat subRadius = [self findMaxCornerRadiusInSubviews:subview depth:depth + 1 maxDepth:maxDepth];
         if (subRadius > maxRadius) {
             maxRadius = subRadius;
-            // 找到胶囊形圆角就直接返回
+            // 找到胶囊形圆角就直接返回（同样要求大视图）
             CGFloat subMinDim = fmin(CGRectGetWidth(subview.bounds), CGRectGetHeight(subview.bounds));
-            if (fabs(subRadius - subMinDim * 0.5) < 2.0) {
+            if (subMinDim >= 50.0 && fabs(subRadius - subMinDim * 0.5) < 2.0) {
                 return maxRadius;
             }
         }
