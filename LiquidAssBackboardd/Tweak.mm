@@ -828,6 +828,7 @@ typedef struct {
     float       tintR, tintG, tintB, tintStrength;
     float       darkTintR, darkTintG, darkTintB, darkTintStrength;
     float       centerTintFactor;
+    float       darkCenterTintFactor;
 } LGHostParams;
 
 static const LGHostParams kHostDefaults[] = {
@@ -958,9 +959,11 @@ static void lgReloadHostPrefs(void) {
         g_darkAtoms[i] = keepDarkAtom;
         if (i > 0) { lgApplyHistoricalTintDefault(i, &g_hostParams[i], false); lgApplyHistoricalTintDefault(i, &g_hostParams[i], true); }
         g_hostParams[i].centerTintFactor = 1.0f;
+        g_hostParams[i].darkCenterTintFactor = 1.0f;
         // 上下文菜单：中心区着色减弱，保持图标清晰可读
         if (!strcmp(g_hostParams[i].prefPrefix, "ContextMenu")) {
             g_hostParams[i].centerTintFactor = 0.20f;
+            g_hostParams[i].darkCenterTintFactor = 0.20f;
         }
         if (!prefs) continue;
         NSString *p = [NSString stringWithUTF8String:kHostDefaults[i].prefPrefix];
@@ -979,6 +982,8 @@ static void lgReloadHostPrefs(void) {
         LG_OVR(tintG,           @"TintG");
         LG_OVR(tintB,           @"TintB");
         LG_OVR(tintStrength,    @"TintStrength");
+        LG_OVR(centerTintFactor,     @"CenterTintFactor");
+        LG_OVR(darkCenterTintFactor, @"CenterTintFactorDark");
         #undef LG_OVR
         NSNumber *dispersionEnabled = prefs[[p stringByAppendingString:@".DispersionEnabled"]];
         if ([dispersionEnabled isKindOfClass:[NSNumber class]]) {
@@ -1420,7 +1425,7 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     lu.refractiveIndex    = hp->refractiveIndex;
     lu.dispersionStrength = hp->dispersionStrength;
     lu.fresnelGlareStrength = g_fresnelGlareStrength;
-    lu.centerTintFactor     = hp->centerTintFactor;
+    lu.centerTintFactor     = darkTint ? hp->darkCenterTintFactor : hp->centerTintFactor;
     lu.tintColor          = darkTint ? simd_make_float4(hp->darkTintR, hp->darkTintG, hp->darkTintB, hp->darkTintStrength)
                                   : simd_make_float4(hp->tintR, hp->tintG, hp->tintB, hp->tintStrength);
 

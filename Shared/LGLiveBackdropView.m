@@ -46,6 +46,8 @@ static BOOL LGKeySupportsAppearanceMode(NSString *key) {
     if (!key.length) return NO;
     // Skip tint colors - they are already mode-specific by nature
     if ([key hasSuffix:@"LightTintColor"] || [key hasSuffix:@"DarkTintColor"]) return NO;
+    // Skip center tint factor - already has separate light/dark keys
+    if ([key hasSuffix:@"CenterTintFactor"] || [key hasSuffix:@"CenterTintFactorDark"]) return NO;
     // Skip the separate modes toggle itself
     if ([key hasPrefix:@"Appearance."]) return NO;
     // Skip global/system settings that shouldn't be mode-specific

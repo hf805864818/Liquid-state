@@ -2,6 +2,8 @@
 
 "prefs.control.enabled" = "启用";
 "prefs.control.blur" = "模糊";
+"prefs.control.center_tint_factor" = "中心着色衰减";
+"prefs.control.center_tint_factor_dark" = "中心着色衰减（深色）";
 "prefs.control.corner_radius" = "圆角半径";
 "prefs.control.glass_thickness" = "玻璃厚度";
 "prefs.control.refractive_index" = "折射率";
@@ -29,6 +31,7 @@
 
 "prefs.subtitle.enabled" = "启用或停用此玻璃视图。";
 "prefs.subtitle.blur" = "玻璃效果的柔和程度。";
+"prefs.subtitle.center_tint_factor" = "值越低中心区越通透，能看清背景图标。";
 "prefs.subtitle.corner_radius" = "玻璃视图的圆角。";
 "prefs.subtitle.glass_thickness" = "玻璃体积的深度；视觉上变化不大。";
 "prefs.subtitle.refractive_index" = "玻璃效果的光学密度。";

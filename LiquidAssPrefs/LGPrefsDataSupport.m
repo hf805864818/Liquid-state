@@ -508,6 +508,7 @@ NSArray<NSDictionary *> *LGRendererItemsForHostPrefix(NSString *prefix) {
     NSString *lightTint = [NSString stringWithUTF8String:host->lightTintHex];
     NSString *darkTint = [NSString stringWithUTF8String:host->darkTintHex];
     BOOL enabledByDefault = ![prefix isEqualToString:@"AppIcons"];
+    CGFloat centerTintDefault = [prefix isEqualToString:@"ContextMenu"] ? 0.20 : 1.0;
     return @[
         LGGlassEnabledSetting(key(@"Enabled"), enabledByDefault),
         LGSliderSetting(key(@"BezelRatio"), LGLocalized(@"prefs.control.bezel_ratio"),
@@ -526,6 +527,14 @@ NSArray<NSDictionary *> *LGRendererItemsForHostPrefix(NSString *prefix) {
                         host->dispersionStrength, 0.0, kLGUniversalDispersionMax, 1),
         LGGlassSpecularSetting(key(@"SpecularOpacity"), host->specularOpacity, 0.0, 1.0, 2),
         LGGlassBlurSetting(key(@"Blur"), host->blur, 0.0, 50.0, 1),
+        LGSliderSetting(key(@"CenterTintFactor"),
+                        LGLocalized(@"prefs.control.center_tint_factor"),
+                        LGLocalized(@"prefs.subtitle.center_tint_factor"),
+                        centerTintDefault, 0.0, 1.0, 2),
+        LGSliderSetting(key(@"CenterTintFactorDark"),
+                        LGLocalized(@"prefs.control.center_tint_factor_dark"),
+                        LGLocalized(@"prefs.subtitle.center_tint_factor"),
+                        centerTintDefault, 0.0, 1.0, 2),
         @{
             @"type": @"color", @"key": key(@"LightTintColor"),
             @"title": LGLocalized(@"prefs.control.light_tint_color"),

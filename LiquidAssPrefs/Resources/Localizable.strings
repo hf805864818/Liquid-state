@@ -3,6 +3,8 @@
 "prefs.control.enabled" = "Enabled";
 "prefs.control.bezel_ratio" = "Bezel Ratio";
 "prefs.control.blur" = "Blur";
+"prefs.control.center_tint_factor" = "Center Tint Attenuation";
+"prefs.control.center_tint_factor_dark" = "Center Tint Attenuation (Dark)";
 "prefs.control.corner_radius" = "Corner Radius";
 "prefs.control.glass_thickness" = "Glass Thickness";
 "prefs.control.light_tint_color" = "Light Tint";
@@ -33,6 +35,7 @@
 "prefs.subtitle.enabled" = "Turn this glass view on or off.";
 "prefs.subtitle.bezel_ratio" = "Width of the refracting edge relative to the glass view's short side.";
 "prefs.subtitle.blur" = "Softness of the glass view.";
+"prefs.subtitle.center_tint_factor" = "Lower values make the center more transparent, letting you see icons behind.";
 "prefs.subtitle.corner_radius" = "Roundness of the glass view.";
 "prefs.subtitle.glass_thickness" = "Depth of the glass volume, visually it does not change anything much.";
 "prefs.subtitle.light_tint_color" = "Color and opacity used while the device is in Light Mode.";
