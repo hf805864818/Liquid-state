@@ -363,6 +363,26 @@ void LGWritePreferenceObject(NSString *key, id value) {
         }
     }
 
+    // 如果用户修改了时钟相关设置（非预设管理键），清除当前时钟预设标记
+    static NSString * const kClockPresetKey = @"Clock.CurrentPresetID";
+    static NSString * const kClockPresetsKey = @"Clock.Presets";
+    if ([key hasPrefix:@"Clock."] &&
+        ![key isEqualToString:kClockPresetKey] &&
+        ![key isEqualToString:kClockPresetsKey]) {
+        NSString *currentPreset = sLGPendingPreferences[kClockPresetKey];
+        if (!currentPreset) {
+            CFTypeRef existing = CFPreferencesCopyAppValue((__bridge CFStringRef)kClockPresetKey,
+                                                           (__bridge CFStringRef)LGPrefsDomain);
+            if (existing) {
+                currentPreset = (__bridge_transfer NSString *)existing;
+            }
+        }
+        if ([currentPreset isKindOfClass:[NSString class]] && currentPreset.length > 0) {
+            sLGPendingPreferences[kClockPresetKey] = @"";
+            LGLog(@"[prefs-pending] cleared clock preset marker due to user modification of %@", key);
+        }
+    }
+
     sLGPendingPreferences[key] = value;
     [sLGPendingPreferenceRemovals removeObject:key];
     LGLog(@"[prefs-pending] staged %@=%@", key, value);
@@ -1106,6 +1126,7 @@ static NSArray<NSDictionary *> *LGFrostedClockItems(void) {
 #pragma mark - Clock Style Presets
 
 static NSString * const kLGClockUserPresetsKey = @"Clock.Presets";
+static NSString * const kLGClockCurrentPresetKey = @"Clock.CurrentPresetID";
 static const NSInteger kLGClockMaxUserPresets = 3;
 
 NSInteger LGClockMaxUserPresets(void) {
@@ -1340,6 +1361,12 @@ void LGClockApplyPreset(NSDictionary *preset) {
         }
     }
 
+    // 记录当前应用的预设ID
+    NSString *presetId = preset[@"id"];
+    if (presetId) {
+        LGWritePreferenceObject(kLGClockCurrentPresetKey, presetId);
+    }
+
     LGSetNeedsRespring(YES);
 }
 
@@ -1415,6 +1442,8 @@ BOOL LGClockSaveUserPreset(NSString *name) {
 
     [presets addObject:[preset copy]];
     LGWritePreferenceObject(kLGClockUserPresetsKey, presets);
+    // 保存后将当前预设设为这个新保存的预设
+    LGWritePreferenceObject(kLGClockCurrentPresetKey, preset[@"id"]);
     return YES;
 }
 
@@ -1473,6 +1502,7 @@ void LGClockResetAll(void) {
 
     // 用户预设
     [keys addObject:kLGClockUserPresetsKey];
+    [keys addObject:kLGClockCurrentPresetKey];
 
     LGResetPreferencesForKeys(keys);
     LGSetNeedsRespring(YES);
@@ -1481,6 +1511,7 @@ void LGClockResetAll(void) {
 // 生成预设 UI 项（内置 + 自定义 + 操作按钮）
 NSArray<NSDictionary *> *LGClockPresetItems(void) {
     NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    NSString *currentPresetId = LGReadPreferenceObject(kLGClockCurrentPresetKey, nil);
 
     // 标题
     [items addObject:LGSectionSetting(@"样式预设", @"一键切换时钟风格")];
@@ -1492,7 +1523,11 @@ NSArray<NSDictionary *> *LGClockPresetItems(void) {
         NSString *action = [NSString stringWithFormat:@"applyClockBuiltinPreset%lu", (unsigned long)i];
         NSString *mode = preset[@"mode"];
         NSString *subtitle = [mode isEqualToString:@"frosted"] ? @"磨砂模式" : @"液态玻璃";
-        [items addObject:LGNavSetting(preset[@"name"], subtitle, action)];
+        NSMutableDictionary *navItem = [LGNavSetting(preset[@"name"], subtitle, action) mutableCopy];
+        if ([currentPresetId isKindOfClass:[NSString class]] && [currentPresetId isEqualToString:preset[@"id"]]) {
+            navItem[@"selected"] = @YES;
+        }
+        [items addObject:[navItem copy]];
     }
 
     // 我的风格（用户自定义预设）
@@ -1504,7 +1539,11 @@ NSArray<NSDictionary *> *LGClockPresetItems(void) {
             NSString *action = [NSString stringWithFormat:@"applyClockUserPreset%lu", (unsigned long)i];
             NSString *mode = preset[@"mode"];
             NSString *subtitle = [mode isEqualToString:@"frosted"] ? @"磨砂模式" : @"液态玻璃";
-            [items addObject:LGNavSetting(preset[@"name"], subtitle, action)];
+            NSMutableDictionary *navItem = [LGNavSetting(preset[@"name"], subtitle, action) mutableCopy];
+            if ([currentPresetId isKindOfClass:[NSString class]] && [currentPresetId isEqualToString:preset[@"id"]]) {
+                navItem[@"selected"] = @YES;
+            }
+            [items addObject:[navItem copy]];
         }
     }
 

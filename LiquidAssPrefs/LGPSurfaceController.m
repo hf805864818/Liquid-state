@@ -7,6 +7,7 @@
 #import "../Shared/LGLiveBackdropView.h"
 #import "../Shared/LGSharedSupport.h"
 #import <QuartzCore/QuartzCore.h>
+#import <notify.h>
 #import <math.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
@@ -805,15 +806,14 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
                          message:message
                   preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"应用并注销"
                                               style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction * _Nonnull action) {
         LGClockApplyPreset(preset);
-        [weakSelf reloadVisibleSettings];
-        [weakSelf updateRespringBarAnimated:YES];
-        // 触发注销
-        [weakSelf handleApplyPressed];
+        // 立即提交偏好设置并触发注销
+        LGForceSynchronizePreferences();
+        LGSetNeedsRespring(NO);
+        notify_post(LGPrefsRespringNotificationCString);
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -870,14 +870,14 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
                          message:@"确定要重置所有时钟设置吗？包括字体、玻璃参数和自定义预设都会被清除，需要注销生效。"
                   preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"重置并注销"
                                               style:UIAlertActionStyleDestructive
                                             handler:^(__unused UIAlertAction * _Nonnull action) {
         LGClockResetAll();
-        [weakSelf reloadVisibleSettings];
-        [weakSelf updateRespringBarAnimated:YES];
-        [weakSelf handleApplyPressed];
+        // 立即提交偏好设置并触发注销
+        LGForceSynchronizePreferences();
+        LGSetNeedsRespring(NO);
+        notify_post(LGPrefsRespringNotificationCString);
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -2267,8 +2267,23 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     [chevron.widthAnchor constraintEqualToConstant:12.0].active = YES;
     [chevron.heightAnchor constraintEqualToConstant:20.0].active = YES;
 
+    // 选中状态：显示打勾图标
+    BOOL isSelected = [item[@"selected"] isKindOfClass:[NSNumber class]] && [item[@"selected"] boolValue];
+    UIImageView *checkmark = nil;
+    NSArray *accessoryViews;
+    if (isSelected) {
+        checkmark = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark"]];
+        checkmark.tintColor = _accentColor;
+        checkmark.contentMode = UIViewContentModeScaleAspectFit;
+        [checkmark.widthAnchor constraintEqualToConstant:18.0].active = YES;
+        [checkmark.heightAnchor constraintEqualToConstant:20.0].active = YES;
+        accessoryViews = @[checkmark, chevron];
+    } else {
+        accessoryViews = @[chevron];
+    }
+
     UIView *headerRow = [self controlHeaderRowWithTitleLabel:titleLabel
-                                              accessoryViews:@[chevron]
+                                              accessoryViews:accessoryViews
                                                      spacing:12.0];
     [stack addArrangedSubview:headerRow];
     NSString *navSubtitle = item[@"subtitle"];
