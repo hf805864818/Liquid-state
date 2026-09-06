@@ -743,6 +743,139 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     }];
 }
 
+#pragma mark - Clock Style Presets
+
+- (void)applyClockBuiltinPreset0 { [self applyBuiltinPresetAtIndex:0]; }
+- (void)applyClockBuiltinPreset1 { [self applyBuiltinPresetAtIndex:1]; }
+- (void)applyClockBuiltinPreset2 { [self applyBuiltinPresetAtIndex:2]; }
+- (void)applyClockBuiltinPreset3 { [self applyBuiltinPresetAtIndex:3]; }
+
+- (void)applyBuiltinPresetAtIndex:(NSInteger)index {
+    NSArray *presets = LGClockBuiltinPresets();
+    if (index < 0 || index >= (NSInteger)presets.count) return;
+    NSDictionary *preset = presets[index];
+    [self confirmApplyPreset:preset];
+}
+
+- (void)applyClockUserPreset0 { [self applyUserPresetAtIndex:0]; }
+- (void)applyClockUserPreset1 { [self applyUserPresetAtIndex:1]; }
+- (void)applyClockUserPreset2 { [self applyUserPresetAtIndex:2]; }
+
+- (void)applyUserPresetAtIndex:(NSInteger)index {
+    NSArray *presets = LGClockUserPresets();
+    if (index < 0 || index >= (NSInteger)presets.count) return;
+    NSDictionary *preset = presets[index];
+    [self showUserPresetOptions:preset atIndex:index];
+}
+
+- (void)showUserPresetOptions:(NSDictionary *)preset atIndex:(NSInteger)index {
+    NSString *name = preset[@"name"];
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:name
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"应用此样式"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction * _Nonnull action) {
+        [weakSelf confirmApplyPreset:preset];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"删除此预设"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(__unused UIAlertAction * _Nonnull action) {
+        LGClockDeleteUserPreset(index);
+        [weakSelf reloadVisibleSettings];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    // iPad 适配
+    alert.popoverPresentationController.sourceView = self.view;
+    alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2.0,
+                                                                 self.view.bounds.size.height / 2.0,
+                                                                 1.0, 1.0);
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)confirmApplyPreset:(NSDictionary *)preset {
+    NSString *name = preset[@"name"];
+    NSString *message = [NSString stringWithFormat:@"应用「%@」样式？将覆盖当前时钟设置，需要注销生效。", name];
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"应用预设"
+                         message:message
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"应用并注销"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction * _Nonnull action) {
+        LGClockApplyPreset(preset);
+        [weakSelf reloadVisibleSettings];
+        [weakSelf updateRespringBarAnimated:YES];
+        // 触发注销
+        [weakSelf handleApplyPressed];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)saveClockUserPreset {
+    NSArray *presets = LGClockUserPresets();
+    if (presets.count >= LGClockMaxUserPresets()) {
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:@"无法保存"
+                             message:[NSString stringWithFormat:@"最多只能保存 %ld 个自定义预设，请先删除一个。",
+                                      (long)LGClockMaxUserPresets()]
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"保存为预设"
+                         message:@"给这个风格起个名字吧（最多 10 个字）"
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = [NSString stringWithFormat:@"我的风格 %lu", (unsigned long)(presets.count + 1)];
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction * _Nonnull action) {
+        NSString *name = alert.textFields.firstObject.text;
+        if (name.length == 0) {
+            name = [NSString stringWithFormat:@"我的风格 %lu", (unsigned long)(presets.count + 1)];
+        }
+        if (name.length > 10) {
+            name = [name substringToIndex:10];
+        }
+        BOOL success = LGClockSaveUserPreset(name);
+        if (success) {
+            [weakSelf reloadVisibleSettings];
+        }
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)resetClockAllToDefault {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"恢复默认设置"
+                         message:@"确定要重置所有时钟设置吗？包括字体、玻璃参数和自定义预设都会被清除，需要注销生效。"
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"重置并注销"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(__unused UIAlertAction * _Nonnull action) {
+        LGClockResetAll();
+        [weakSelf reloadVisibleSettings];
+        [weakSelf updateRespringBarAnimated:YES];
+        [weakSelf handleApplyPressed];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)resetTabBarToDefault {
     [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
                        message:LGLocalized(@"prefs.subtitle.reset_tab_bar_confirm")

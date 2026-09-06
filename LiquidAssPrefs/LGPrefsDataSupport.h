@@ -80,6 +80,15 @@ NSArray<NSDictionary *> *LGPresetThemes(void);
 NSString *LGCurrentPresetTheme(void);
 void LGApplyPresetTheme(NSString *themeId);
 
+// Clock style presets
+NSArray<NSDictionary *> *LGClockBuiltinPresets(void);
+NSArray<NSDictionary *> *LGClockUserPresets(void);
+void LGClockApplyPreset(NSDictionary *preset);
+BOOL LGClockSaveUserPreset(NSString *name);
+void LGClockDeleteUserPreset(NSInteger index);
+void LGClockResetAll(void);
+NSInteger LGClockMaxUserPresets(void);
+
 // Surface sorting
 NSArray<NSDictionary *> *LGSortedItemsBySectionGroups(NSArray<NSDictionary *> *items);
 

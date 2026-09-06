@@ -1103,10 +1103,429 @@ static NSArray<NSDictionary *> *LGFrostedClockItems(void) {
     return items;
 }
 
+#pragma mark - Clock Style Presets
+
+static NSString * const kLGClockUserPresetsKey = @"Clock.Presets";
+static const NSInteger kLGClockMaxUserPresets = 3;
+
+NSInteger LGClockMaxUserPresets(void) {
+    return kLGClockMaxUserPresets;
+}
+
+// 4 套内置预设
+NSArray<NSDictionary *> *LGClockBuiltinPresets(void) {
+    return @[
+        // 1. iOS 26 扁平磨砂
+        @{
+            @"id": @"ios26-flat",
+            @"name": @"iOS 26 扁平",
+            @"mode": @"frosted",
+            @"variableFont": @{
+                    @"Enabled": @YES,
+                    @"Name": @"adaptive",
+                    @"Weight": @850.0,
+                    @"SizeScale": @1.55,
+                    @"Width": @100.0,
+                    @"Height": @350.0,
+                    @"Softness": @25.0,
+                },
+            @"frosted": @{
+                    @"Light": @{
+                            @"GlassThickness": @28.0,
+                            @"Blur": @5.0,
+                            @"RefractionScale": @1.8,
+                            @"RefractiveIndex": @1.5,
+                            @"DispersionStrength": @0.0,
+                            @"TintColor": @"#FFFFFF55",
+                        },
+                    @"Dark": @{
+                            @"GlassThickness": @28.0,
+                            @"Blur": @5.0,
+                            @"RefractionScale": @1.8,
+                            @"RefractiveIndex": @1.5,
+                            @"DispersionStrength": @0.0,
+                            @"TintColor": @"#FFFFFF44",
+                        },
+                },
+        },
+        // 2. 液态玻璃经典
+        @{
+            @"id": @"liquid-classic",
+            @"name": @"液态玻璃经典",
+            @"mode": @"liquid",
+            @"variableFont": @{
+                    @"Enabled": @YES,
+                    @"Name": @"adaptive",
+                    @"Weight": @750.0,
+                    @"SizeScale": @1.4,
+                    @"Width": @100.0,
+                    @"Height": @350.0,
+                    @"Softness": @56.0,
+                },
+            @"glass": @{
+                    @"Enabled": @YES,
+                    @"BezelRatio": @0.0,
+                    @"GlassThickness": @50.0,
+                    @"RefractionScale": @5.0,
+                    @"RefractiveIndex": @1.75,
+                    @"DispersionEnabled": @YES,
+                    @"DispersionStrength": @0.8,
+                    @"SpecularEnabled": @YES,
+                    @"SpecularOpacity": @1.0,
+                    @"Blur": @2.5,
+                    @"CenterTintFactor": @1.0,
+                    @"CenterTintFactorDark": @1.0,
+                    @"LightTintColor": @"#FFFFFF26",
+                    @"DarkTintColor": @"#FFFFFF26",
+                },
+        },
+        // 3. 磨砂粗黑
+        @{
+            @"id": @"frosted-bold",
+            @"name": @"磨砂粗黑",
+            @"mode": @"frosted",
+            @"variableFont": @{
+                    @"Enabled": @YES,
+                    @"Name": @"adaptive",
+                    @"Weight": @950.0,
+                    @"SizeScale": @1.6,
+                    @"Width": @110.0,
+                    @"Height": @350.0,
+                    @"Softness": @55.0,
+                },
+            @"frosted": @{
+                    @"Light": @{
+                            @"GlassThickness": @35.0,
+                            @"Blur": @6.0,
+                            @"RefractionScale": @2.0,
+                            @"RefractiveIndex": @1.55,
+                            @"DispersionStrength": @0.0,
+                            @"TintColor": @"#FFFFFF66",
+                        },
+                    @"Dark": @{
+                            @"GlassThickness": @35.0,
+                            @"Blur": @6.0,
+                            @"RefractionScale": @2.0,
+                            @"RefractiveIndex": @1.55,
+                            @"DispersionStrength": @0.0,
+                            @"TintColor": @"#FFFFFF55",
+                        },
+                },
+        },
+        // 4. 磨砂轻盈
+        @{
+            @"id": @"frosted-light",
+            @"name": @"磨砂轻盈",
+            @"mode": @"frosted",
+            @"variableFont": @{
+                    @"Enabled": @YES,
+                    @"Name": @"adaptive",
+                    @"Weight": @600.0,
+                    @"SizeScale": @1.35,
+                    @"Width": @90.0,
+                    @"Height": @350.0,
+                    @"Softness": @40.0,
+                },
+            @"frosted": @{
+                    @"Light": @{
+                            @"GlassThickness": @20.0,
+                            @"Blur": @3.0,
+                            @"RefractionScale": @2.5,
+                            @"RefractiveIndex": @1.65,
+                            @"DispersionStrength": @0.0,
+                            @"TintColor": @"#FFFFFF44",
+                        },
+                    @"Dark": @{
+                            @"GlassThickness": @20.0,
+                            @"Blur": @3.0,
+                            @"RefractionScale": @2.5,
+                            @"RefractiveIndex": @1.65,
+                            @"DispersionStrength": @0.0,
+                            @"TintColor": @"#FFFFFF33",
+                        },
+                },
+        },
+    ];
+}
+
+// 用户自定义预设
+NSArray<NSDictionary *> *LGClockUserPresets(void) {
+    NSArray *presets = LGReadPreferenceObject(kLGClockUserPresetsKey, nil);
+    if ([presets isKindOfClass:[NSArray class]]) {
+        return presets;
+    }
+    return @[];
+}
+
+// 写一个 key 及其 .Light/.Dark 变体（用于分深浅模式的参数）
+static void LGClockWriteAppearancedKey(NSString *baseKey, id value) {
+    LGWritePreferenceObject(baseKey, value);
+    LGWritePreferenceObject([baseKey stringByAppendingString:@".Light"], value);
+    LGWritePreferenceObject([baseKey stringByAppendingString:@".Dark"], value);
+}
+
+// 应用预设
+void LGClockApplyPreset(NSDictionary *preset) {
+    if (!preset || ![preset isKindOfClass:[NSDictionary class]]) return;
+
+    NSString *mode = preset[@"mode"];
+    NSDictionary *variableFont = preset[@"variableFont"];
+    NSDictionary *glass = preset[@"glass"];
+    NSDictionary *frosted = preset[@"frosted"];
+
+    BOOL isFrosted = [mode isEqualToString:@"frosted"];
+
+    // 1. 模式开关
+    LGWritePreference(@"Clock.FrostedMode", @(isFrosted));
+    LGClockWriteAppearancedKey(@"Clock.Enabled", @(!isFrosted));
+
+    // 2. 字体参数（不分深浅）
+    if (variableFont) {
+        for (NSString *field in variableFont) {
+            NSString *key = [NSString stringWithFormat:@"Clock.VariableFont.%@", field];
+            id value = variableFont[field];
+            if ([value isKindOfClass:[NSNumber class]]) {
+                LGWritePreference(key, value);
+            } else {
+                LGWritePreferenceObject(key, value);
+            }
+        }
+    }
+
+    // 3. 液态玻璃参数（分深浅，同时写 base + Light + Dark）
+    if (glass && !isFrosted) {
+        NSArray *numberKeys = @[
+            @"Enabled", @"BezelRatio", @"GlassThickness", @"RefractionScale",
+            @"RefractiveIndex", @"DispersionEnabled", @"DispersionStrength",
+            @"SpecularEnabled", @"SpecularOpacity", @"Blur",
+            @"CenterTintFactor", @"CenterTintFactorDark"
+        ];
+        for (NSString *field in numberKeys) {
+            id value = glass[field];
+            if (value) {
+                NSString *key = [NSString stringWithFormat:@"Clock.%@", field];
+                LGClockWriteAppearancedKey(key, value);
+            }
+        }
+        // 颜色值
+        if (glass[@"LightTintColor"]) {
+            LGClockWriteAppearancedKey(@"Clock.LightTintColor", glass[@"LightTintColor"]);
+        }
+        if (glass[@"DarkTintColor"]) {
+            LGClockWriteAppearancedKey(@"Clock.DarkTintColor", glass[@"DarkTintColor"]);
+        }
+    }
+
+    // 4. 磨砂参数（显式 .Light/.Dark）
+    if (frosted && isFrosted) {
+        NSArray *modeSuffixes = @[@"Light", @"Dark"];
+        NSArray *numberFields = @[
+            @"GlassThickness", @"Blur", @"RefractionScale",
+            @"RefractiveIndex", @"DispersionStrength"
+        ];
+        for (NSString *modeSuffix in modeSuffixes) {
+            NSDictionary *modeParams = frosted[modeSuffix];
+            if (!modeParams) continue;
+            for (NSString *field in numberFields) {
+                NSNumber *value = modeParams[field];
+                if (value) {
+                    NSString *key = [NSString stringWithFormat:@"Clock.Frosted.%@.%@", field, modeSuffix];
+                    LGWritePreference(key, value);
+                }
+            }
+            if (modeParams[@"TintColor"]) {
+                NSString *key = [NSString stringWithFormat:@"Clock.Frosted.TintColor.%@", modeSuffix];
+                LGWritePreferenceObject(key, modeParams[@"TintColor"]);
+            }
+        }
+    }
+
+    LGSetNeedsRespring(YES);
+}
+
+// 保存当前设置为自定义预设
+BOOL LGClockSaveUserPreset(NSString *name) {
+    if (!name.length) return NO;
+
+    NSArray *existing = LGClockUserPresets();
+    if (existing.count >= kLGClockMaxUserPresets) return NO;
+
+    NSMutableArray *presets = [existing mutableCopy];
+
+    NSMutableDictionary *preset = [NSMutableDictionary dictionary];
+    preset[@"id"] = [NSString stringWithFormat:@"custom-%f", [[NSDate date] timeIntervalSince1970]];
+    preset[@"name"] = [name copy];
+
+    // 判断当前模式
+    BOOL frostedMode = [LGReadPreference(@"Clock.FrostedMode", @NO) boolValue];
+    preset[@"mode"] = frostedMode ? @"frosted" : @"liquid";
+
+    // 字体参数
+    NSMutableDictionary *vf = [NSMutableDictionary dictionary];
+    vf[@"Enabled"] = LGReadPreference(@"Clock.VariableFont.Enabled", @YES);
+    vf[@"Name"] = LGReadPreferenceObject(@"Clock.VariableFont.Name", @"adaptive");
+    vf[@"Weight"] = LGReadPreference(@"Clock.VariableFont.Weight", @750.0);
+    vf[@"SizeScale"] = LGReadPreference(@"Clock.VariableFont.SizeScale", @1.4);
+    vf[@"Width"] = LGReadPreference(@"Clock.VariableFont.Width", @100.0);
+    vf[@"Height"] = LGReadPreference(@"Clock.VariableFont.Height", @350.0);
+    vf[@"Softness"] = LGReadPreference(@"Clock.VariableFont.Softness", @56.0);
+    preset[@"variableFont"] = vf;
+
+    // 液态玻璃参数
+    if (!frostedMode) {
+        NSMutableDictionary *gl = [NSMutableDictionary dictionary];
+        gl[@"Enabled"] = LGReadPreference(@"Clock.Enabled", @YES);
+        gl[@"BezelRatio"] = LGReadPreference(@"Clock.BezelRatio", @0.0);
+        gl[@"GlassThickness"] = LGReadPreference(@"Clock.GlassThickness", @50.0);
+        gl[@"RefractionScale"] = LGReadPreference(@"Clock.RefractionScale", @5.0);
+        gl[@"RefractiveIndex"] = LGReadPreference(@"Clock.RefractiveIndex", @1.75);
+        gl[@"DispersionEnabled"] = LGReadPreference(@"Clock.DispersionEnabled", @YES);
+        gl[@"DispersionStrength"] = LGReadPreference(@"Clock.DispersionStrength", @0.8);
+        gl[@"SpecularEnabled"] = LGReadPreference(@"Clock.SpecularEnabled", @YES);
+        gl[@"SpecularOpacity"] = LGReadPreference(@"Clock.SpecularOpacity", @1.0);
+        gl[@"Blur"] = LGReadPreference(@"Clock.Blur", @2.5);
+        gl[@"CenterTintFactor"] = LGReadPreference(@"Clock.CenterTintFactor", @1.0);
+        gl[@"CenterTintFactorDark"] = LGReadPreference(@"Clock.CenterTintFactorDark", @1.0);
+        gl[@"LightTintColor"] = LGReadPreferenceObject(@"Clock.LightTintColor", @"#FFFFFF26");
+        gl[@"DarkTintColor"] = LGReadPreferenceObject(@"Clock.DarkTintColor", @"#FFFFFF26");
+        preset[@"glass"] = gl;
+    }
+
+    // 磨砂参数
+    if (frostedMode) {
+        NSMutableDictionary *fr = [NSMutableDictionary dictionary];
+        NSArray *modeSuffixes = @[@"Light", @"Dark"];
+        NSArray *numberFields = @[
+            @"GlassThickness", @"Blur", @"RefractionScale",
+            @"RefractiveIndex", @"DispersionStrength"
+        ];
+        for (NSString *modeSuffix in modeSuffixes) {
+            NSMutableDictionary *modeDict = [NSMutableDictionary dictionary];
+            for (NSString *field in numberFields) {
+                NSString *key = [NSString stringWithFormat:@"Clock.Frosted.%@.%@", field, modeSuffix];
+                NSNumber *val = LGReadPreference(key, @(0.0));
+                modeDict[field] = val;
+            }
+            NSString *tintKey = [NSString stringWithFormat:@"Clock.Frosted.TintColor.%@", modeSuffix];
+            modeDict[@"TintColor"] = LGReadPreferenceObject(tintKey, @"#FFFFFF66");
+            fr[modeSuffix] = modeDict;
+        }
+        preset[@"frosted"] = fr;
+    }
+
+    [presets addObject:[preset copy]];
+    LGWritePreferenceObject(kLGClockUserPresetsKey, presets);
+    return YES;
+}
+
+// 删除自定义预设
+void LGClockDeleteUserPreset(NSInteger index) {
+    NSArray *presets = LGClockUserPresets();
+    if (index < 0 || index >= (NSInteger)presets.count) return;
+
+    NSMutableArray *mutable = [presets mutableCopy];
+    [mutable removeObjectAtIndex:index];
+    LGWritePreferenceObject(kLGClockUserPresetsKey, mutable);
+}
+
+// 重置所有时钟设置
+void LGClockResetAll(void) {
+    NSMutableArray<NSString *> *keys = [NSMutableArray array];
+
+    // VariableFont
+    NSArray *vfFields = @[@"Enabled", @"Name", @"Weight", @"SizeScale",
+                          @"Width", @"Height", @"Softness"];
+    for (NSString *f in vfFields) {
+        [keys addObject:[NSString stringWithFormat:@"Clock.VariableFont.%@", f]];
+    }
+
+    // DateFormat
+    [keys addObject:@"Clock.DateFormat.Enabled"];
+    [keys addObject:@"Clock.DateFormat.Format"];
+
+    // FrostedMode
+    [keys addObject:@"Clock.FrostedMode"];
+
+    // 液态玻璃参数（base + Light + Dark）
+    NSArray *glassFields = @[
+        @"Enabled", @"BezelRatio", @"GlassThickness", @"RefractionScale",
+        @"RefractiveIndex", @"DispersionEnabled", @"DispersionStrength",
+        @"SpecularEnabled", @"SpecularOpacity", @"Blur",
+        @"CenterTintFactor", @"CenterTintFactorDark",
+        @"LightTintColor", @"DarkTintColor"
+    ];
+    for (NSString *f in glassFields) {
+        NSString *base = [NSString stringWithFormat:@"Clock.%@", f];
+        [keys addObject:base];
+        [keys addObject:[base stringByAppendingString:@".Light"]];
+        [keys addObject:[base stringByAppendingString:@".Dark"]];
+    }
+
+    // 磨砂参数（.Light + .Dark）
+    NSArray *frostedFields = @[
+        @"GlassThickness", @"Blur", @"RefractionScale",
+        @"RefractiveIndex", @"DispersionStrength", @"TintColor"
+    ];
+    for (NSString *f in frostedFields) {
+        [keys addObject:[NSString stringWithFormat:@"Clock.Frosted.%@.Light", f]];
+        [keys addObject:[NSString stringWithFormat:@"Clock.Frosted.%@.Dark", f]];
+    }
+
+    // 用户预设
+    [keys addObject:kLGClockUserPresetsKey];
+
+    LGResetPreferencesForKeys(keys);
+    LGSetNeedsRespring(YES);
+}
+
+// 生成预设 UI 项（内置 + 自定义 + 操作按钮）
+NSArray<NSDictionary *> *LGClockPresetItems(void) {
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+
+    // 标题
+    [items addObject:LGSectionSetting(@"样式预设", @"一键切换时钟风格")];
+
+    // 4 个内置预设
+    NSArray *builtins = LGClockBuiltinPresets();
+    for (NSUInteger i = 0; i < builtins.count; i++) {
+        NSDictionary *preset = builtins[i];
+        NSString *action = [NSString stringWithFormat:@"applyClockBuiltinPreset%lu", (unsigned long)i];
+        NSString *mode = preset[@"mode"];
+        NSString *subtitle = [mode isEqualToString:@"frosted"] ? @"磨砂模式" : @"液态玻璃";
+        [items addObject:LGNavSetting(preset[@"name"], subtitle, action)];
+    }
+
+    // 我的风格（用户自定义预设）
+    NSArray *userPresets = LGClockUserPresets();
+    if (userPresets.count > 0) {
+        [items addObject:LGSectionSetting(@"我的风格", nil)];
+        for (NSUInteger i = 0; i < userPresets.count; i++) {
+            NSDictionary *preset = userPresets[i];
+            NSString *action = [NSString stringWithFormat:@"applyClockUserPreset%lu", (unsigned long)i];
+            NSString *mode = preset[@"mode"];
+            NSString *subtitle = [mode isEqualToString:@"frosted"] ? @"磨砂模式" : @"液态玻璃";
+            [items addObject:LGNavSetting(preset[@"name"], subtitle, action)];
+        }
+    }
+
+    // 操作按钮：保存当前设置 / 恢复默认
+    [items addObject:LGSectionSetting(@"", @"")];
+    [items addObject:LGNavSetting(@"保存当前设置为预设",
+                                  @"最多可保存 3 个自定义风格",
+                                  @"saveClockUserPreset")];
+    [items addObject:LGNavSetting(@"恢复默认设置",
+                                  @"重置所有时钟相关参数",
+                                  @"resetClockAllToDefault")];
+
+    return items;
+}
+
 NSArray<NSDictionary *> *LGClockItems(void) {
     // 磨砂/液态互斥：关掉的那个模式参数自动变暗(alpha=0.42)，但不隐藏
     // 切换开关时自动关闭另一个（在 LGPSurfaceController 的 switch handler 中处理）
     return LGJoinItemGroups(@[
+        // 样式预设区
+        LGClockPresetItems(),
         @[
             LGSwitchSetting(@"Clock.FrostedMode",
                             LGLocalized(@"prefs.control.clock_frosted_mode"),
