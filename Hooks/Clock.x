@@ -299,9 +299,10 @@ static BOOL LGClockFrostedModeEnabled(void) {
     return result;
 }
 
-// 时钟激活：液态玻璃或磨砂模式任一开启即为激活（互斥模式）
+// 时钟激活：iOS 26 时钟开关为总开关，液态玻璃或磨砂模式任一开启即为激活（互斥模式）
+// 关闭 iOS 26 时钟开关 → 字体回退 + 玻璃覆盖层不渲染，恢复原生时钟
 static BOOL LGClockActive(void) {
-    return LGClockEnabled() || LGClockFrostedModeEnabled();
+    return LGClockVariableFontEnabled() && (LGClockEnabled() || LGClockFrostedModeEnabled());
 }
 
 static NSHashTable<UIView *> *LGClockNotificationObstacleViews(void) {
@@ -2537,8 +2538,9 @@ static void LGApplyClockReplacement(UIView *host) {
                overlay ? 1 : 0);
     // 磨砂模式与液态玻璃互斥：任一开启即渲染 overlay
     // 磨砂开 → 用磨砂参数渲染；液态开(磨砂关) → 用液态参数渲染；都关 → 不渲染
-    if ((!enabled && !frostedMode) || !overlayEligible || !sourceLabel || blocking) {
-        NSString *reason = (!enabled && !frostedMode) ? @"disabled"
+    // iOS 26 时钟开关关闭时也不渲染（LGClockActive 包含该判断）
+    if (!LGClockActive() || !overlayEligible || !sourceLabel || blocking) {
+        NSString *reason = !LGClockActive() ? @"disabled"
             : !overlayEligible ? @"not-eligible"
             : !sourceLabel ? @"no-source"
             : @"blocked";
