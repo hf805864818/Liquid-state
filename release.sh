@@ -15,7 +15,7 @@ rename_debs() {
                 ver="${ver%%_*}"
                 local new_name="${pkg_dir}/${PKG_NAME}_${ver}.deb"
                 if [[ "$f" != "$new_name" ]]; then
-                    cp "$f" "$new_name"
+                    mv "$f" "$new_name"
                     echo "  → ${new_name##*/}"
                 fi
             done
