@@ -424,26 +424,11 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
     float edgeOpacity;
     if (u.useGlyphMask > 0.5) {
 
-        // 采样当前像素的 mask 值，判断是否在文字形状内
-        float maskAtPixel = glyphMask.sample(s, localUV).r;
-
         // [DEBUG] mask 诊断模式：当 useGlyphMask > 1.5 时直接渲染 mask 灰度
-        // 用于验证 mask 形状、方向、UV 映射是否正确
+        float maskAtPixel = glyphMask.sample(s, localUV).r;
         if (u.useGlyphMask > 1.5) {
             return float4(maskAtPixel, maskAtPixel, maskAtPixel, 1.0);
         }
-
-        // 明确在文字外的像素：直接返回原始背景，不应用任何液态效果
-        // 这消除了 mask 外区域的着色、折射、菲涅尔和高光，防止矩形阴影
-        if (maskAtPixel < 0.02) {
-            return src.sample(s, captureUV);
-        }
-
-        // 使用 source 分辨率计算 probe UV 偏移。
-        // probe 距离是 source 像素单位，bezel 也是 source 像素单位，
-        // 所以用 u.resolution 转换为 UV 是正确的。
-        // mask 仅用于判断在指定物理距离处是否仍在字形内，
-        // 其自身分辨率只影响采样精度（线性插值保证亚像素精度），不影响距离计算。
 
         float bestDistance = bezel + 1.0;
         float2 bestDirection = float2(0.0, -1.0);
@@ -481,9 +466,7 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
         distFromSide = bestDistance;
         dir = bestDirection;
 
-        // 用 smoothstep 替代硬编码 1.0：边缘抗锯齿像素平滑过渡
-        // maskAtPixel >= 0.3 时为全效果，0.02~0.3 之间平滑过渡
-        edgeOpacity = smoothstep(0.02, 0.3, maskAtPixel);
+        edgeOpacity = 1.0;
     } else {
 
         R = clamp(R, 0.0, shortest * 0.5);

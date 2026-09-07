@@ -908,17 +908,6 @@ static void LGReportMemoryUsageIfNeeded(void) {
 }
 
 - (void)updateNativeBlurOverlayWithRadius:(CGFloat)radius filterClass:(Class)filterCls {
-    // Clock: 不创建独立的 _nativeBlurLayer。
-    // CABackdropLayer 的 ignoresScreenClip=YES 会导致父层 mask 无法裁剪 backdrop 捕获区域，
-    // 产生可见的矩形模糊区域。改为在 applyFilters 中将高斯模糊作为 CAFilter
-    // 直接添加到主 backdrop layer 上，由 shader 的 mask 采样来裁剪。
-    if (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock) {
-        [_nativeBlurLayer removeFromSuperlayer];
-        _nativeBlurLayer = nil;
-        _nativeBlurRadius = 0.0;
-        return;
-    }
-
     if (radius <= 0.0 || !filterCls) {
         [_nativeBlurLayer removeFromSuperlayer];
         _nativeBlurLayer = nil;
@@ -1081,14 +1070,9 @@ static void LGReportMemoryUsageIfNeeded(void) {
         Class filterCls = NSClassFromString(@"CAFilter");
         [self updateNativeBlurOverlayWithRadius:nativeBlur filterClass:filterCls];
 
-        // Clock: 检查是否需要重建 filter 数组（blur 值变化或 filter 数组结构变化）
-        BOOL isClock = (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock);
-        BOOL clockNeedsBlur = isClock && nativeBlur > 0.0;
-        NSUInteger expectedFilterCount = clockNeedsBlur ? 2 : 1;
-
-        if (_filterAttached && existing.count == expectedFilterCount) {
+        if (_filterAttached && existing.count == 1) {
             NSString *type = nil;
-            @try { type = [existing.lastObject valueForKey:@"type"]; } @catch (...) {}
+            @try { type = [existing.firstObject valueForKey:@"type"]; } @catch (...) {}
             if ([type isEqualToString:wantType]) {
                 return;
             }
@@ -1103,19 +1087,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
             return;
         }
 
-        // Clock: 将高斯模糊和液态玻璃 filter 一起设置到主 layer 上。
-        // 高斯模糊先处理 backdrop，然后液态玻璃 shader 采样已模糊的 backdrop
-        // 并通过 mask 纹理裁剪到文字形状内，避免矩形模糊区域。
-        if (clockNeedsBlur) {
-            id gaussianFilter = LGCreateNativeGaussianFilter(filterCls, nativeBlur);
-            if (gaussianFilter) {
-                layer.filters = @[gaussianFilter, glassFilter];
-            } else {
-                layer.filters = @[glassFilter];
-            }
-        } else {
-            layer.filters = @[glassFilter];
-        }
+        layer.filters = @[glassFilter];
         _filterAttached = YES;
     } @catch (NSException *e) {
         sblog("applyFilters exception: %s", e.reason.UTF8String);
