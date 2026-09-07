@@ -294,23 +294,12 @@ static BOOL LGClockEnabled(void) {
 }
 
 static BOOL LGClockFrostedModeEnabled(void) {
-    // 直接从 CFPreferences 读取，避免 plist 文件缓存不同步
-    CFTypeRef cfValue = CFPreferencesCopyAppValue(CFSTR("Clock.FrostedMode"),
-                                                  CFSTR("dylv.liquidassprefs"));
-    BOOL result = NO;
-    if (cfValue) {
-        if (CFGetTypeID(cfValue) == CFBooleanGetTypeID()) {
-            result = CFBooleanGetValue((CFBooleanRef)cfValue);
-        } else if (CFGetTypeID(cfValue) == CFNumberGetTypeID()) {
-            // 用 char 类型代替 kCFNumberBoolType（旧版 SDK 不支持）
-            char boolVal = 0;
-            if (CFNumberGetValue((CFNumberRef)cfValue, kCFNumberCharType, &boolVal)) {
-                result = boolVal ? YES : NO;
-            }
-        }
-        CFRelease(cfValue);
-    }
-    return result;
+    // 用 LGGlassPreferenceValue 读取，与 lgHostEnabled 等使用相同的缓存机制，
+    // 确保偏好设置变更后立即生效（缓存由 prefs reload 回调清除）。
+    // 之前用 CFPreferencesCopyAppValue 会有 CFPreferences 内部缓存不同步的问题。
+    id v = LGGlassPreferenceValue(@"Clock.FrostedMode");
+    if ([v isKindOfClass:[NSNumber class]]) return [v boolValue];
+    return NO;
 }
 
 // 时钟激活：iOS 26 时钟开关为总开关，液态玻璃或磨砂模式任一开启即为激活（互斥模式）
@@ -3277,11 +3266,7 @@ static void LGRefreshAllClockHosts(void) {
             }
         }
         LGClockLog(@"prefs reload triggered — all Clock.* keys: %@", clockKeys);
-        LGClockLog(@"  frostedMode via CFPreferences=%d", LGClockFrostedModeEnabled());
-        id glassVal = LGGlassPreferenceValue(@"Clock.FrostedMode");
-        LGClockLog(@"  frostedMode via LGGlassPreferenceValue=%@ (class=%@)",
-                   glassVal ?: @"(nil)",
-                   NSStringFromClass([glassVal class]));
+        LGClockLog(@"  frostedMode=%d", LGClockFrostedModeEnabled());
         LGRefreshAllClockHosts();
     });
     BOOL cspExists = NSClassFromString(@"CSProminentTimeView") != nil;

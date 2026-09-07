@@ -890,11 +890,16 @@ static const LGHostParams *lgHostParamsForAtom(uint32_t atom, bool *dark) {
 }
 
 static NSString *lgPrefsPath(void) {
-    // 偏好设置文件始终位于系统标准路径,不受越狱类型影响。
-    // jbroot() 在 roothide 上会加上 .jbroot-XXXXXXXX 前缀,
-    // 导致路径变为 .../.jbroot-XXXX/var/mobile/... 从而找不到文件。
-    // 偏好设置不由越狱管理,直接使用绝对路径即可。
-    return @"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist";
+    // 偏好设置文件路径：先尝试标准路径，找不到再用 jbroot() 路径。
+    // 在 roothide 等 jailbreak 上，CFPreferences 实际写入的文件可能
+    // 被 roothide 重定向到 jbroot 路径下，标准路径反而找不到文件。
+    NSString *standardPath =
+        @"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist";
+    if ([[NSFileManager defaultManager] fileExistsAtPath:standardPath]) {
+        return standardPath;
+    }
+    NSString *jbPath = jbroot(@"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist");
+    return jbPath ?: standardPath;
 }
 static NSString * const kLGPrefsReloadNote = @"dylv.liquidassprefs/Reload";
 static CFStringRef const kLGParametersReloadedNote =
@@ -953,7 +958,8 @@ static void lgApplyFrostedVariant(NSDictionary *prefs, NSString *suffix, LGFrost
 }
 
 static void lgReloadHostPrefs(void) {
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:lgPrefsPath()];
+    NSString *prefsPath = lgPrefsPath();
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefsPath];
     NSNumber *fresnelStrength = prefs[@"Renderer.FresnelGlareStrength"];
     g_fresnelGlareStrength = [fresnelStrength isKindOfClass:NSNumber.class]
         ? fminf(1.0f, fmaxf(0.0f, fresnelStrength.floatValue)) : 0.5f;
@@ -964,6 +970,17 @@ static void lgReloadHostPrefs(void) {
     BOOL variableFontEnabled = variableFontNum ? [variableFontNum isKindOfClass:[NSNumber class]] ? [variableFontNum boolValue] : YES : YES;
     g_clockFrostedMode = (frostedNum && [frostedNum isKindOfClass:[NSNumber class]] && frostedNum.boolValue && variableFontEnabled);
     if (g_clockFrostedMode) lglog("Clock frosted mode: ON (v0.1.73b preset)");
+    {
+        static int sPrefsPathDiagCount = 0;
+        if (sPrefsPathDiagCount < 5) {
+            sPrefsPathDiagCount++;
+            lglog("lgPrefsPath=%s prefs=%s count=%lu frostedMode=%d",
+                  prefsPath.UTF8String,
+                  prefs ? "loaded" : "nil",
+                  (unsigned long)prefs.count,
+                  g_clockFrostedMode ? 1 : 0);
+        }
+    }
     int overrides = 0;
     for (int i = 0; i < kHostCount; i++) {
         uint32_t keepAtom = g_hostParamsInit ? g_hostParams[i].atom : 0;
