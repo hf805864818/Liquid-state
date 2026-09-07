@@ -166,7 +166,6 @@ static void LGStopClockDisplayLinkDriver(LGClockDisplayLink *state) {
     if (!image) {
         self.maskView = nil;
         self.shapeMaskView = nil;
-        [self lgSetNativeBlurMask:nil];  // 清除 native blur 的形状 mask
         return;
     }
 
@@ -191,18 +190,6 @@ static void LGStopClockDisplayLinkDriver(LGClockDisplayLink *state) {
     mask.image = image;
     [mask.layer setNeedsDisplay];
     [self.layer setNeedsDisplay];
-
-    // 为 native blur 层创建独立的形状 mask，将模糊裁剪到文字形状内
-    // 防止矩形模糊区域出现在文字周围（磨砂模式下 Blur=5~6 尤为明显）
-    if (image.CGImage) {
-        CALayer *blurMask = [CALayer layer];
-        blurMask.frame = self.bounds;
-        blurMask.contents = (__bridge id _Nullable)image.CGImage;
-        blurMask.contentsGravity = kCAGravityResize;
-        blurMask.minificationFilter = kCAFilterLinear;
-        blurMask.magnificationFilter = kCAFilterLinear;
-        [self lgSetNativeBlurMask:blurMask];
-    }
 
     self.hidden = NO;
     [CATransaction commit];
