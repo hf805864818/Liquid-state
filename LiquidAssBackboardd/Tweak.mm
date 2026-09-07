@@ -1,7 +1,6 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#import <QuartzCore/QuartzCore.h>
 #import "../Shared/LGHostRegistry.h"
 #import "LGSymbolResolver.h"
 #import "../Shared/LGCoverSheetState.h"
@@ -101,11 +100,6 @@ typedef struct {
     float       centerTintFactor;
     simd_float4 tintColor;
     simd_float2 maskResolution;
-    // Tile UV mapping for glyph mask sampling when CA tiles backdrop renders.
-    // maskUV = tileUVOrigin + localUV * tileUVSize
-    // When no tiling: origin=(0,0), size=(1,1) → maskUV == localUV (legacy behavior)
-    simd_float2 tileUVOrigin;
-    simd_float2 tileUVSize;
 } LGUniforms;
 
 typedef void (*Render13Fn)(void*,
@@ -399,12 +393,6 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
     constexpr sampler s(filter::linear, address::clamp_to_edge);
 
     float2 localUV = (float2(gid) + 0.5) / float2(W, H);
-
-    // Tile-aware mask UV: when CA tiles backdrop renders, localUV (0~1) covers
-    // only the current tile. Map it to the full mask texture via tileUV transform.
-    // When no tiling: tileUVOrigin=(0,0), tileUVSize=(1,1) → maskUV == localUV.
-    float2 maskUV = u.tileUVOrigin + localUV * u.tileUVSize;
-
     bool isCoverSheet = u.useGlyphMask < -0.5;
     float2 captureUV = localUV;
     float2 capturePx = localUV * u.resolution;
@@ -437,7 +425,7 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
     if (u.useGlyphMask > 0.5) {
 
         // [DEBUG] mask 诊断模式：当 useGlyphMask > 1.5 时直接渲染 mask 灰度
-        float maskAtPixel = glyphMask.sample(s, maskUV).r;
+        float maskAtPixel = glyphMask.sample(s, localUV).r;
         if (u.useGlyphMask > 1.5) {
             return float4(maskAtPixel, maskAtPixel, maskAtPixel, 1.0);
         }
@@ -453,7 +441,7 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
             float probe = 1.0;
             for (int level = 0; level < 6; level++) {
                 probe = min(probe, bezel);
-                float2 probeUV = maskUV + candidateDirection * (probe / u.resolution) * u.tileUVSize;
+                float2 probeUV = localUV + candidateDirection * (probe / u.resolution);
                 if (glyphMask.sample(s, probeUV).r < 0.15) {
                     high = probe;
                     break;
@@ -464,7 +452,7 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
             if (high <= bezel) {
                 for (int refinement = 0; refinement < 3; refinement++) {
                     float middle = (low + high) * 0.5;
-                    float2 probeUV = maskUV + candidateDirection * (middle / u.resolution) * u.tileUVSize;
+                    float2 probeUV = localUV + candidateDirection * (middle / u.resolution);
                     if (glyphMask.sample(s, probeUV).r < 0.15) high = middle;
                     else low = middle;
                 }
@@ -817,8 +805,6 @@ static void ensureUniforms(__unsafe_unretained id<MTLDevice> device, uint64_t w,
     u->fresnelGlareStrength    = 0.5f;
     u->centerTintFactor        = 1.0f;
     u->maskResolution          = simd_make_float2(0.f, 0.f);
-    u->tileUVOrigin            = simd_make_float2(0.f, 0.f);
-    u->tileUVSize              = simd_make_float2(1.f, 1.f);
 
     lglog("uniforms buffer allocated (geometry refreshed per-frame)");
 }
@@ -1501,85 +1487,8 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
 
             float maskPointWidth = (float)clockMask.width / g_clockMaskImageScale;
             float maskPointHeight = (float)clockMask.height / g_clockMaskImageScale;
-
-            // ---- Tile detection ----
-            // CA may split large backdrop layers into multiple tiles for rendering.
-            // Each tile calls this function independently with a sub-rect of the
-            // source texture. Without correction, glyphMask sampling uses local
-            // UV (0~1) which maps to the entire mask texture, so only the first
-            // tile samples the correct mask region. We detect the tile rect from
-            // the render parameters and compute a UV transform so each tile
-            // samples its corresponding region of the full mask.
-            CGRect layerBounds = CGRectZero;
-            CGRect tileRect = CGRectZero;
-            @try {
-                CALayer *caLayer = (__bridge CALayer *)layer;
-                if ([caLayer isKindOfClass:[CALayer class]]) {
-                    layerBounds = caLayer.bounds;
-                }
-            } @catch (__unused id e) { layerBounds = CGRectZero; }
-
-            // Try reading shape as a CGRect (CA render shape is commonly a rect
-            // describing the tile region in layer/point coordinates).
-            if (shape && layerBounds.size.width > 1.0f && layerBounds.size.height > 1.0f) {
-                CGRect candidate = *(CGRect *)shape;
-                if (isfinite(candidate.origin.x) && isfinite(candidate.origin.y) &&
-                    isfinite(candidate.size.width) && isfinite(candidate.size.height) &&
-                    candidate.size.width  > 1.0f &&
-                    candidate.size.height > 1.0f &&
-                    candidate.size.width  <= layerBounds.size.width  * 1.5f &&
-                    candidate.size.height <= layerBounds.size.height * 1.5f &&
-                    candidate.origin.x >= -2.0f && candidate.origin.y >= -2.0f &&
-                    candidate.origin.x < layerBounds.size.width &&
-                    candidate.origin.y < layerBounds.size.height) {
-                    tileRect = candidate;
-                }
-            }
-
-            float tileUVOriginX = 0.f, tileUVOriginY = 0.f;
-            float tileUVSizeX   = 1.f, tileUVSizeY   = 1.f;
-            float pixelsPerPointX, pixelsPerPointY;
-
-            if (tileRect.size.width > 1.0f && tileRect.size.height > 1.0f) {
-                // Tiled render: compute UV transform from tile rect relative to layer bounds.
-                float uvX = tileRect.origin.x / layerBounds.size.width;
-                float uvY = tileRect.origin.y / layerBounds.size.height;
-                float uvW = tileRect.size.width  / layerBounds.size.width;
-                float uvH = tileRect.size.height / layerBounds.size.height;
-
-                // CA coordinates are Y-up (origin bottom-left);
-                // Metal texture coordinates are Y-down (origin top-left).
-                tileUVOriginX = uvX;
-                tileUVOriginY = 1.0f - uvY - uvH;
-                tileUVSizeX   = uvW;
-                tileUVSizeY   = uvH;
-
-                // pixelsPerPoint from tile dimensions / tile point size
-                pixelsPerPointX = (float)w / tileRect.size.width;
-                pixelsPerPointY = (float)h / tileRect.size.height;
-
-                {
-                    static int sTileLogCount = 0;
-                    if (sTileLogCount < 10) {
-                        sTileLogCount++;
-                        lglog("[CLOCK TILE] layer=%.0fx%.0f tile=%.0fx%.0f@(%.0f,%.0f) tex=%llux%llu uv=(%.3f,%.3f)+(%.3f,%.3f)",
-                              layerBounds.size.width, layerBounds.size.height,
-                              tileRect.size.width, tileRect.size.height,
-                              tileRect.origin.x, tileRect.origin.y,
-                              w, h,
-                              tileUVOriginX, tileUVOriginY,
-                              tileUVSizeX, tileUVSizeY);
-                    }
-                }
-            } else {
-                // Non-tiled render (single tile covers full layer).
-                pixelsPerPointX = maskPointWidth  > 0.0f ? (float)w / maskPointWidth  : 1.0f;
-                pixelsPerPointY = maskPointHeight > 0.0f ? (float)h / maskPointHeight : 1.0f;
-            }
-
-            lu.tileUVOrigin = simd_make_float2(tileUVOriginX, tileUVOriginY);
-            lu.tileUVSize   = simd_make_float2(tileUVSizeX, tileUVSizeY);
-
+            float pixelsPerPointX = maskPointWidth > 0.0f ? (float)w / maskPointWidth : 1.0f;
+            float pixelsPerPointY = maskPointHeight > 0.0f ? (float)h / maskPointHeight : 1.0f;
             float pixelsPerPoint = fminf(pixelsPerPointX, pixelsPerPointY);
             float maskBezelPx = g_clockMaskBezelWidthPoints * pixelsPerPoint;
             // 取设置值和 mask 值的较大者，确保设置里的边缘比例调节对时钟也生效
