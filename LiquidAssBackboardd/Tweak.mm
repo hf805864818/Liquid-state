@@ -99,6 +99,7 @@ typedef struct {
     float       fresnelGlareStrength;
     float       centerTintFactor;
     simd_float4 tintColor;
+    simd_float2 maskResolution;
 } LGUniforms;
 
 typedef void (*Render13Fn)(void*,
@@ -148,6 +149,7 @@ static MSHookFunctionFn g_hookFunction = nullptr;
 static bool             g_useHookPath = false;
 static bool             g_legacyRenderABI = false;
 static bool             g_clockFrostedMode = false;  // Clock 磨砂模式开关
+static bool             g_clockMaskDebug = false;    // Clock mask 调试模式（渲染灰度 mask）
 
 // 磨砂时钟独立参数（浅色/深色两套 + 着色），对应设置页 Clock.Frosted.* 键
 typedef struct {
@@ -248,6 +250,7 @@ struct Uniforms {
     float  fresnelGlareStrength;
     float  centerTintFactor;
     float4 tintColor;
+    float2 maskResolution;
 };
 
 float surfaceConvexSquircle(float x) {
@@ -424,11 +427,23 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
         // 采样当前像素的 mask 值，判断是否在文字形状内
         float maskAtPixel = glyphMask.sample(s, localUV).r;
 
+        // [DEBUG] mask 诊断模式：当 useGlyphMask > 1.5 时直接渲染 mask 灰度
+        // 用于验证 mask 形状、方向、UV 映射是否正确
+        if (u.useGlyphMask > 1.5) {
+            return float4(maskAtPixel, maskAtPixel, maskAtPixel, 1.0);
+        }
+
         // 明确在文字外的像素：直接返回原始背景，不应用任何液态效果
         // 这消除了 mask 外区域的着色、折射、菲涅尔和高光，防止矩形阴影
         if (maskAtPixel < 0.02) {
             return src.sample(s, captureUV);
         }
+
+        // 使用 source 分辨率计算 probe UV 偏移。
+        // probe 距离是 source 像素单位，bezel 也是 source 像素单位，
+        // 所以用 u.resolution 转换为 UV 是正确的。
+        // mask 仅用于判断在指定物理距离处是否仍在字形内，
+        // 其自身分辨率只影响采样精度（线性插值保证亚像素精度），不影响距离计算。
 
         float bestDistance = bezel + 1.0;
         float2 bestDirection = float2(0.0, -1.0);
@@ -806,6 +821,7 @@ static void ensureUniforms(__unsafe_unretained id<MTLDevice> device, uint64_t w,
     u->dispersionStrength      = 5.0f;
     u->fresnelGlareStrength    = 0.5f;
     u->centerTintFactor        = 1.0f;
+    u->maskResolution          = simd_make_float2(0.f, 0.f);
 
     lglog("uniforms buffer allocated (geometry refreshed per-frame)");
 }
@@ -970,6 +986,11 @@ static void lgReloadHostPrefs(void) {
     BOOL variableFontEnabled = variableFontNum ? [variableFontNum isKindOfClass:[NSNumber class]] ? [variableFontNum boolValue] : YES : YES;
     g_clockFrostedMode = (frostedNum && [frostedNum isKindOfClass:[NSNumber class]] && frostedNum.boolValue && variableFontEnabled);
     if (g_clockFrostedMode) lglog("Clock frosted mode: ON (v0.1.73b preset)");
+
+    // Clock mask 调试模式：Clock.MaskDebug=1 时渲染灰度 mask 用于诊断
+    NSNumber *maskDebugNum = prefs[@"Clock.MaskDebug"];
+    g_clockMaskDebug = (maskDebugNum && [maskDebugNum isKindOfClass:[NSNumber class]] && maskDebugNum.boolValue);
+    if (g_clockMaskDebug) lglog("Clock mask debug mode: ON (rendering grayscale mask)");
     {
         static int sPrefsPathDiagCount = 0;
         if (sPrefsPathDiagCount < 5) {
@@ -1475,8 +1496,11 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     id<MTLTexture> clockMask = nil;
     if (!strcmp(hp->prefPrefix, "Clock")) {
         clockMask = lgClockMaskTexture(device);
-        lu.useGlyphMask = clockMask ? 1.f : 0.f;
         if (clockMask) {
+            // 调试模式：Clock.MaskDebug=1 时渲染 mask 灰度图，用于验证 mask 形状
+            lu.useGlyphMask = g_clockMaskDebug ? 2.f : 1.f;
+            lu.maskResolution = simd_make_float2(
+                (float)clockMask.width, (float)clockMask.height);
 
             float maskPointWidth = (float)clockMask.width / g_clockMaskImageScale;
             float maskPointHeight = (float)clockMask.height / g_clockMaskImageScale;
