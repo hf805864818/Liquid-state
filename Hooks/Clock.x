@@ -2177,22 +2177,18 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
             x = 0.0;
             break;
     }
-    // 获取实际字形路径边界，修正可变字体 Height 轴极值时 baseline 的裁剪问题。
-    // baseline 公式 bounds.height - topInset - ascent 隐含条件：actual_descent ≤ ascent。
-    // 当 Height 轴极值（如 350）使 actual_descent > ascent 时，文字底部被裁剪，
-    // 且该条件与 bounds.height 无关——单纯增大 extraBottom 无法解决。
-    // 修正：用 MAX(ascent, actual_descent) 压低 baseline，确保底部文字完整。
-    CGRect glyphBounds = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
-    BOOL hasGlyphBounds = !CGRectIsNull(glyphBounds) && !CGRectIsEmpty(glyphBounds);
-    CGFloat maskActualAscent = hasGlyphBounds
-        ? MAX(ascent, CGRectGetMaxY(glyphBounds))
-        : ascent;
+    // 使用源 label 高度计算 baseline，而非 overlay 高度。
+    // overlay 比 sourceFrame 高出 extraBottom（为容纳实际字形 descent 而扩展），
+    // 若用 bounds.size.height 会把 mask 文字下移 extraBottom 像素，与实际文字错位。
+    // 用 sourceHeight 确保 mask 文字与屏幕实际文字完全对齐，extraBottom 空间在下方容纳 descent。
+    CGFloat sourceHeight = CGRectGetHeight(self.cachedSourceFrameInContainer);
+    if (sourceHeight <= 0.0) sourceHeight = bounds.size.height;
     CGFloat baseline = 0.0;
     if (legacyHost) {
-        baseline = floor(bounds.size.height - maskActualAscent);
+        baseline = floor(sourceHeight - ascent);
     } else {
         CGFloat topInset = MAX(0.0, self.displayTopInset);
-        baseline = floor(bounds.size.height - topInset - maskActualAscent);
+        baseline = floor(sourceHeight - topInset - ascent);
     }
     // 字重合成加粗：现代与旧版时钟路径统一生效，保证“字重/字重预设”在所有模式下都有可见差异
     CGFloat embolden = LGClockModernSyntheticEmbolden();
