@@ -566,18 +566,21 @@ static BOOL sClockFontMetadataLoaded = NO;
 static NSCache<NSString *, id> *LGClockVariableCTFontCache(void);
 
 static void LGResetClockVariableFontMetadata(void) {
-    if (sClockVariableCGFont) {
-        CTFontManagerUnregisterGraphicsFont(sClockVariableCGFont, NULL);
-        CGFontRelease(sClockVariableCGFont);
-        sClockVariableCGFont = NULL;
-    }
+    // 【关键修复】不注销字体，只清空元数据和缓存。
+    // 原因：每次偏好重载都注销/重新注册字体，如果重新注册失败
+    // （字体仍被引用等），CTFontCreateWithFontDescriptor 找不到字体
+    // → 返回系统默认字体 → 无变体轴 → 字重变回默认（圆/细）
+    // 字体创建已改用 CTFontCreateWithGraphicsFont，不依赖注册状态。
+    // 字体文件路径变更时，LGEnsureClockVariableFontMetadata 会处理。
     sClockVariablePostScriptName = nil;
     sClockVariableAxisIdentifiers = nil;
     sClockVariableAxisRanges = nil;
-    sClockVariableFontResolvedPath = nil;  // 清空字体文件路径缓存，切换“柔和/自适应/纽约”字体后才会重新查找新文件
+    sClockVariableFontResolvedPath = nil;  // 清空字体文件路径缓存
     sClockFontMetadataLoaded = NO;
     [LGClockVariableCTFontCache() removeAllObjects];
 }
+
+static NSString *sClockVariableLoadedFontPath = nil;
 
 static void LGEnsureClockVariableFontMetadata(void) {
     if (sClockFontMetadataLoaded) return;
@@ -585,6 +588,51 @@ static void LGEnsureClockVariableFontMetadata(void) {
 
     NSString *fontPath = LGClockVariableFontPath();
     if (!fontPath.length) return;
+
+    // 【关键修复】如果字体文件路径没变且 CGFontRef 仍有效，跳过重新加载/注册，
+    // 只重新检测轴。偏好重载后轴值（Weight 等）变了但字体文件没变。
+    if (sClockVariableCGFont && [fontPath isEqualToString:sClockVariableLoadedFontPath]) {
+        // 字体文件未变，只重新检测轴（轴检测不受偏好值影响，但保持一致性）
+        CTFontRef baseFont = CTFontCreateWithGraphicsFont(sClockVariableCGFont, 60.0, NULL, NULL);
+        NSArray *axes = baseFont ? CFBridgingRelease(CTFontCopyVariationAxes(baseFont)) : nil;
+        if (baseFont) CFRelease(baseFont);
+        if (axes.count) {
+            NSMutableDictionary<NSString *, NSNumber *> *ids = [NSMutableDictionary dictionary];
+            NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *ranges = [NSMutableDictionary dictionary];
+            for (NSDictionary *axis in axes) {
+                NSString *name = axis[(id)kCTFontVariationAxisNameKey];
+                NSNumber *identifier = axis[(id)kCTFontVariationAxisIdentifierKey];
+                NSNumber *minimum = axis[(id)kCTFontVariationAxisMinimumValueKey];
+                NSNumber *maximum = axis[(id)kCTFontVariationAxisMaximumValueKey];
+                if (![identifier isKindOfClass:[NSNumber class]]) continue;
+                NSString *key = nil;
+                if (LGAxisNameMatches(name, @"weight", @"wght")) key = @"weight";
+                else if (LGAxisNameMatches(name, @"width", @"wdth")) key = @"width";
+                else if (LGAxisNameMatches(name, @"height", @"hght")) key = @"height";
+                else if (LGAxisNameMatches(name, @"soft", @"soft")) key = @"softness";
+                if (!key.length) key = LGAxisKeyForIdentifier(identifier);
+                if (!key.length) continue;
+                ids[key] = identifier;
+                ranges[key] = @[
+                    @([minimum isKindOfClass:[NSNumber class]] ? minimum.doubleValue : -CGFLOAT_MAX),
+                    @([maximum isKindOfClass:[NSNumber class]] ? maximum.doubleValue : CGFLOAT_MAX),
+                ];
+            }
+            sClockVariableAxisIdentifiers = [ids copy];
+            sClockVariableAxisRanges = [ranges copy];
+            sClockVariablePostScriptName = CFBridgingRelease(CGFontCopyPostScriptName(sClockVariableCGFont));
+            LGClockLog(@"clock variable font axes re-detected (same file) count=%d", (int)ids.count);
+        }
+        return;
+    }
+
+    // 字体文件路径变了（切换了字体），需要加载新字体文件
+    // 先注销旧字体（如果有）
+    if (sClockVariableCGFont) {
+        CTFontManagerUnregisterGraphicsFont(sClockVariableCGFont, NULL);
+        CGFontRelease(sClockVariableCGFont);
+        sClockVariableCGFont = NULL;
+    }
 
     NSURL *fontURL = [NSURL fileURLWithPath:fontPath];
     NSData *fontData = [NSData dataWithContentsOfURL:fontURL];
@@ -608,6 +656,7 @@ static void LGEnsureClockVariableFontMetadata(void) {
         return;
     }
     sClockVariableCGFont = cgFont;
+    sClockVariableLoadedFontPath = [fontPath copy];
 
     sClockVariablePostScriptName = CFBridgingRelease(CGFontCopyPostScriptName(cgFont));
     CFErrorRef registerError = NULL;
@@ -742,23 +791,30 @@ static CTFontRef LGClockCreateVariableCTFontForHeight(CGFloat pointSize, CGFloat
 
     NSMutableDictionary *variations = LGClockRequestedVariationsForHeight(heightValue);
 
+    // 【关键修复】使用 CTFontCreateWithGraphicsFont 直接从 CGFontRef 创建字体，
+    // 而非 CTFontCreateWithFontDescriptor（通过 PostScript 名称查找）。
+    // 原因：偏好重载时 LGResetClockVariableFontMetadata 会注销字体，
+    // 重新注册可能失败（字体仍被引用等），此时 CTFontCreateWithFontDescriptor
+    // 找不到字体 → 返回系统默认字体（无变体轴）→ 字重变回默认（圆/细）
+    // CTFontCreateWithGraphicsFont 直接使用 CGFontRef，不依赖字体注册状态
     CTFontDescriptorRef descriptor = NULL;
-    if (sClockVariablePostScriptName.length) {
-        NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
-        attributes[(id)kCTFontNameAttribute] = sClockVariablePostScriptName;
-        if (variations.count > 0) {
-            attributes[(id)kCTFontVariationAttribute] = variations;
-        }
-        descriptor = CTFontDescriptorCreateWithAttributes((__bridge CFDictionaryRef)attributes);
+    if (variations.count > 0) {
+        descriptor = CTFontDescriptorCreateWithAttributes(
+            (__bridge CFDictionaryRef)@{
+                (id)kCTFontVariationAttribute: variations
+            });
     }
 
-    CTFontRef renderFont = descriptor ? CTFontCreateWithFontDescriptor(descriptor, pointSize, NULL) : NULL;
+    CTFontRef renderFont = sClockVariableCGFont
+        ? CTFontCreateWithGraphicsFont(sClockVariableCGFont, pointSize, NULL, descriptor)
+        : (descriptor ? CTFontCreateWithFontDescriptor(descriptor, pointSize, NULL) : NULL);
     if (descriptor) CFRelease(descriptor);
     if (!renderFont) {
-        LGClockLog(@"clock variable CTFont descriptor create failed postscript=%@ size=%.2f variations=%@",
+        LGClockLog(@"clock variable CTFont create failed postscript=%@ size=%.2f variations=%@ cgFont=%p",
               sClockVariablePostScriptName,
               pointSize,
-              variations);
+              variations,
+              sClockVariableCGFont);
         return NULL;
     }
     if (cacheKey.length) {
