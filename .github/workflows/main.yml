@@ -178,90 +178,22 @@ jobs:
           " >> $GITHUB_OUTPUT
 
       - name: create per-version release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          VERSION="${{ steps.version.outputs.version }}"
-          # 先删除已有的同名 tag 和 release（如果存在）
-          gh release delete "$TAG" --cleanup-tag -y 2>/dev/null || true
-          # 创建 release
-          NOTES="**版本:** ${VERSION}
-          **Commit:** ${{ github.sha }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Ai液态玻璃 ${{ steps.version.outputs.version }}"
+          body: |
+            **版本:** ${{ steps.version.outputs.version }}
+            **Commit:** ${{ github.sha }}
 
-          ### 下载说明
-          - **rootless**: 适用于 Dopamine / Palera1n rootless 越狱
-          - **rootful**: 适用于传统 rootful 越狱
-          - **roothide**: 适用于 Palera1n roothide 越狱"
-          # 先用 gh release create 上传文件（可靠，但会丢弃非 ASCII 字符）
-          gh release create "$TAG" \
-            ./all-packages/*.deb \
-            --title "Ai液态玻璃 ${VERSION}" \
-            --notes "${NOTES}"
-
-          # 用 GitHub API 将 asset 重命名为中文（PATCH 支持 UTF-8）
-          # gh release create 上传时会丢弃文件名中的中文（如 Ai液态玻璃 → Ai），
-          # 但 GitHub PATCH /releases/assets/{id} API 的 name 字段支持 UTF-8
-          RELEASE_ID=$(gh release view "$TAG" --json id -q .id 2>/dev/null || echo "")
-          if [ -n "$RELEASE_ID" ]; then
-            # 列出所有 assets 的 id 和 name
-            ASSETS_JSON=$(curl -sS -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets")
-            echo "$ASSETS_JSON" | python3 -c "
-          import json, sys, urllib.request, os, re
-          data = json.load(sys.stdin)
-          # GitHub API 可能返回 list 或 dict（错误时）
-          assets = data if isinstance(data, list) else []
-          if not assets:
-              print('WARN: assets JSON is not a list, got:', type(data).__name__)
-              print(json.dumps(data, ensure_ascii=False)[:200])
-          token = os.environ['GH_TOKEN']
-          repo = os.environ.get('GITHUB_REPOSITORY', '')
-          for a in assets:
-              old_name = a.get('name', '')
-              aid = a.get('id')
-              if not old_name or aid is None:
-                  continue
-              # 从旧名提取 scheme
-              scheme = ''
-              for s in ['rootless', 'roothide', 'rootful']:
-                  if s in old_name:
-                      scheme = s
-                      break
-              if not scheme:
-                  continue
-              # 从旧名提取版本号
-              import re
-              m = re.search(r'_([0-9]+\.[0-9]+\.[0-9]+[a-z]?)_', old_name)
-              if not m:
-                  m = re.search(r'_([0-9]+\.[0-9]+[a-z]?)_', old_name)
-              if not m:
-                  continue
-              ver = m.group(1)
-              new_name = f'Ai液态玻璃_{ver}_{scheme}.deb'
-              if new_name == old_name:
-                  continue
-              # PATCH 重命名
-              data = json.dumps({'name': new_name}).encode()
-              req = urllib.request.Request(
-                  f'https://api.github.com/repos/{repo}/releases/assets/{aid}',
-                  data=data,
-                  headers={
-                      'Authorization': f'token {token}',
-                      'Content-Type': 'application/json',
-                      'Accept': 'application/vnd.github+json',
-                  },
-                  method='PATCH'
-              )
-              try:
-                  resp = urllib.request.urlopen(req)
-                  print(f'Renamed: {old_name} -> {new_name} (HTTP {resp.status})')
-              except Exception as e:
-                  print(f'WARN: rename failed for {old_name}: {e}')
-          "
-          else
-            echo "WARN: could not get RELEASE_ID, skipping rename"
-          fi
+            ### 下载说明
+            - **rootless**: 适用于 Dopamine / Palera1n rootless 越狱
+            - **rootful**: 适用于传统 rootful 越狱
+            - **roothide**: 适用于 Palera1n roothide 越狱
+          files: ./all-packages/*.deb
+          draft: false
+          prerelease: false
+          make_latest: true
 
       - name: bump version and push
         run: |
