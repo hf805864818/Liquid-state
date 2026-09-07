@@ -1790,7 +1790,28 @@ static CGRect LGClockExpandedModernFrameForRect(CGRect frame,
     if (CGRectIsEmpty(frame)) return frame;
 
     CGFloat resolvedLineHeight = MAX(CGRectGetHeight(frame), LGClockResolvedLineHeight(font, ctFontObject));
-    CGFloat extraBottom = MAX(18.0, ceil(resolvedLineHeight - CGRectGetHeight(frame)) + ceil(resolvedLineHeight * 0.18) + 18.0);
+    // 使用字形路径边界修正实际行高，避免可变字体 Height 轴极值（如 350）时
+    // 字体度量 descent 低估实际下降部，导致 extraBottom 不够 → mask 底部裁剪 → 阴影/截断
+    CGFloat safeLineHeight = resolvedLineHeight;
+    if (text.length > 0 && (ctFontObject || font)) {
+        NSDictionary *attrs = @{
+            (__bridge id)kCTFontAttributeName: ctFontObject ?: font,
+        };
+        NSAttributedString *as = [[NSAttributedString alloc] initWithString:text attributes:attrs];
+        CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)as);
+        if (line) {
+            CGFloat glyphAscent = 0, glyphDescent = 0, glyphLeading = 0;
+            CTLineGetTypographicBounds(line, &glyphAscent, &glyphDescent, &glyphLeading);
+            CGRect glyphBounds = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
+            CGFloat actualDescent = (CGRectIsNull(glyphBounds) || CGRectIsEmpty(glyphBounds))
+                ? glyphDescent
+                : MAX(glyphDescent, -CGRectGetMinY(glyphBounds));
+            CGFloat actualLineHeight = ceil(glyphAscent + actualDescent + glyphLeading);
+            safeLineHeight = MAX(resolvedLineHeight, actualLineHeight);
+            CFRelease(line);
+        }
+    }
+    CGFloat extraBottom = MAX(18.0, ceil(safeLineHeight - CGRectGetHeight(frame)) + ceil(safeLineHeight * 0.18) + 18.0);
     CGRect expanded = frame;
     expanded.size.height += extraBottom;
 
