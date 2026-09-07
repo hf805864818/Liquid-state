@@ -1145,7 +1145,7 @@ NSArray<NSDictionary *> *LGClockBuiltinPresets(void) {
                     @"Enabled": @YES,
                     @"Name": @"adaptive",
                     @"Weight": @850.0,
-                    @"SizeScale": @1.55,
+                    @"SizeScale": @1.35,  // 临时调小，验证是否字体太大导致矩形模糊溢出
                     @"Width": @100.0,
                     @"Height": @350.0,
                     @"Softness": @25.0,
@@ -1209,7 +1209,7 @@ NSArray<NSDictionary *> *LGClockBuiltinPresets(void) {
                     @"Enabled": @YES,
                     @"Name": @"adaptive",
                     @"Weight": @950.0,
-                    @"SizeScale": @1.6,
+                    @"SizeScale": @1.35,  // 临时调小，验证是否字体太大导致矩形模糊溢出
                     @"Width": @110.0,
                     @"Height": @350.0,
                     @"Softness": @55.0,
