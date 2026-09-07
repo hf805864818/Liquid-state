@@ -909,22 +909,6 @@ static void LGReportMemoryUsageIfNeeded(void) {
 }
 
 - (void)updateNativeBlurOverlayWithRadius:(CGFloat)radius filterClass:(Class)filterCls {
-    // Clock: 不创建独立的 _nativeBlurLayer。
-    // CABackdropLayer 的 CALayer.mask 在 window server 渲染中不完全可靠，
-    // 会产生可见的矩形模糊区域。改为在 applyFilters 中将高斯模糊作为
-    // CAFilter 加入主 backdrop layer 的 filter 链，由 shader 的自裁剪
-    // (maskAtPixel < 0.01 → 透明) 将模糊裁剪到文字形状内。
-    if (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock) {
-        if (_nativeBlurLayer) {
-            [_nativeBlurLayer removeFromSuperlayer];
-            _nativeBlurLayer = nil;
-        }
-        // 注意：不在此处更新 _nativeBlurRadius，由 applyFilters 在重建
-        // filter 链后更新，这样 applyFilters 的检测逻辑才能正确比较
-        // 新旧 blur 值，在 blur 变化时重建 filter 链。
-        return;
-    }
-
     if (radius <= 0.0 || !filterCls) {
         [_nativeBlurLayer removeFromSuperlayer];
         _nativeBlurLayer = nil;
@@ -1092,19 +1076,11 @@ static void LGReportMemoryUsageIfNeeded(void) {
         Class filterCls = NSClassFromString(@"CAFilter");
         [self updateNativeBlurOverlayWithRadius:nativeBlur filterClass:filterCls];
 
-        // Clock: 检查是否需要重建 filter 数组。
-        // Clock frosted 模式下 filter 链为 [gaussian, glass]，其他为 [glass]。
-        BOOL isClock = (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock);
-        BOOL clockNeedsBlur = isClock && nativeBlur > 0.0;
-        NSUInteger expectedCount = clockNeedsBlur ? 2 : 1;
-
-        if (_filterAttached && existing.count == expectedCount) {
+        if (_filterAttached && existing.count == 1) {
             NSString *type = nil;
-            @try { type = [[existing lastObject] valueForKey:@"type"]; } @catch (...) {}
+            @try { type = [existing.firstObject valueForKey:@"type"]; } @catch (...) {}
             if ([type isEqualToString:wantType]) {
-                if (!clockNeedsBlur || fabs(_nativeBlurRadius - nativeBlur) < 0.001) {
-                    return;
-                }
+                return;
             }
         }
         if (!filterCls) { sblog("CAFilter class not found"); return; }
@@ -1117,22 +1093,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
             return;
         }
 
-        // Clock frosted: 将高斯模糊和液态玻璃 filter 一起设置到主 layer 上。
-        // 高斯模糊先处理 backdrop，然后液态玻璃 shader 采样已模糊的 backdrop
-        // 并通过 mask 自裁剪将模糊限制在文字形状内，避免矩形模糊区域。
-        if (clockNeedsBlur) {
-            id gaussianFilter = LGCreateNativeGaussianFilter(filterCls, nativeBlur);
-            if (gaussianFilter) {
-                layer.filters = @[gaussianFilter, glassFilter];
-                _nativeBlurRadius = nativeBlur;
-            } else {
-                layer.filters = @[glassFilter];
-                _nativeBlurRadius = 0.0;
-            }
-        } else {
-            layer.filters = @[glassFilter];
-            _nativeBlurRadius = 0.0;
-        }
+        layer.filters = @[glassFilter];
         _filterAttached = YES;
     } @catch (NSException *e) {
         sblog("applyFilters exception: %s", e.reason.UTF8String);

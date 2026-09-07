@@ -430,14 +430,6 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
             return float4(maskAtPixel, maskAtPixel, maskAtPixel, 1.0);
         }
 
-        // 自裁剪：mask 值接近 0 的像素位于文字形状外面，直接输出透明。
-        // 防止高斯模糊后的背景在非文字区域显示为可见矩形。
-        // CALayer.mask 对 CABackdropLayer 在 window server 渲染中不完全可靠，
-        // shader 自裁剪确保非文字区域始终透明。
-        if (maskAtPixel < 0.01) {
-            return float4(0.0);
-        }
-
         float bestDistance = bezel + 1.0;
         float2 bestDirection = float2(0.0, -1.0);
         constexpr int directionCount = 12;
@@ -1593,15 +1585,6 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     }
     uint64_t t_afterGauss = mach_absolute_time();
     R13TRACE("R13[%llu] after g_origGaussR13", callN);
-
-    // 跳过非自定义 atom 的自定义渲染。
-    // 当 filter 链包含 [gaussian, glass] 时，gaussian blur filter 也会
-    // 触发此 hook（因为它共享 gaussian blur 的 vtable）。如果不跳过，
-    // 会在 gaussian blur 输出之上叠加液态玻璃效果，破坏模糊结果。
-    // 只对注册的自定义 atom 执行自定义渲染。
-    if (hp == &g_hostParams[0]) {
-        return;
-    }
 
     rawCmdBuf = *(void **)(metalCtx + g_cmdBufOffset);
     cmdBuf = rawCmdBuf ? (__bridge id<MTLCommandBuffer>)rawCmdBuf : nil;
