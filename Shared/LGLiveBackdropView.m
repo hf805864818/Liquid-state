@@ -760,7 +760,6 @@ static void LGReportMemoryUsageIfNeeded(void) {
     CALayer         *_specularBoostMask;
     CALayer         *_nativeBlurLayer;
     CALayer         *_pendingNativeBlurMask;  // 保存待应用的 mask，解决时序竞态
-    NSValue         *_pendingNativeBlurFrame; // 保存待应用的 frame，解决时序竞态
     CGFloat          _nativeBlurRadius;
     BOOL             _backdropConfigured;
     BOOL             _filterAttached;
@@ -942,11 +941,6 @@ static void LGReportMemoryUsageIfNeeded(void) {
         if (_pendingNativeBlurMask) {
             _nativeBlurLayer.mask = _pendingNativeBlurMask;
         }
-        // 创建后立即应用之前保存的 frame（解决时序竞态：
-        // lgSetNativeBlurFrame 可能在 updateNativeBlurOverlayWithRadius 之前调用）
-        if (_pendingNativeBlurFrame) {
-            _nativeBlurLayer.frame = _pendingNativeBlurFrame.CGRectValue;
-        }
         if (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock) {
             LGLog(@"clock native blur layer created radius=%.2f group=%@",
                   radius, _lgGroupName);
@@ -955,13 +949,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    // 如果设置了自定义 native blur frame（如 Clock 文字区域），则使用自定义 frame；
-    // 否则使用 self.bounds（默认铺满整个 view）
-    if (_pendingNativeBlurFrame) {
-        _nativeBlurLayer.frame = _pendingNativeBlurFrame.CGRectValue;
-    } else {
-        _nativeBlurLayer.frame = self.bounds;
-    }
+    _nativeBlurLayer.frame = self.bounds;
     _nativeBlurLayer.cornerRadius = self.layer.cornerRadius;
     _nativeBlurLayer.masksToBounds = YES;
     @try { [_nativeBlurLayer setValue:[self.layer valueForKey:@"cornerCurve"] forKey:@"cornerCurve"]; }
@@ -1132,30 +1120,6 @@ static void LGReportMemoryUsageIfNeeded(void) {
     _pendingNativeBlurMask = maskLayer;
     if (_nativeBlurLayer) {
         _nativeBlurLayer.mask = maskLayer;
-    }
-}
-
-- (void)lgSetNativeBlurFrame:(CGRect)frame {
-    // 将 native blur 层的 frame 限制在指定区域内，
-    // 防止 CALayer.mask 对 CABackdropLayer 不完全生效导致的矩形模糊溢出。
-    // 对于 Clock，frame 是文字的实际边界（带少许 padding）。
-    // 传入 CGRectZero 表示清除限制，恢复为 self.bounds。
-    if (_nativeBlurLayer) {
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        if (CGRectIsEmpty(frame)) {
-            _nativeBlurLayer.frame = self.bounds;
-        } else {
-            _nativeBlurLayer.frame = frame;
-        }
-        [CATransaction commit];
-    }
-    // 保存 pending frame，解决时序竞态（layer 尚未创建时的调用）
-    // 空 frame 表示清除限制
-    if (CGRectIsEmpty(frame)) {
-        _pendingNativeBlurFrame = nil;
-    } else {
-        _pendingNativeBlurFrame = [NSValue valueWithCGRect:frame];
     }
 }
 
