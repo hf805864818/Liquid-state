@@ -909,20 +909,6 @@ static void LGReportMemoryUsageIfNeeded(void) {
 }
 
 - (void)updateNativeBlurOverlayWithRadius:(CGFloat)radius filterClass:(Class)filterCls {
-    // Clock 磨砂模式：不创建独立的 _nativeBlurLayer。
-    // CABackdropLayer 的 CALayer.mask 属性无法裁剪 backdrop 捕获区域
-    // （尤其是 ignoresScreenClip=YES 时），会产生可见的矩形模糊区域。
-    // 改为在 applyFilters 中将高斯模糊作为 CAFilter 加入主 backdrop layer
-    // 的 filter 链，由 shader 的 mask 纹理采样将模糊裁剪到文字形状内。
-    if (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock) {
-        if (_nativeBlurLayer) {
-            [_nativeBlurLayer removeFromSuperlayer];
-            _nativeBlurLayer = nil;
-        }
-        _nativeBlurRadius = radius;
-        return;
-    }
-
     if (radius <= 0.0 || !filterCls) {
         [_nativeBlurLayer removeFromSuperlayer];
         _nativeBlurLayer = nil;
@@ -1088,29 +1074,13 @@ static void LGReportMemoryUsageIfNeeded(void) {
         NSArray *existing = layer.filters;
         CGFloat nativeBlur = LGNativeBlurRadiusForFilterType(_lgFilterType ?: wantType);
         Class filterCls = NSClassFromString(@"CAFilter");
+        [self updateNativeBlurOverlayWithRadius:nativeBlur filterClass:filterCls];
 
-        // Clock 磨砂模式：不使用独立的 _nativeBlurLayer，
-        // 而是将高斯模糊作为 CAFilter 加入主 layer 的 filter 链。
-        // 这样 shader 的 mask 纹理采样会自然地将模糊裁剪到文字形状内，
-        // 避免出现矩形模糊区域。
-        BOOL isClock = (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock);
-        BOOL clockNeedsBlur = isClock && nativeBlur > 0.0;
-
-        // 非 Clock host 仍使用独立的 _nativeBlurLayer
-        if (!isClock) {
-            [self updateNativeBlurOverlayWithRadius:nativeBlur filterClass:filterCls];
-        }
-
-        // 检查是否需要重建 filter 数组
-        NSUInteger expectedCount = clockNeedsBlur ? 2 : 1;
-        if (_filterAttached && existing.count == expectedCount) {
+        if (_filterAttached && existing.count == 1) {
             NSString *type = nil;
-            @try { type = [[existing lastObject] valueForKey:@"type"]; } @catch (...) {}
+            @try { type = [existing.firstObject valueForKey:@"type"]; } @catch (...) {}
             if ([type isEqualToString:wantType]) {
-                // Clock+blur 时还需检查 blur 半径是否变化
-                if (!clockNeedsBlur || fabs(_nativeBlurRadius - nativeBlur) < 0.001) {
-                    return;
-                }
+                return;
             }
         }
         if (!filterCls) { sblog("CAFilter class not found"); return; }
@@ -1123,22 +1093,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
             return;
         }
 
-        // Clock 磨砂模式：高斯模糊 filter 放在 glass filter 之前。
-        // CAFilter 链按数组顺序处理：先模糊 backdrop，然后 shader 采样
-        // 已模糊的 backdrop 并通过 mask 纹理裁剪到文字形状。
-        if (clockNeedsBlur) {
-            id gaussianFilter = LGCreateNativeGaussianFilter(filterCls, nativeBlur);
-            if (gaussianFilter) {
-                layer.filters = @[gaussianFilter, glassFilter];
-                _nativeBlurRadius = nativeBlur;
-                LGLog(@"clock frosted filter chain: gaussian(%.1f) + glass(%@)",
-                      nativeBlur, wantType);
-            } else {
-                layer.filters = @[glassFilter];
-            }
-        } else {
-            layer.filters = @[glassFilter];
-        }
+        layer.filters = @[glassFilter];
         _filterAttached = YES;
     } @catch (NSException *e) {
         sblog("applyFilters exception: %s", e.reason.UTF8String);
@@ -1159,11 +1114,6 @@ static void LGReportMemoryUsageIfNeeded(void) {
 }
 
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer {
-    // Clock 不使用独立的 _nativeBlurLayer，blur 通过主 layer 的 filter 链实现，
-    // 由 shader 的 mask 纹理采样裁剪，不需要为 native blur 设置额外 mask
-    if (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock) {
-        return;
-    }
     // 保存 mask 引用，解决时序竞态：
     // setShapeMaskImage 可能在 _nativeBlurLayer 创建之前调用，
     // 此时保存 mask，等 updateNativeBlurOverlayWithRadius 创建 layer 后立即应用
