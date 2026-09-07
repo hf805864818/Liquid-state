@@ -30,6 +30,10 @@ UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
 - (instancetype)initWithFrame:(CGRect)frame groupName:(NSString *)groupName
                    filterType:(NSString *)filterType;
 - (void)applyFilters;
+
+// 为 native blur 层设置形状 mask（用于 Clock 文字形状裁剪）
+- (void)lgSetNativeBlurMask:(CALayer *)maskLayer;
+
 @end
 
 // Call to notify that SpringBoard is in foreground (icons visible) or background (app in front)

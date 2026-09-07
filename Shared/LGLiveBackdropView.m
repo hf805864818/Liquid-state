@@ -1107,6 +1107,12 @@ static void LGReportMemoryUsageIfNeeded(void) {
     [self.layer setNeedsDisplay];
 }
 
+- (void)lgSetNativeBlurMask:(CALayer *)maskLayer {
+    if (_nativeBlurLayer) {
+        _nativeBlurLayer.mask = maskLayer;
+    }
+}
+
 @end
 
 #pragma mark - generic host injection

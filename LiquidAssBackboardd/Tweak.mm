@@ -421,6 +421,15 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
     float edgeOpacity;
     if (u.useGlyphMask > 0.5) {
 
+        // 采样当前像素的 mask 值，判断是否在文字形状内
+        float maskAtPixel = glyphMask.sample(s, localUV).r;
+
+        // 明确在文字外的像素：直接返回原始背景，不应用任何液态效果
+        // 这消除了 mask 外区域的着色、折射、菲涅尔和高光，防止矩形阴影
+        if (maskAtPixel < 0.02) {
+            return src.sample(s, captureUV);
+        }
+
         float bestDistance = bezel + 1.0;
         float2 bestDirection = float2(0.0, -1.0);
         constexpr int directionCount = 12;
@@ -457,7 +466,9 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
         distFromSide = bestDistance;
         dir = bestDirection;
 
-        edgeOpacity = 1.0;
+        // 用 smoothstep 替代硬编码 1.0：边缘抗锯齿像素平滑过渡
+        // maskAtPixel >= 0.3 时为全效果，0.02~0.3 之间平滑过渡
+        edgeOpacity = smoothstep(0.02, 0.3, maskAtPixel);
     } else {
 
         R = clamp(R, 0.0, shortest * 0.5);
