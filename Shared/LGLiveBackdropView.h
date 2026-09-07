@@ -34,6 +34,10 @@ UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
 // 为 native blur 层设置形状 mask（用于 Clock 文字形状裁剪）
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer;
 
+// 为 native blur 层设置 frame（用于 Clock 将模糊层限制在文字区域内，
+// 防止 CALayer.mask 对 CABackdropLayer 不完全生效导致的矩形模糊溢出）
+- (void)lgSetNativeBlurFrame:(CGRect)frame;
+
 @end
 
 // Call to notify that SpringBoard is in foreground (icons visible) or background (app in front)

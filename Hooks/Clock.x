@@ -154,6 +154,68 @@ static void LGStopClockDisplayLinkDriver(LGClockDisplayLink *state) {
 @property (nonatomic, strong) UIImageView *shapeMaskView;
 @end
 @implementation LGClockBackdropView
+
+// 计算 mask image 中文字的实际边界（映射到目标尺寸）
+static CGRect LGComputeMaskTextBounds(UIImage *maskImage, CGSize targetSize) {
+    if (!maskImage || !maskImage.CGImage) return CGRectZero;
+
+    CGImageRef cgImage = maskImage.CGImage;
+    size_t width = CGImageGetWidth(cgImage);
+    size_t height = CGImageGetHeight(cgImage);
+    if (width == 0 || height == 0) return CGRectZero;
+
+    // 创建只有 alpha 通道的上下文
+    unsigned char *alphaData = calloc(width * height, sizeof(unsigned char));
+    if (!alphaData) return CGRectZero;
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceGray();
+    CGContextRef context = CGBitmapContextCreate(alphaData, width, height, 8, width,
+                                                  colorSpace, kCGImageAlphaOnly);
+    CGColorSpaceRelease(colorSpace);
+
+    if (!context) {
+        free(alphaData);
+        return CGRectZero;
+    }
+
+    // 翻转 y 轴（Core Graphics 坐标系与 UIKit 相反）
+    CGContextTranslateCTM(context, 0, height);
+    CGContextScaleCTM(context, 1.0, -1.0);
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), cgImage);
+    CGContextRelease(context);
+
+    // 遍历像素找文字边界（alpha > 0 的区域）
+    NSInteger minX = width, maxX = 0;
+    NSInteger minY = height, maxY = 0;
+    const CGFloat alphaThreshold = 10; // alpha 阈值，忽略极淡的像素
+
+    for (NSInteger y = 0; y < (NSInteger)height; y++) {
+        for (NSInteger x = 0; x < (NSInteger)width; x++) {
+            unsigned char alpha = alphaData[y * width + x];
+            if (alpha > alphaThreshold) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+    }
+
+    free(alphaData);
+
+    if (minX > maxX || minY > maxY) return CGRectZero;
+
+    // 像素坐标 -> 目标尺寸坐标映射
+    CGFloat scaleX = targetSize.width / width;
+    CGFloat scaleY = targetSize.height / height;
+
+    CGRect textBounds = CGRectMake(minX * scaleX, minY * scaleY,
+                                    (maxX - minX + 1) * scaleX,
+                                    (maxY - minY + 1) * scaleY);
+
+    return textBounds;
+}
+
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame groupName:nil
                     filterType:LGFilterTypeForHostPrefix(@"Clock")];
@@ -167,6 +229,7 @@ static void LGStopClockDisplayLinkDriver(LGClockDisplayLink *state) {
         self.maskView = nil;
         self.shapeMaskView = nil;
         [self lgSetNativeBlurMask:nil];  // 清除 native blur 的形状 mask
+        [self lgSetNativeBlurFrame:CGRectZero];  // 清除 native blur 的 frame 限制
         return;
     }
 
@@ -202,6 +265,18 @@ static void LGStopClockDisplayLinkDriver(LGClockDisplayLink *state) {
         blurMask.minificationFilter = kCAFilterLinear;
         blurMask.magnificationFilter = kCAFilterLinear;
         [self lgSetNativeBlurMask:blurMask];
+
+        // 计算文字的实际边界，将 native blur 层限制在文字区域内
+        // 解决 CALayer.mask 对 CABackdropLayer 不完全生效导致的矩形模糊溢出问题
+        CGRect textBounds = LGComputeMaskTextBounds(image, self.bounds.size);
+        if (!CGRectIsEmpty(textBounds)) {
+            // 加一点 padding，确保模糊边缘完全覆盖文字
+            CGFloat padding = 12.0;
+            textBounds = CGRectInset(textBounds, -padding, -padding);
+            // 确保不超出 view 边界
+            textBounds = CGRectIntersection(textBounds, self.bounds);
+            [self lgSetNativeBlurFrame:textBounds];
+        }
     }
 
     self.hidden = NO;
