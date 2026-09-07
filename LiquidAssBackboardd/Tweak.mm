@@ -1470,6 +1470,30 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
             // 取设置值和 mask 值的较大者，确保设置里的边缘比例调节对时钟也生效
             // mask 值是基础最小值（保证字形边缘有效果），设置值可以进一步加大
             lu.bezelWidth = fmaxf(lu.bezelWidth, fmaxf(1.0f, maskBezelPx));
+
+            // [DIAG] 诊断日志：记录 mask/src/dest 尺寸和 UV 映射关键参数
+            {
+                static int sClockDiagCount = 0;
+                if (sClockDiagCount < 30) {
+                    sClockDiagCount++;
+                    float srcAspect = (w > 0 && h > 0) ? (float)w / (float)h : 0.0f;
+                    float maskAspect = (clockMask.width > 0 && clockMask.height > 0)
+                        ? (float)clockMask.width / (float)clockMask.height : 0.0f;
+                    float aspectDiff = fabsf(srcAspect - maskAspect);
+                    bool aspectMismatch = aspectDiff > 0.01f;
+                    lglog("[CLOCK DIAG] maskTex=%ux%u scale=%.2f pts=%.1fx%.1f | "
+                          "src=%llux%llu aspect=%.4f | dest=? | "
+                          "pps=(%.2f,%.2f) bezel=%.1f | "
+                          "aspectMismatch=%d diff=%.4f frosted=%d",
+                          (unsigned)clockMask.width, (unsigned)clockMask.height,
+                          g_clockMaskImageScale, maskPointWidth, maskPointHeight,
+                          w, h, srcAspect,
+                          pixelsPerPointX, pixelsPerPointY,
+                          lu.bezelWidth,
+                          aspectMismatch ? 1 : 0, aspectDiff,
+                          g_clockFrostedMode ? 1 : 0);
+                }
+            }
         }
     } else if (!strcmp(hp->prefPrefix, "CoverSheet")) {
 
@@ -1572,6 +1596,20 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     }
     lu.outputResolution =
         simd_make_float2((float)destTex.width, (float)destTex.height);
+
+    // [DIAG] Clock: 记录 resolution vs outputResolution 是否匹配
+    if (!strcmp(hp->prefPrefix, "Clock")) {
+        static int sClockResDiagCount = 0;
+        if (sClockResDiagCount < 30) {
+            sClockResDiagCount++;
+            float resW = lu.resolution.x, resH = lu.resolution.y;
+            float outW = lu.outputResolution.x, outH = lu.outputResolution.y;
+            bool resMatch = (fabsf(resW - outW) < 1.0f && fabsf(resH - outH) < 1.0f);
+            lglog("[CLOCK RES DIAG] src(res)=%.0fx%.0f dest(out)=%.0fx%.0f match=%d diff=(%.1f,%.1f)",
+                  resW, resH, outW, outH, resMatch ? 1 : 0,
+                  outW - resW, outH - resH);
+        }
+    }
 
     os_unfair_lock_lock(&g_loggedRenderAtomsLock);
     bool firstSuccessfulAtom = g_loggedRenderAtoms.insert(ftype).second;

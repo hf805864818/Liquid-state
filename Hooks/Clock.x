@@ -2393,6 +2393,21 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
             self.cachedMaskTopInset = self.displayTopInset;
             self.cachedMaskImage = image;
 
+            // [DIAG] 诊断日志：记录 overlay bounds、mask 图像尺寸、topInset
+            static int sMaskDiagCount = 0;
+            if (sMaskDiagCount < 30) {
+                sMaskDiagCount++;
+                LGLog(@"[MASK DIAG] bounds=%.1fx%.1f@%.1f,%.1f maskImg=%.0fx%.0f scale=%.1f "
+                      @"topInset=%.1f text=%@ font=%.1f frosted=%d",
+                      self.bounds.size.width, self.bounds.size.height,
+                      self.bounds.origin.x, self.bounds.origin.y,
+                      CGImageGetWidth(image.CGImage), CGImageGetHeight(image.CGImage),
+                      image.scale, self.displayTopInset,
+                      self.displayText ?: @"(nil)",
+                      self.displayFont ? self.displayFont.pointSize : -1.0,
+                      LGClockFrostedModeEnabled() ? 1 : 0);
+            }
+
             LGQueueClockMaskImage(image, self.glassView);
         }
     }
