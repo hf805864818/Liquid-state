@@ -1793,6 +1793,8 @@ static CGRect LGClockExpandedModernFrameForRect(CGRect frame,
     // 使用字形路径边界修正实际行高，避免可变字体 Height 轴极值（如 350）时
     // 字体度量 descent 低估实际下降部，导致 extraBottom 不够 → mask 底部裁剪 → 阴影/截断
     CGFloat safeLineHeight = resolvedLineHeight;
+    CGFloat metricDescent = 0.0;
+    CGFloat actualDescent = 0.0;
     if (text.length > 0 && (ctFontObject || font)) {
         NSDictionary *attrs = @{
             (__bridge id)kCTFontAttributeName: ctFontObject ?: font,
@@ -1807,15 +1809,22 @@ static CGRect LGClockExpandedModernFrameForRect(CGRect frame,
             CGFloat actualAscent = hasGlyphBounds
                 ? MAX(glyphAscent, CGRectGetMaxY(glyphBounds))
                 : glyphAscent;
-            CGFloat actualDescent = hasGlyphBounds
+            actualDescent = hasGlyphBounds
                 ? MAX(glyphDescent, -CGRectGetMinY(glyphBounds))
                 : glyphDescent;
+            metricDescent = glyphDescent;
             CGFloat actualLineHeight = ceil(actualAscent + actualDescent + glyphLeading);
             safeLineHeight = MAX(resolvedLineHeight, actualLineHeight);
             CFRelease(line);
         }
     }
-    CGFloat extraBottom = MAX(18.0, ceil(safeLineHeight - CGRectGetHeight(frame)) + ceil(safeLineHeight * 0.18) + 18.0);
+    // 只需为超出字体度量 descent 的部分扩展空间，而非整个行高差。
+    // baseline = sourceHeight - topInset - ascent，text bottom = baseline - actualDescent
+    // 需要: actualDescent ≤ extraBottom + (sourceHeight - topInset - ascent)
+    // 即: extraBottom ≥ actualDescent - (sourceHeight - topInset - ascent)
+    // 当 sourceHeight ≈ ascent + metricDescent 时: extraBottom ≥ actualDescent - metricDescent
+    CGFloat extraDescent = MAX(0.0, actualDescent - metricDescent);
+    CGFloat extraBottom = MAX(18.0, ceil(extraDescent) + ceil(actualDescent * 0.18) + 18.0);
     CGRect expanded = frame;
     expanded.size.height += extraBottom;
 
