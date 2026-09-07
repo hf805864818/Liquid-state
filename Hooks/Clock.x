@@ -2187,9 +2187,6 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
     CGFloat maskActualAscent = hasGlyphBounds
         ? MAX(ascent, CGRectGetMaxY(glyphBounds))
         : ascent;
-    CGFloat maskActualDescent = hasGlyphBounds
-        ? MAX(descent, -CGRectGetMinY(glyphBounds))
-        : descent;
     CGFloat baseline = 0.0;
     if (legacyHost) {
         baseline = floor(bounds.size.height - maskActualAscent);
