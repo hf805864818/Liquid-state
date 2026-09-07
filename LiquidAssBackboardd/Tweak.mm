@@ -1534,9 +1534,11 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
                 pixelsPerPointX = (float)w / tileRect.size.width;
                 pixelsPerPointY = (float)h / tileRect.size.height;
 
-                lglog("[CLOCK TILE] layer=%@ tile=%@ tex=%llux%llu uv=(%.3f,%.3f)+(%.3f,%.3f)",
-                      NSStringFromCGRect(layerBounds),
-                      NSStringFromCGRect(tileRect),
+                lglog("[CLOCK TILE] layer=%.0fx%.0f@%.0f,%.0f tile=%.0fx%.0f@%.0f,%.0f tex=%llux%llu uv=(%.3f,%.3f)+(%.3f,%.3f)",
+                      layerBounds.size.width, layerBounds.size.height,
+                      layerBounds.origin.x, layerBounds.origin.y,
+                      tileRect.size.width, tileRect.size.height,
+                      tileRect.origin.x, tileRect.origin.y,
                       w, h,
                       tileUVOriginX, tileUVOriginY,
                       tileUVSizeX, tileUVSizeY);
