@@ -929,10 +929,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
             [_nativeBlurLayer setValue:[_lgGroupName stringByAppendingString:@".nativeblur"]
                                 forKey:@"groupName"];
             [_nativeBlurLayer setValue:@"dylv.liquidglass.nativeblur" forKey:@"groupNamespace"];
-            // Clock: ignoresScreenClip=NO，让父层 mask 能裁剪 backdrop 捕获区域，
-            // 避免矩形模糊区域出现在文字周围（磨砂粗黑 Blur=6 + Softness=55 尤为明显）
-            BOOL isClock = (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock);
-            [_nativeBlurLayer setValue:(isClock ? @NO : @YES) forKey:@"ignoresScreenClip"];
+            [_nativeBlurLayer setValue:@YES forKey:@"ignoresScreenClip"];
 
             [_nativeBlurLayer setValue:@1.0 forKey:@"scale"];
         } @catch (NSException *e) {
