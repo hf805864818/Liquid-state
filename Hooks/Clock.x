@@ -2187,18 +2187,16 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
             x = 0.0;
             break;
     }
-    // 使用源 label 高度计算 baseline，而非 overlay 高度。
-    // overlay 比 sourceFrame 高出 extraBottom（为容纳实际字形 descent 而扩展），
-    // 若用 bounds.size.height 会把 mask 文字下移 extraBottom 像素，与实际文字错位。
-    // 用 sourceHeight 确保 mask 文字与屏幕实际文字完全对齐，extraBottom 空间在下方容纳 descent。
-    CGFloat sourceHeight = CGRectGetHeight(self.cachedSourceFrameInContainer);
-    if (sourceHeight <= 0.0) sourceHeight = bounds.size.height;
+    // baseline 使用 overlay 总高度（sourceHeight + extraBottom）计算。
+    // 坐标系经翻转后 Y=0 在底部，baseline = overlayHeight - ascent 等价于
+    // "距顶部 ascent 像素" — 这正是 UILabel 中文字的实际 baseline 位置。
+    // extraBottom 空间在 baseline 下方（Y 更小处）容纳实际字形 descent。
     CGFloat baseline = 0.0;
     if (legacyHost) {
-        baseline = floor(sourceHeight - ascent);
+        baseline = floor(bounds.size.height - ascent);
     } else {
         CGFloat topInset = MAX(0.0, self.displayTopInset);
-        baseline = floor(sourceHeight - topInset - ascent);
+        baseline = floor(bounds.size.height - topInset - ascent);
     }
     // 字重合成加粗：现代与旧版时钟路径统一生效，保证“字重/字重预设”在所有模式下都有可见差异
     CGFloat embolden = LGClockModernSyntheticEmbolden();
