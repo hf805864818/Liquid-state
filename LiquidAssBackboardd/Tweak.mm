@@ -430,6 +430,12 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
             return float4(maskAtPixel, maskAtPixel, maskAtPixel, 1.0);
         }
 
+        // 自裁剪：文字形状外的像素直接输出透明。
+        // 用于验证：主 backdrop layer 的 shader 输出是否是矩形区域的来源。
+        if (maskAtPixel < 0.01) {
+            return float4(0.0);
+        }
+
         float bestDistance = bezel + 1.0;
         float2 bestDirection = float2(0.0, -1.0);
         constexpr int directionCount = 12;
