@@ -1793,19 +1793,16 @@ static CGRect LGClockExpandedModernFrameForRect(CGRect frame,
                                                 NSTextAlignment alignment) {
     if (CGRectIsEmpty(frame)) return frame;
 
+    // 恢复原始公式结构：用 resolvedLineHeight 计算 extraBottom。
+    // 原始公式保证 bounds.size.height = resolvedLineHeight * 1.18 + 18 > ascent + descent，
+    // 使 baseline 始终为正值（文字在图像范围内）。
+    // 之前的修复改用 actualDescent 直接计算，当 fontAscent >> frameHeight 时
+    // 导致 bounds.size.height < fontAscent → baseline 为负 → mask 文字跑出图像范围 →
+    // 玻璃效果作用于空蒙版 → 字体变"圆"。
+    // 修复：保留原始公式，但用 actualDescent 替换 metric descent 来防止裁剪。
     CGFloat resolvedLineHeight = MAX(CGRectGetHeight(frame), LGClockResolvedLineHeight(font, ctFontObject));
-    // 使用字形路径边界获取实际 descent，避免可变字体 Height 轴极值（如 350）时
-    // 字体度量 descent 低估实际下降部，导致 extraBottom 不够 → mask 底部裁剪 → 阴影/截断
-    (void)resolvedLineHeight;
-    // 只需 actualDescent（字形路径边界实际下降部），不需要 actualAscent。
-    // mask baseline 用标准 ascent（与 UILabel 对齐），所以 extraBottom 计算也用标准 ascent。
     CGFloat actualDescent = 0.0;
-    CGFloat fontAscent = 0.0;
-    if (ctFontObject) {
-        fontAscent = CTFontGetAscent((__bridge CTFontRef)ctFontObject);
-    } else if (font) {
-        fontAscent = font.ascender;
-    }
+    CGFloat metricDescent = 0.0;
     if (text.length > 0 && (ctFontObject || font)) {
         NSDictionary *attrs = @{
             (__bridge id)kCTFontAttributeName: ctFontObject ?: font,
@@ -1815,6 +1812,7 @@ static CGRect LGClockExpandedModernFrameForRect(CGRect frame,
         if (line) {
             CGFloat glyphAscent = 0, glyphDescent = 0, glyphLeading = 0;
             CTLineGetTypographicBounds(line, &glyphAscent, &glyphDescent, &glyphLeading);
+            metricDescent = glyphDescent;
             CGRect glyphBounds = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
             BOOL hasGlyphBounds = !CGRectIsNull(glyphBounds) && !CGRectIsEmpty(glyphBounds);
             actualDescent = hasGlyphBounds
@@ -1823,14 +1821,11 @@ static CGRect LGClockExpandedModernFrameForRect(CGRect frame,
             CFRelease(line);
         }
     }
-    // baseline = overlayHeight - topInset - fontAscent (标准 ascent，与 UILabel 对齐)
-    // text bottom = baseline - actualDescent
-    // 需要: text bottom ≥ 0 in overlay (sourceHeight + extraBottom)
-    //   即: extraBottom ≥ actualDescent - (sourceHeight - topInset - fontAscent)
-    // 简化 (topInset 通常 = 0): extraBottom ≥ actualDescent - (frameHeight - fontAscent)
-    CGFloat availableBelowBaseline = MAX(0.0, CGRectGetHeight(frame) - fontAscent);
-    CGFloat neededExtra = MAX(0.0, actualDescent - availableBelowBaseline);
-    CGFloat extraBottom = MAX(18.0, ceil(neededExtra) + ceil(actualDescent * 0.18) + 18.0);
+    // 如果实际 descent 超过 metric descent，增加 resolvedLineHeight 以补偿
+    if (actualDescent > metricDescent) {
+        resolvedLineHeight += (actualDescent - metricDescent);
+    }
+    CGFloat extraBottom = MAX(18.0, ceil(resolvedLineHeight - CGRectGetHeight(frame)) + ceil(resolvedLineHeight * 0.18) + 18.0);
     CGRect expanded = frame;
     expanded.size.height += extraBottom;
 
