@@ -208,13 +208,20 @@ jobs:
             ASSETS_JSON=$(curl -sS -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets")
             echo "$ASSETS_JSON" | python3 -c "
-          import json, sys, urllib.request, os
-          assets = json.load(sys.stdin)
+          import json, sys, urllib.request, os, re
+          data = json.load(sys.stdin)
+          # GitHub API 可能返回 list 或 dict（错误时）
+          assets = data if isinstance(data, list) else []
+          if not assets:
+              print('WARN: assets JSON is not a list, got:', type(data).__name__)
+              print(json.dumps(data, ensure_ascii=False)[:200])
           token = os.environ['GH_TOKEN']
           repo = os.environ.get('GITHUB_REPOSITORY', '')
           for a in assets:
-              old_name = a['name']
-              aid = a['id']
+              old_name = a.get('name', '')
+              aid = a.get('id')
+              if not old_name or aid is None:
+                  continue
               # 从旧名提取 scheme
               scheme = ''
               for s in ['rootless', 'roothide', 'rootful']:
