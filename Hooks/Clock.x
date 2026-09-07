@@ -2092,7 +2092,6 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
 @interface LGClockGlassView : UIView
 @property (nonatomic, strong) LGClockBackdropView *glassView;
 @property (nonatomic, strong) UIView *frostedTintView;  // 磨砂模式的颜色覆盖层
-@property (nonatomic, strong) UIImageView *maskImageView;  // 父视图层级的文字形状 mask（用于裁剪整个 overlay 输出）
 @property (nonatomic, strong) UILabel *maskLabel;
 @property (nonatomic, copy) NSString *displayText;
 @property (nonatomic, copy) NSAttributedString *displayAttributedText;
@@ -2395,44 +2394,8 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
             self.cachedMaskImage = image;
 
             LGQueueClockMaskImage(image, self.glassView);
-            // 同时设置父视图层级的 mask，确保整个 overlay（包括 glassView、frostedTintView）
-            // 都被正确裁剪为文字形状。
-            // 原因：CABackdropLayer 的 maskView 可能无法正确裁剪 CAFilter 输出，
-            // 而普通 UIView/CALayer 的 mask 可以正确裁剪所有子层的合成结果。
-            [self lg_applyOverlayMaskImage:image];
         }
     }
-}
-
-// 在父视图（LGClockGlassView）层级设置文字形状 mask，
-// 用于裁剪整个 overlay（glassView + frostedTintView 等所有子视图）的输出
-- (void)lg_applyOverlayMaskImage:(UIImage *)image {
-    if (!image) {
-        self.maskView = nil;
-        self.maskImageView = nil;
-        return;
-    }
-    UIImageView *mask = self.maskImageView;
-    if (!mask) {
-        mask = [[UIImageView alloc] initWithFrame:self.bounds];
-        mask.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        mask.contentMode = UIViewContentModeScaleToFill;
-        mask.layer.minificationFilter = kCAFilterLinear;
-        mask.layer.magnificationFilter = kCAFilterLinear;
-        mask.layer.actions = @{
-            @"contents": NSNull.null,
-            @"bounds": NSNull.null,
-            @"position": NSNull.null,
-        };
-        self.maskImageView = mask;
-    }
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    mask.frame = self.bounds;
-    mask.image = image;
-    [mask.layer setNeedsDisplay];
-    self.maskView = mask;
-    [CATransaction commit];
 }
 
 - (void)layoutSubviews {
