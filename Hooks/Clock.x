@@ -1790,9 +1790,9 @@ static CGRect LGClockExpandedModernFrameForRect(CGRect frame,
     if (CGRectIsEmpty(frame)) return frame;
 
     CGFloat resolvedLineHeight = MAX(CGRectGetHeight(frame), LGClockResolvedLineHeight(font, ctFontObject));
-    // 使用字形路径边界修正实际行高，避免可变字体 Height 轴极值（如 350）时
+    // 使用字形路径边界获取实际 descent，避免可变字体 Height 轴极值（如 350）时
     // 字体度量 descent 低估实际下降部，导致 extraBottom 不够 → mask 底部裁剪 → 阴影/截断
-    CGFloat safeLineHeight = resolvedLineHeight;
+    (void)resolvedLineHeight;
     CGFloat metricDescent = 0.0;
     CGFloat actualDescent = 0.0;
     if (text.length > 0 && (ctFontObject || font)) {
@@ -1806,15 +1806,10 @@ static CGRect LGClockExpandedModernFrameForRect(CGRect frame,
             CTLineGetTypographicBounds(line, &glyphAscent, &glyphDescent, &glyphLeading);
             CGRect glyphBounds = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
             BOOL hasGlyphBounds = !CGRectIsNull(glyphBounds) && !CGRectIsEmpty(glyphBounds);
-            CGFloat actualAscent = hasGlyphBounds
-                ? MAX(glyphAscent, CGRectGetMaxY(glyphBounds))
-                : glyphAscent;
             actualDescent = hasGlyphBounds
                 ? MAX(glyphDescent, -CGRectGetMinY(glyphBounds))
                 : glyphDescent;
             metricDescent = glyphDescent;
-            CGFloat actualLineHeight = ceil(actualAscent + actualDescent + glyphLeading);
-            safeLineHeight = MAX(resolvedLineHeight, actualLineHeight);
             CFRelease(line);
         }
     }
