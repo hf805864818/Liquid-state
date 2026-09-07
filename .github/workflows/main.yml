@@ -95,6 +95,7 @@ jobs:
             ARCHS="arm64 arm64e" \
             TARGET="$DEVICE_TARGET" \
             FINALPACKAGE=1 \
+            LIQUIDASS_DEBUG=1 \
             $SCHEME_FLAG
 
       - name: rename deb (${{ matrix.scheme }})
