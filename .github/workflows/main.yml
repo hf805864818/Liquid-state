@@ -185,7 +185,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           # 先删除已有的同名 tag 和 release（如果存在）
           gh release delete "$TAG" --cleanup-tag -y 2>/dev/null || true
-          # 创建 release
+          # 创建 release（不含 assets，assets 用 curl 逐个上传以保留中文文件名）
           NOTES="**版本:** ${VERSION}
           **Commit:** ${{ github.sha }}
 
@@ -194,9 +194,34 @@ jobs:
           - **rootful**: 适用于传统 rootful 越狱
           - **roothide**: 适用于 Palera1n roothide 越狱"
           gh release create "$TAG" \
-            ./all-packages/*.deb \
             --title "Ai液态玻璃 ${VERSION}" \
             --notes "${NOTES}"
+
+          # 获取 release ID
+          RELEASE_ID=$(gh release view "$TAG" --json id -q .id)
+          echo "Release ID: $RELEASE_ID"
+
+          # 逐个上传 asset，用 curl + URL 编码的中文名
+          # gh release create 的 glob 上传会丢弃非 ASCII 字符，
+          # 改用 GitHub Upload API 直接指定 name 参数（URL 编码）
+          for f in ./all-packages/*.deb; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            # 提取 scheme
+            scheme=$(echo "$base" | grep -oP '(rootless|rootful|roothide)' | head -1)
+            # 提取版本号
+            ver=$(echo "$base" | sed -n 's/.*_\([^_]*\)_.*/\1/p')
+            asset_name="Ai液态玻璃_${ver}_${scheme}.deb"
+            # URL 编码
+            encoded_name=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$asset_name")
+            echo "Uploading: $base -> $asset_name (encoded: $encoded_name)"
+            curl -s -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$encoded_name"
+            echo ""
+          done
 
       - name: bump version and push
         run: |
