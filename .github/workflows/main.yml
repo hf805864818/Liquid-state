@@ -185,7 +185,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           # 先删除已有的同名 tag 和 release（如果存在）
           gh release delete "$TAG" --cleanup-tag -y 2>/dev/null || true
-          # 创建 release（不含 assets，assets 用 curl 逐个上传以保留中文文件名）
+          # 创建 release
           NOTES="**版本:** ${VERSION}
           **Commit:** ${{ github.sha }}
 
@@ -193,35 +193,68 @@ jobs:
           - **rootless**: 适用于 Dopamine / Palera1n rootless 越狱
           - **rootful**: 适用于传统 rootful 越狱
           - **roothide**: 适用于 Palera1n roothide 越狱"
+          # 先用 gh release create 上传文件（可靠，但会丢弃非 ASCII 字符）
           gh release create "$TAG" \
+            ./all-packages/*.deb \
             --title "Ai液态玻璃 ${VERSION}" \
             --notes "${NOTES}"
 
-          # 获取 release ID
-          RELEASE_ID=$(gh release view "$TAG" --json id -q .id)
-          echo "Release ID: $RELEASE_ID"
-
-          # 逐个上传 asset，用 curl + URL 编码的中文名
-          # gh release create 的 glob 上传会丢弃非 ASCII 字符，
-          # 改用 GitHub Upload API 直接指定 name 参数（URL 编码）
-          for f in ./all-packages/*.deb; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f")
-            # 提取 scheme
-            scheme=$(echo "$base" | grep -oP '(rootless|rootful|roothide)' | head -1)
-            # 提取版本号
-            ver=$(echo "$base" | sed -n 's/.*_\([^_]*\)_.*/\1/p')
-            asset_name="Ai液态玻璃_${ver}_${scheme}.deb"
-            # URL 编码
-            encoded_name=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$asset_name")
-            echo "Uploading: $base -> $asset_name (encoded: $encoded_name)"
-            curl -s -X POST \
-              -H "Authorization: token $GH_TOKEN" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary @"$f" \
-              "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$encoded_name"
-            echo ""
-          done
+          # 用 GitHub API 将 asset 重命名为中文（PATCH 支持 UTF-8）
+          # gh release create 上传时会丢弃文件名中的中文（如 Ai液态玻璃 → Ai），
+          # 但 GitHub PATCH /releases/assets/{id} API 的 name 字段支持 UTF-8
+          RELEASE_ID=$(gh release view "$TAG" --json id -q .id 2>/dev/null || echo "")
+          if [ -n "$RELEASE_ID" ]; then
+            # 列出所有 assets 的 id 和 name
+            ASSETS_JSON=$(curl -sS -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets")
+            echo "$ASSETS_JSON" | python3 -c "
+          import json, sys, urllib.request, os
+          assets = json.load(sys.stdin)
+          token = os.environ['GH_TOKEN']
+          repo = os.environ.get('GITHUB_REPOSITORY', '')
+          for a in assets:
+              old_name = a['name']
+              aid = a['id']
+              # 从旧名提取 scheme
+              scheme = ''
+              for s in ['rootless', 'roothide', 'rootful']:
+                  if s in old_name:
+                      scheme = s
+                      break
+              if not scheme:
+                  continue
+              # 从旧名提取版本号
+              import re
+              m = re.search(r'_([0-9]+\.[0-9]+\.[0-9]+[a-z]?)_', old_name)
+              if not m:
+                  m = re.search(r'_([0-9]+\.[0-9]+[a-z]?)_', old_name)
+              if not m:
+                  continue
+              ver = m.group(1)
+              new_name = f'Ai液态玻璃_{ver}_{scheme}.deb'
+              if new_name == old_name:
+                  continue
+              # PATCH 重命名
+              data = json.dumps({'name': new_name}).encode()
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{repo}/releases/assets/{aid}',
+                  data=data,
+                  headers={
+                      'Authorization': f'token {token}',
+                      'Content-Type': 'application/json',
+                      'Accept': 'application/vnd.github+json',
+                  },
+                  method='PATCH'
+              )
+              try:
+                  resp = urllib.request.urlopen(req)
+                  print(f'Renamed: {old_name} -> {new_name} (HTTP {resp.status})')
+              except Exception as e:
+                  print(f'WARN: rename failed for {old_name}: {e}')
+          "
+          else
+            echo "WARN: could not get RELEASE_ID, skipping rename"
+          fi
 
       - name: bump version and push
         run: |
