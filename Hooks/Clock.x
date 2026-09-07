@@ -460,6 +460,56 @@ static BOOL LGAxisNameMatches(NSString *axisName, NSString *needle, NSString *sh
     return [lower containsString:needle] || [lower containsString:shortNeedle];
 }
 
+// 将轴标识符（NSNumber 编码的 4 字符标签）转换为小写字符串
+// Core Text 的 kCTFontVariationAxisIdentifierKey 返回 32 位整数，
+// 编码方式为 4 字符 ASCII 标签按大端序打包（如 'wght' = 0x77676874）
+static NSString *LGAxisTagString(NSNumber *identifier) {
+    if (!identifier || ![identifier isKindOfClass:[NSNumber class]]) return nil;
+    uint32_t tag = (uint32_t)identifier.unsignedIntValue;
+    char str[5] = {
+        (char)((tag >> 24) & 0xFF),
+        (char)((tag >> 16) & 0xFF),
+        (char)((tag >> 8) & 0xFF),
+        (char)(tag & 0xFF),
+        0
+    };
+    // 验证是否为可打印 ASCII
+    for (int i = 0; i < 4; i++) {
+        if (str[i] < 0x20 || str[i] > 0x7E) {
+            // 尝试小端序
+            char le[5] = {
+                (char)(tag & 0xFF),
+                (char)((tag >> 8) & 0xFF),
+                (char)((tag >> 16) & 0xFF),
+                (char)((tag >> 24) & 0xFF),
+                0
+            };
+            BOOL leValid = YES;
+            for (int j = 0; j < 4; j++) {
+                if (le[j] < 0x20 || le[j] > 0x7E) { leValid = NO; break; }
+            }
+            if (leValid) return [NSString stringWithUTF8String:le].lowercaseString;
+            return nil;
+        }
+    }
+    return [NSString stringWithUTF8String:str].lowercaseString;
+}
+
+// 通过轴标识符（4 字符标签）匹配轴
+// 不依赖系统语言，确保中文系统上也能正确检测
+static NSString *LGAxisKeyForIdentifier(NSNumber *identifier) {
+    NSString *tag = LGAxisTagString(identifier);
+    if (!tag) return nil;
+    // 标准轴标签
+    if ([tag isEqualToString:@"wght"]) return @"weight";
+    if ([tag isEqualToString:@"wdth"]) return @"width";
+    // 自定义轴标签（常见变体）
+    if ([tag hasPrefix:@"hght"] || [tag isEqualToString:@"hght"] ||
+        [tag containsString:@"hght"]) return @"height";
+    if ([tag containsString:@"soft"] || [tag containsString:@"sftn"]) return @"softness";
+    return nil;
+}
+
 static NSDictionary<NSString *, NSNumber *> *sClockVariableAxisIdentifiers = nil;
 static NSDictionary<NSString *, NSArray<NSNumber *> *> *sClockVariableAxisRanges = nil;
 static NSString *sClockVariablePostScriptName = nil;
@@ -584,20 +634,41 @@ static void LGEnsureClockVariableFontMetadata(void) {
         if (![identifier isKindOfClass:[NSNumber class]]) continue;
 
         NSString *key = nil;
+        // 1. 先用轴名称匹配（英文名包含 "weight"/"wght" 等）
         if (LGAxisNameMatches(name, @"weight", @"wght")) key = @"weight";
         else if (LGAxisNameMatches(name, @"width", @"wdth")) key = @"width";
         else if (LGAxisNameMatches(name, @"height", @"hght")) key = @"height";
         else if (LGAxisNameMatches(name, @"soft", @"soft")) key = @"softness";
-        if (!key.length) continue;
+        // 2. 名称匹配失败时，用轴标识符（4 字符标签）匹配
+        //    解决非英文系统（如中文 iOS）轴名称本地化导致匹配失败的问题
+        //    这是 4 个预设样式相同的根因：轴没检测到 → 参数没应用 → 全用默认值
+        if (!key.length) {
+            key = LGAxisKeyForIdentifier(identifier);
+        }
+        if (!key.length) {
+            // 3. 最后尝试：用轴标识符的字符串形式做模糊匹配
+            NSString *tagStr = LGAxisTagString(identifier);
+            if (tagStr) {
+                LGClockLog(@"clock axis unmatched name=%@ tag=%@ id=%@", name, tagStr, identifier);
+            }
+            continue;
+        }
 
         ids[key] = identifier;
         ranges[key] = @[
             @([minimum isKindOfClass:[NSNumber class]] ? minimum.doubleValue : -CGFLOAT_MAX),
             @([maximum isKindOfClass:[NSNumber class]] ? maximum.doubleValue : CGFLOAT_MAX),
         ];
+        LGClockLog(@"clock axis detected key=%@ name=%@ tag=%@ range=[%.1f, %.1f]",
+              key, name, LGAxisTagString(identifier),
+              [minimum isKindOfClass:[NSNumber class]] ? minimum.doubleValue : -CGFLOAT_MAX,
+              [maximum isKindOfClass:[NSNumber class]] ? maximum.doubleValue : CGFLOAT_MAX);
     }
     sClockVariableAxisIdentifiers = [ids copy];
     sClockVariableAxisRanges = [ranges copy];
+
+    LGClockLog(@"clock variable font axes detected count=%d ids=%@",
+          (int)ids.count, ids);
 
     if (baseFont) CFRelease(baseFont);
 }
