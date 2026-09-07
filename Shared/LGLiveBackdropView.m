@@ -759,6 +759,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
     CALayer         *_specularMask;
     CALayer         *_specularBoostMask;
     CALayer         *_nativeBlurLayer;
+    CALayer         *_pendingNativeBlurMask;  // 保存待应用的 mask，解决时序竞态
     CGFloat          _nativeBlurRadius;
     BOOL             _backdropConfigured;
     BOOL             _filterAttached;
@@ -935,6 +936,11 @@ static void LGReportMemoryUsageIfNeeded(void) {
             LGLog(@"glass#%u native blur overlay configure failed: %@", _lgId, e.reason);
         }
         [self.layer insertSublayer:_nativeBlurLayer atIndex:0];
+        // 创建后立即应用之前保存的 mask（解决时序竞态：
+        // setShapeMaskImage 可能在 updateNativeBlurOverlayWithRadius 之前调用）
+        if (_pendingNativeBlurMask) {
+            _nativeBlurLayer.mask = _pendingNativeBlurMask;
+        }
         if (LGHostIdentifierForFilterType(_lgFilterType.UTF8String) == LGHostIdentifierClock) {
             LGLog(@"clock native blur layer created radius=%.2f group=%@",
                   radius, _lgGroupName);
@@ -1108,6 +1114,10 @@ static void LGReportMemoryUsageIfNeeded(void) {
 }
 
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer {
+    // 保存 mask 引用，解决时序竞态：
+    // setShapeMaskImage 可能在 _nativeBlurLayer 创建之前调用，
+    // 此时保存 mask，等 updateNativeBlurOverlayWithRadius 创建 layer 后立即应用
+    _pendingNativeBlurMask = maskLayer;
     if (_nativeBlurLayer) {
         _nativeBlurLayer.mask = maskLayer;
     }
