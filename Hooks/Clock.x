@@ -1803,10 +1803,14 @@ static CGRect LGClockExpandedModernFrameForRect(CGRect frame,
             CGFloat glyphAscent = 0, glyphDescent = 0, glyphLeading = 0;
             CTLineGetTypographicBounds(line, &glyphAscent, &glyphDescent, &glyphLeading);
             CGRect glyphBounds = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
-            CGFloat actualDescent = (CGRectIsNull(glyphBounds) || CGRectIsEmpty(glyphBounds))
-                ? glyphDescent
-                : MAX(glyphDescent, -CGRectGetMinY(glyphBounds));
-            CGFloat actualLineHeight = ceil(glyphAscent + actualDescent + glyphLeading);
+            BOOL hasGlyphBounds = !CGRectIsNull(glyphBounds) && !CGRectIsEmpty(glyphBounds);
+            CGFloat actualAscent = hasGlyphBounds
+                ? MAX(glyphAscent, CGRectGetMaxY(glyphBounds))
+                : glyphAscent;
+            CGFloat actualDescent = hasGlyphBounds
+                ? MAX(glyphDescent, -CGRectGetMinY(glyphBounds))
+                : glyphDescent;
+            CGFloat actualLineHeight = ceil(actualAscent + actualDescent + glyphLeading);
             safeLineHeight = MAX(resolvedLineHeight, actualLineHeight);
             CFRelease(line);
         }
@@ -2173,12 +2177,26 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
             x = 0.0;
             break;
     }
+    // 获取实际字形路径边界，修正可变字体 Height 轴极值时 baseline 的裁剪问题。
+    // baseline 公式 bounds.height - topInset - ascent 隐含条件：actual_descent ≤ ascent。
+    // 当 Height 轴极值（如 350）使 actual_descent > ascent 时，文字底部被裁剪，
+    // 且该条件与 bounds.height 无关——单纯增大 extraBottom 无法解决。
+    // 修正：用 MAX(ascent, actual_descent) 压低 baseline，确保底部文字完整。
+    CGRect glyphBounds = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
+    BOOL hasGlyphBounds = !CGRectIsNull(glyphBounds) && !CGRectIsEmpty(glyphBounds);
+    CGFloat maskActualAscent = hasGlyphBounds
+        ? MAX(ascent, CGRectGetMaxY(glyphBounds))
+        : ascent;
+    CGFloat maskActualDescent = hasGlyphBounds
+        ? MAX(descent, -CGRectGetMinY(glyphBounds))
+        : descent;
     CGFloat baseline = 0.0;
     if (legacyHost) {
-        baseline = floor(bounds.size.height - ascent);
+        baseline = floor(bounds.size.height - maskActualAscent);
     } else {
         CGFloat topInset = MAX(0.0, self.displayTopInset);
-        baseline = floor(bounds.size.height - topInset - ascent);
+        CGFloat effectiveAscent = MAX(maskActualAscent, maskActualDescent);
+        baseline = floor(bounds.size.height - topInset - effectiveAscent);
     }
     // 字重合成加粗：现代与旧版时钟路径统一生效，保证“字重/字重预设”在所有模式下都有可见差异
     CGFloat embolden = LGClockModernSyntheticEmbolden();
