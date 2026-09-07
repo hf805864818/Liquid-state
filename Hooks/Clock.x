@@ -2195,8 +2195,7 @@ static UIView *LGClockOverlayContainerForHost(UIView *host) {
         baseline = floor(bounds.size.height - maskActualAscent);
     } else {
         CGFloat topInset = MAX(0.0, self.displayTopInset);
-        CGFloat effectiveAscent = MAX(maskActualAscent, maskActualDescent);
-        baseline = floor(bounds.size.height - topInset - effectiveAscent);
+        baseline = floor(bounds.size.height - topInset - maskActualAscent);
     }
     // 字重合成加粗：现代与旧版时钟路径统一生效，保证“字重/字重预设”在所有模式下都有可见差异
     CGFloat embolden = LGClockModernSyntheticEmbolden();
