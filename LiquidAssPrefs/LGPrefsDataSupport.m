@@ -1721,6 +1721,13 @@ NSArray<NSDictionary *> *LGTabBarItems(void) {
                             LGLocalized(@"prefs.subtitle.tabbar_enhanced_mode"),
                             YES),
         ],
+        LGSettingsControlledByKey(
+            @[
+                LGNavSetting(LGLocalized(@"prefs.control.tabbar_enhanced_exclusion"),
+                             LGLocalized(@"prefs.subtitle.tabbar_enhanced_exclusion"),
+                             @"editTabBarEnhancedExclusionList"),
+            ],
+            @"TabBar.EnhancedMode", @YES),
         LGRendererItemsForHostPrefix(@"TabBar"),
         @[
             LGSectionSetting(LGLocalized(@"prefs.surface.tab_bar_selection.title"), nil),

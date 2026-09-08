@@ -248,7 +248,21 @@ static BOOL LGTabBarEnhancedModeEnabled(void) {
     return [value boolValue];
 }
 
+// 解析排除列表字符串（支持换行、逗号、分号分隔）
+static NSArray<NSString *> *LGParseExclusionList(NSString *text) {
+    if (!text.length) return @[];
+    NSMutableOrderedSet<NSString *> *entries = [NSMutableOrderedSet orderedSet];
+    NSCharacterSet *separators = [NSCharacterSet characterSetWithCharactersInString:@"\n,;"];
+    for (NSString *rawEntry in [text componentsSeparatedByCharactersInSet:separators]) {
+        NSString *entry = [rawEntry stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (entry.length) [entries addObject:entry];
+    }
+    return entries.array;
+}
+
 // 增强模式黑名单判断
+// 默认黑名单 + 用户自定义排除列表
 static BOOL LGTabBarEnhancedExcluded(void) {
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     NSString *processName = [[NSProcessInfo processInfo] processName];
@@ -259,11 +273,24 @@ static BOOL LGTabBarEnhancedExcluded(void) {
         @"com.zhiliaoapp.musically",
     ];
     
+    // 先检查默认黑名单
     for (NSString *exclusion in defaultExclusions) {
         if ([bid isEqualToString:exclusion] || [processName isEqualToString:exclusion]) {
             return YES;
         }
     }
+    
+    // 再检查用户自定义排除列表
+    id customValue = LGGlassPreferenceValue(@"TabBar.EnhancedExclusions");
+    if ([customValue isKindOfClass:[NSString class]] && [(NSString *)customValue length] > 0) {
+        NSArray<NSString *> *customExclusions = LGParseExclusionList(customValue);
+        for (NSString *exclusion in customExclusions) {
+            if ([bid isEqualToString:exclusion] || [processName isEqualToString:exclusion]) {
+                return YES;
+            }
+        }
+    }
+    
     return NO;
 }
 

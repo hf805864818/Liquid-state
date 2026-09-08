@@ -207,6 +207,11 @@
 "prefs.section.tabbar_enhanced.subtitle" = "Support more third-party app tab bars with double shadow fix preserved.";
 "prefs.control.tabbar_enhanced_mode" = "Enhanced Mode";
 "prefs.subtitle.tabbar_enhanced_mode" = "When enabled, liquid glass works on more third-party app tab bars. TikTok and other incompatible apps are excluded by default.";
+"prefs.control.tabbar_enhanced_exclusion" = "Exclusion List";
+"prefs.subtitle.tabbar_enhanced_exclusion" = "Disable enhanced mode tab bar effects in these apps.";
+"prefs.tabbar_enhanced_exclusion.title" = "Enhanced Mode Exclusions";
+"prefs.tabbar_enhanced_exclusion.body" = "Enter one bundle ID or process name per line. Enhanced mode tab bar effects will be disabled in matching apps, falling back to the system style.";
+"prefs.tabbar_enhanced_exclusion.placeholder" = "com.example.app\nExampleApp\nTikTok";
 "prefs.subtitle.reset_lockscreen" = "Restore all Lock Screen glass settings to default.";
 "prefs.subtitle.reset_lockscreen_confirm" = "Are you sure you want to reset all Lock Screen settings to default?";
 "prefs.subtitle.reset_app_library" = "Restore all App Library glass settings to default.";

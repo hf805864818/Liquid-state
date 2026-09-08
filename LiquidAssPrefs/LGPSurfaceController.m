@@ -883,6 +883,28 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)editTabBarEnhancedExclusionList {
+    NSString *defaults = @"";
+    id storedValue = LGReadPreferenceObject(@"TabBar.EnhancedExclusions", defaults);
+    NSString *existing = [storedValue isKindOfClass:NSString.class] ? storedValue : defaults;
+    LGPresentMultilineTextInputSheet(self,
+                                     LGLocalized(@"prefs.tabbar_enhanced_exclusion.title"),
+                                     LGLocalized(@"prefs.tabbar_enhanced_exclusion.body"),
+                                     existing,
+                                     LGLocalized(@"prefs.tabbar_enhanced_exclusion.placeholder"),
+                                     ^(NSString *text) {
+        NSMutableOrderedSet<NSString *> *entries = [NSMutableOrderedSet orderedSet];
+        NSCharacterSet *separators = [NSCharacterSet characterSetWithCharactersInString:@"\n,;"];
+        for (NSString *rawEntry in [text componentsSeparatedByCharactersInSet:separators]) {
+            NSString *entry = [rawEntry stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (entry.length) [entries addObject:entry];
+        }
+        NSString *normalized = [entries.array componentsJoinedByString:@"\n"];
+        LGWritePreferenceObject(@"TabBar.EnhancedExclusions", normalized);
+    });
+}
+
 - (void)resetTabBarToDefault {
     [self resetModuleWithTitle:LGLocalized(@"prefs.control.reset_module")
                        message:LGLocalized(@"prefs.subtitle.reset_tab_bar_confirm")
