@@ -392,27 +392,22 @@ static BOOL LGIsVolumeRelatedClass(NSString *className) {
 
 static void LGScanForVolumeViews(void) {
     @autoreleasepool {
-        UIWindow *keyWindow = nil;
+        // 扫描所有 window，找出可能的音量 HUD
+        NSArray *windows = nil;
         if (@available(iOS 13.0, *)) {
+            NSMutableArray *allWindows = [NSMutableArray array];
             for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                    for (UIWindow *window in scene.windows) {
-                        if (window.isKeyWindow) {
-                            keyWindow = window;
-                            break;
-                        }
-                    }
+                if ([scene isKindOfClass:[UIWindowScene class]]) {
+                    [allWindows addObjectsFromArray:scene.windows];
                 }
             }
+            windows = allWindows;
         }
-        if (!keyWindow) {
-            keyWindow = [UIApplication sharedApplication].keyWindow;
+        if (!windows) {
+            windows = [UIApplication sharedApplication].windows;
         }
-        if (!keyWindow) return;
+        if (windows.count == 0) return;
 
-        // 扫描所有 window，找出可能的音量 HUD
-        NSArray *windows = [UIApplication sharedApplication].windows;
-        NSMutableArray<NSString *> *volumeWindows = [NSMutableArray array];
         NSMutableArray<NSString *> *newClasses = [NSMutableArray array];
 
         for (UIWindow *window in windows) {
