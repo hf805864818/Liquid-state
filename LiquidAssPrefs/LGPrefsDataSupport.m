@@ -283,9 +283,9 @@ static NSDictionary *LGLanguageStringsTable(NSString *languageCode) {
             // 直接构造 .lproj/Localizable.strings 路径
             NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
             NSString *lprojDir = [NSString stringWithFormat:@"%@.lproj", languageCode];
-            NSString *stringsPath = [[baseBundle bundlePath]
+            NSString *stringsPath = [[[baseBundle bundlePath]
                 stringByAppendingPathComponent:lprojDir]
-                .stringByAppendingPathComponent:@"Localizable.strings"];
+                stringByAppendingPathComponent:@"Localizable.strings"];
             if ([[NSFileManager defaultManager] fileExistsAtPath:stringsPath]) {
                 result = [NSDictionary dictionaryWithContentsOfFile:stringsPath];
             }
