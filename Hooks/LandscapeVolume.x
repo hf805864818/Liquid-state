@@ -450,6 +450,31 @@ static void LGVolumeChangedHandler(CFNotificationCenterRef center,
     }
 }
 
+#pragma mark - iOS 17+ 候选音量 HUD 类探测 Hook
+
+// 这些类可能是 iOS 17 上音量 HUD 的实际类名
+// 如果类不存在，Logos 会自动跳过，不会崩溃
+// 只要任何一个 hook 触发了 didMoveToWindow，我们就知道了正确的类名
+
+%hook SBHUDView
+- (void)didMoveToWindow {
+    %orig;
+    LGLog(@"[Volume-Probe] SBHUDView didMoveToWindow: class=%@ frame=%@ window=%@",
+          NSStringFromClass([self class]),
+          NSStringFromCGRect([(UIView *)self frame]),
+          [(UIView *)self window]);
+}
+%end
+
+%hook SBPresentationObservationWindow
+- (void)didMoveToWindow {
+    %orig;
+    LGLog(@"[Volume-Probe] SBPresentationObservationWindow didMoveToWindow: class=%@ frame=%@",
+          NSStringFromClass([self class]),
+          NSStringFromCGRect([(UIView *)self frame]));
+}
+%end
+
 %ctor {
     if (!LGIsSpringBoardProcess()) {
         LGLog(@"[Volume] not SpringBoard process, skipping volume hooks");
@@ -458,6 +483,7 @@ static void LGVolumeChangedHandler(CFNotificationCenterRef center,
     LGLog(@"[Volume] LandscapeVolume tweak loaded in SpringBoard");
 
     // 注册音量变化通知监听器（用于探测 iOS 17 音量 HUD 类名）
+    // 同时监听 Local 和 Darwin 两个通知中心
     CFNotificationCenterAddObserver(
         CFNotificationCenterGetLocalCenter(),
         NULL,
@@ -465,7 +491,21 @@ static void LGVolumeChangedHandler(CFNotificationCenterRef center,
         CFSTR("AVSystemController_SystemVolumeDidChangeNotification"),
         NULL,
         CFNotificationSuspensionBehaviorDrop);
-    LGLog(@"[Volume-Probe] 音量变化监听器已注册");
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL,
+        LGVolumeChangedHandler,
+        CFSTR("com.apple.springboard.volumechanged"),
+        NULL,
+        CFNotificationSuspensionBehaviorDrop);
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL,
+        LGVolumeChangedHandler,
+        CFSTR("AVSystemController_SystemVolumeDidChangeNotification"),
+        NULL,
+        CFNotificationSuspensionBehaviorDrop);
+    LGLog(@"[Volume-Probe] 音量变化监听器已注册（Local + Darwin）");
 
     lgObservePreferenceReload(^{
         LGLog(@"[Volume] preferences reloaded");
