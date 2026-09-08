@@ -158,8 +158,9 @@ static BOOL vhIsVolumeHUDMaterial(UIView *material);
 %hook MTMaterialView
 - (void)layoutSubviews {
     %orig;
-    if (vhIsVolumeHUDMaterial(self)) {
-        vhUpdateVibranceForMaterial(self);
+    UIView *selfView = (UIView *)self;
+    if (vhIsVolumeHUDMaterial(selfView)) {
+        vhUpdateVibranceForMaterial(selfView);
     }
 }
 %end
