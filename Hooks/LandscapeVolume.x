@@ -674,6 +674,12 @@ static void LGUpdateSBElasticSliderGlass(SBElasticSliderView *self) {
     %orig;
     // 只在有实际尺寸时处理
     if (self.bounds.size.width > 0 && self.bounds.size.height > 0) {
+        static BOOL hasLogged = NO;
+        if (!hasLogged) {
+            hasLogged = YES;
+            LGLog(@"[VolumeHUD] SBElasticSliderView layoutSubviews  bounds=%@  enabled=%d",
+                  NSStringFromCGRect(self.bounds), LGVolumeHUDEnabled());
+        }
         LGUpdateSBElasticSliderGlass(self);
     }
 }
@@ -706,59 +712,64 @@ static void LGPrintViewHierarchy(UIView *view, NSString *indent) {
 
 #pragma mark - MTMaterialView Probe (for ringer pill)
 
-// hook MTMaterialView，找出 HUD window 中除了音量条之外的材质视图（铃声/静音药丸）
+// hook MTMaterialView，找出所有包含 pill/ringer 相关父视图的材质视图
 %hook MTMaterialView
 
 - (void)didMoveToWindow {
     %orig;
     if (self.window) {
-        // 只关心 HUD window 中的材质视图
-        NSString *windowClass = NSStringFromClass([self.window class]);
-        if ([windowClass containsString:@"HUD"] || [windowClass containsString:@"SBHUD"]) {
-            // 检查是不是在 SBElasticSliderView 内部（音量条，我们已经处理了）
-            BOOL isInSlider = NO;
-            UIView *parent = self.superview;
-            NSString *parentChain = @"";
-            NSInteger level = 0;
-            while (parent && level < 10) {
-                NSString *pClass = NSStringFromClass([parent class]);
-                parentChain = [parentChain stringByAppendingFormat:@" <- %@", pClass];
-                if ([pClass isEqualToString:@"SBElasticSliderView"]) {
-                    isInSlider = YES;
-                    break;
+        // 检查父视图链里有没有 pill/ringer 相关的类
+        BOOL isInSlider = NO;
+        BOOL isPillRelated = NO;
+        UIView *parent = self.superview;
+        NSString *parentChain = @"";
+        NSInteger level = 0;
+        while (parent && level < 12) {
+            NSString *pClass = NSStringFromClass([parent class]);
+            parentChain = [parentChain stringByAppendingFormat:@" <- %@", pClass];
+            if ([pClass isEqualToString:@"SBElasticSliderView"]) {
+                isInSlider = YES;
+                break;
+            }
+            NSString *lower = [pClass lowercaseString];
+            if ([lower containsString:@"ringer"] || 
+                [lower containsString:@"pill"] ||
+                [lower containsString:@"mute"] ||
+                [lower containsString:@"silent"]) {
+                isPillRelated = YES;
+            }
+            parent = parent.superview;
+            level++;
+        }
+        
+        // 打印 pill/ringer 相关的（不在音量条里）
+        if (isPillRelated && !isInSlider) {
+            LGLog(@"[PillProbe] MTMaterialView with pill/ringer parent");
+            LGLog(@"[PillProbe]   self frame: %@", NSStringFromCGRect(self.frame));
+            LGLog(@"[PillProbe]   window: %@", NSStringFromClass([self.window class]));
+            LGLog(@"[PillProbe]   parent chain:%@", parentChain);
+            LGLog(@"[PillProbe]   --- full hierarchy from top container:");
+            
+            // 找到最顶层的包含 MTMaterialView 的容器
+            UIView *container = self;
+            UIView *topContainer = self;
+            while (container.superview) {
+                BOOL hasSiblingMaterial = NO;
+                for (UIView *sibling in container.superview.subviews) {
+                    if ([sibling isKindOfClass:[self class]] && sibling != self) {
+                        hasSiblingMaterial = YES;
+                        break;
+                    }
                 }
-                parent = parent.superview;
-                level++;
+                if (hasSiblingMaterial) {
+                    topContainer = container.superview;
+                }
+                // 到达 window 就停止
+                if ([NSStringFromClass([container.superview class]) containsString:@"Window"]) break;
+                container = container.superview;
             }
             
-            // 只打印不在音量条里的材质视图（可能是铃声药丸）
-            if (!isInSlider) {
-                LGLog(@"[PillProbe] MTMaterialView in HUD window (NOT in slider)");
-                LGLog(@"[PillProbe]   self frame: %@", NSStringFromCGRect(self.frame));
-                LGLog(@"[PillProbe]   parent chain:%@", parentChain);
-                LGLog(@"[PillProbe]   --- full hierarchy from top container:");
-                
-                // 找到最顶层的包含 MTMaterialView 的容器
-                UIView *container = self;
-                UIView *topContainer = self;
-                while (container.superview) {
-                    BOOL hasSiblingMaterial = NO;
-                    for (UIView *sibling in container.superview.subviews) {
-                        if ([sibling isKindOfClass:[self class]] && sibling != self) {
-                            hasSiblingMaterial = YES;
-                            break;
-                        }
-                    }
-                    if (hasSiblingMaterial) {
-                        topContainer = container.superview;
-                    }
-                    // 到达 HUD window 就停止
-                    if ([NSStringFromClass([container.superview class]) containsString:@"Window"]) break;
-                    container = container.superview;
-                }
-                
-                LGPrintViewHierarchy(topContainer, @"     ");
-            }
+            LGPrintViewHierarchy(topContainer, @"     ");
         }
     }
 }
