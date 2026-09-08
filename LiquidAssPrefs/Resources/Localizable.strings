@@ -208,9 +208,9 @@
 "prefs.control.tabbar_enhanced_mode" = "Enhanced Mode";
 "prefs.subtitle.tabbar_enhanced_mode" = "When enabled, liquid glass works on more third-party app tab bars. Apps like TikTok, WeChat, Xiaohongshu, DingTalk, and MiHome are excluded by default due to compatibility issues.";
 "prefs.control.tabbar_enhanced_exclusion" = "Exclusion List";
-"prefs.subtitle.tabbar_enhanced_exclusion" = "Disable enhanced mode tab bar effects in these apps.";
+"prefs.subtitle.tabbar_enhanced_exclusion" = "TikTok, WeChat, Xiaohongshu and more are included by default. Edit as needed.";
 "prefs.tabbar_enhanced_exclusion.title" = "Enhanced Mode Exclusions";
-"prefs.tabbar_enhanced_exclusion.body" = "Enter one bundle ID or process name per line. Enhanced mode tab bar effects will be disabled in matching apps, falling back to the system style.";
+"prefs.tabbar_enhanced_exclusion.body" = "Enter one bundle ID or process name per line. Enhanced mode tab bar effects will be disabled in matching apps, falling back to the system style. Recommended exclusions are pre-filled; add or remove as needed.";
 "prefs.tabbar_enhanced_exclusion.placeholder" = "com.example.app\nExampleApp\nTikTok";
 "prefs.subtitle.reset_lockscreen" = "Restore all Lock Screen glass settings to default.";
 "prefs.subtitle.reset_lockscreen_confirm" = "Are you sure you want to reset all Lock Screen settings to default?";

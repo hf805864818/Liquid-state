@@ -289,9 +289,9 @@
 "prefs.control.tabbar_enhanced_mode" = "增强模式";
 "prefs.subtitle.tabbar_enhanced_mode" = "开启后支持更多第三方 App 的底栏液态玻璃效果。默认排除抖音、微信、小红书、钉钉、米家等有兼容性问题的应用。";
 "prefs.control.tabbar_enhanced_exclusion" = "排除列表";
-"prefs.subtitle.tabbar_enhanced_exclusion" = "在这些应用中禁用增强模式底栏效果。";
+"prefs.subtitle.tabbar_enhanced_exclusion" = "已默认包含抖音、微信、小红书等应用，可自行编辑。";
 "prefs.tabbar_enhanced_exclusion.title" = "增强模式排除列表";
-"prefs.tabbar_enhanced_exclusion.body" = "每行输入一个应用的 Bundle ID 或进程名。匹配的应用中将禁用增强模式底栏效果，改为使用系统原生样式。";
+"prefs.tabbar_enhanced_exclusion.body" = "每行输入一个应用的 Bundle ID 或进程名。匹配的应用中将禁用增强模式底栏效果，改为使用系统原生样式。列表中已默认包含推荐排除的应用，可根据需要自行添加或删除。";
 "prefs.tabbar_enhanced_exclusion.placeholder" = "com.example.app\nExampleApp\nTikTok";
 "prefs.subtitle.reset_lockscreen" = "将所有锁屏玻璃设置恢复为默认值。";
 "prefs.subtitle.reset_lockscreen_confirm" = "确定要将所有锁屏设置恢复为默认值吗？";

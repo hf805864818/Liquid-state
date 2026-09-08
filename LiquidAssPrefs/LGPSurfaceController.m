@@ -883,7 +883,65 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+// 默认排除列表（与 TabBar.x 中保持一致）
+static NSArray<NSString *> *LGDefaultTabBarExclusionsList(void) {
+    static NSArray *list = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        list = @[
+            // TikTok / 抖音
+            @"TikTok",
+            @"com.zhiliaoapp.musically",
+            @"Aweme",
+            @"com.ss.iphone.ugc.Aweme",
+            // 微信
+            @"WeChat",
+            @"com.tencent.xin",
+            // 小红书
+            @"Discover",
+            @"com.xingin.discover",
+            // 钉钉
+            @"DingTalk",
+            @"com.laiwang.DingTalk",
+            // 米家
+            @"MiHome",
+            @"com.xiaomi.mihome",
+        ];
+    });
+    return list;
+}
+
+// 确保排除列表已初始化（首次运行时把默认推荐值写入用户偏好）
+static void LGEnsureTabBarExclusionsInitialized(void) {
+    id initialized = LGReadPreferenceObject(@"TabBar.EnhancedExclusionsInitialized", nil);
+    if ([initialized isKindOfClass:[NSNumber class]] && [initialized boolValue]) return;
+
+    // 读取用户现有的排除列表
+    NSMutableOrderedSet<NSString *> *merged = [NSMutableOrderedSet orderedSet];
+    id existingValue = LGReadPreferenceObject(@"TabBar.EnhancedExclusions", @"");
+    if ([existingValue isKindOfClass:[NSString class]] && [(NSString *)existingValue length] > 0) {
+        NSCharacterSet *separators = [NSCharacterSet characterSetWithCharactersInString:@"\n,;"];
+        for (NSString *rawEntry in [(NSString *)existingValue componentsSeparatedByCharactersInSet:separators]) {
+            NSString *entry = [rawEntry stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (entry.length) [merged addObject:entry];
+        }
+    }
+
+    // 合并默认排除列表（去重）
+    [merged addObjectsFromArray:LGDefaultTabBarExclusionsList()];
+
+    // 写回用户偏好
+    NSString *result = [merged.array componentsJoinedByString:@"\n"];
+    LGWritePreferenceObject(@"TabBar.EnhancedExclusions", result);
+    LGWritePreferenceObject(@"TabBar.EnhancedExclusionsInitialized", @YES);
+    LGForceSynchronizePreferences();
+}
+
 - (void)editTabBarEnhancedExclusionList {
+    // 确保排除列表已初始化（首次打开时写入默认推荐值）
+    LGEnsureTabBarExclusionsInitialized();
+
     NSString *defaults = @"";
     id storedValue = LGReadPreferenceObject(@"TabBar.EnhancedExclusions", defaults);
     NSString *existing = [storedValue isKindOfClass:NSString.class] ? storedValue : defaults;

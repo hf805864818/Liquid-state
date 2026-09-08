@@ -271,15 +271,15 @@ static BOOL LGExclusionListMatches(NSArray<NSString *> *list, NSString *bid, NSS
     return NO;
 }
 
-// 获取默认黑名单
+// 获取默认排除列表（作为初始推荐值）
 static NSArray<NSString *> *LGDefaultTabBarExclusions(void) {
     static NSArray *list = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         list = @[
+            // TikTok / 抖音
             @"TikTok",
             @"com.zhiliaoapp.musically",
-            // 抖音
             @"Aweme",
             @"com.ss.iphone.ugc.Aweme",
             // 微信
@@ -299,6 +299,41 @@ static NSArray<NSString *> *LGDefaultTabBarExclusions(void) {
     return list;
 }
 
+// 确保排除列表已初始化（首次运行时把默认推荐值写入用户偏好）
+static void LGTabBarEnsureExclusionsInitialized(void) {
+    id initialized = LGGlassPreferenceValue(@"TabBar.EnhancedExclusionsInitialized");
+    if ([initialized isKindOfClass:[NSNumber class]] && [initialized boolValue]) return;
+    
+    // 读取用户现有的排除列表
+    NSMutableOrderedSet<NSString *> *merged = [NSMutableOrderedSet orderedSet];
+    id existingValue = LGGlassPreferenceValue(@"TabBar.EnhancedExclusions");
+    if ([existingValue isKindOfClass:[NSString class]] && [(NSString *)existingValue length] > 0) {
+        [merged addObjectsFromArray:LGParseExclusionList(existingValue)];
+    }
+    
+    // 合并默认排除列表（去重）
+    [merged addObjectsFromArray:LGDefaultTabBarExclusions()];
+    
+    // 写回用户偏好
+    NSString *result = [merged.array componentsJoinedByString:@"\n"];
+    CFPreferencesSetValue(
+        (__bridge CFStringRef)@"TabBar.EnhancedExclusions",
+        (__bridge CFPropertyListRef)result,
+        (__bridge CFStringRef)LGPrefsDomain,
+        kCFPreferencesCurrentUser,
+        kCFPreferencesAnyHost);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+    
+    // 标记已初始化
+    CFPreferencesSetValue(
+        (__bridge CFStringRef)@"TabBar.EnhancedExclusionsInitialized",
+        kCFBooleanTrue,
+        (__bridge CFStringRef)LGPrefsDomain,
+        kCFPreferencesCurrentUser,
+        kCFPreferencesAnyHost);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+}
+
 // ===== 性能缓存：进程级状态缓存，避免每次 layoutSubviews 都重复计算 =====
 
 static BOOL sEnhancedModeCached = NO;
@@ -308,26 +343,23 @@ static BOOL sEnhancedExcludedValid = NO;
 
 // 刷新所有缓存（在 didMoveToWindow / App 进入前台时调用）
 static void LGRefreshTabBarCaches(void) {
+    // 确保排除列表已初始化（首次运行写入默认推荐值）
+    LGTabBarEnsureExclusionsInitialized();
+    
     // 读增强模式开关
     id enhancedVal = LGGlassPreferenceValue(@"TabBar.EnhancedMode");
     sEnhancedModeCached = [enhancedVal isKindOfClass:[NSNumber class]] && [enhancedVal boolValue];
     sEnhancedModeValid = YES;
     
-    // 读排除状态
+    // 读排除状态（只判断用户排除列表，默认值已在初始化时写入）
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     NSString *processName = [[NSProcessInfo processInfo] processName];
     
-    // 先检查默认黑名单
-    NSArray *defaults = LGDefaultTabBarExclusions();
-    BOOL excluded = LGExclusionListMatches(defaults, bid, processName);
-    
-    // 再检查用户自定义排除列表
-    if (!excluded) {
-        id customValue = LGGlassPreferenceValue(@"TabBar.EnhancedExclusions");
-        if ([customValue isKindOfClass:[NSString class]] && [(NSString *)customValue length] > 0) {
-            NSArray *customExclusions = LGParseExclusionList(customValue);
-            excluded = LGExclusionListMatches(customExclusions, bid, processName);
-        }
+    BOOL excluded = NO;
+    id customValue = LGGlassPreferenceValue(@"TabBar.EnhancedExclusions");
+    if ([customValue isKindOfClass:[NSString class]] && [(NSString *)customValue length] > 0) {
+        NSArray *customExclusions = LGParseExclusionList(customValue);
+        excluded = LGExclusionListMatches(customExclusions, bid, processName);
     }
     
     sEnhancedExcludedCached = excluded;
