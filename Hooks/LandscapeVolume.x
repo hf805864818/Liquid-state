@@ -351,12 +351,153 @@ static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
 
 %end
 
+#pragma mark - iOS 17+ 音量 HUD 类名探测扫描器
+
+static NSMutableSet<NSString *> *sLGLoggedVolumeClasses = nil;
+static dispatch_source_t sLGVolumeScanTimer = nil;
+
+static NSString *LGViewTreeDescription(UIView *view, NSInteger depth) {
+    if (!view) return @"";
+    NSMutableString *result = [NSMutableString string];
+    for (NSInteger i = 0; i < depth; i++) {
+        [result appendString:@"  "];
+    }
+    [result appendFormat:@"%@ frame=%@ hidden=%d alpha=%.2f\n",
+        NSStringFromClass([view class]),
+        NSStringFromCGRect(view.frame),
+        view.hidden,
+        view.alpha];
+    for (UIView *subview in view.subviews) {
+        [result appendString:LGViewTreeDescription(subview, depth + 1)];
+    }
+    return result;
+}
+
+static BOOL LGIsVolumeRelatedClass(NSString *className) {
+    if (!className || className.length == 0) return NO;
+    NSString *lower = [className lowercaseString];
+    NSArray<NSString *> *keywords = @[
+        @"volume", @"hud", @"pressband",
+        @"mediacontrols", @"mediaremote",
+        @"presentation", @"presented",
+        @"slider", @"progress"
+    ];
+    for (NSString *kw in keywords) {
+        if ([lower containsString:[kw lowercaseString]]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void LGScanForVolumeViews(void) {
+    @autoreleasepool {
+        UIWindow *keyWindow = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+                    for (UIWindow *window in scene.windows) {
+                        if (window.isKeyWindow) {
+                            keyWindow = window;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (!keyWindow) {
+            keyWindow = [UIApplication sharedApplication].keyWindow;
+        }
+        if (!keyWindow) return;
+
+        // 扫描所有 window，找出可能的音量 HUD
+        NSArray *windows = [UIApplication sharedApplication].windows;
+        NSMutableArray<NSString *> *volumeWindows = [NSMutableArray array];
+        NSMutableArray<NSString *> *newClasses = [NSMutableArray array];
+
+        for (UIWindow *window in windows) {
+            if (!window || window.bounds.size.width == 0 || window.bounds.size.height == 0) continue;
+
+            // 检查 window 本身的类名
+            NSString *winClass = NSStringFromClass([window class]);
+            if (LGIsVolumeRelatedClass(winClass)) {
+                if (!sLGLoggedVolumeClasses || ![sLGLoggedVolumeClasses containsObject:winClass]) {
+                    [newClasses addObject:winClass];
+                    if (sLGLoggedVolumeClasses) {
+                        [sLGLoggedVolumeClasses addObject:winClass];
+                    }
+                }
+            }
+
+            // 递归检查子视图
+            NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:window.subviews];
+            while (queue.count > 0) {
+                UIView *view = queue.firstObject;
+                [queue removeObjectAtIndex:0];
+                NSString *clsName = NSStringFromClass([view class]);
+                if (LGIsVolumeRelatedClass(clsName)) {
+                    if (!sLGLoggedVolumeClasses || ![sLGLoggedVolumeClasses containsObject:clsName]) {
+                        [newClasses addObject:clsName];
+                        if (sLGLoggedVolumeClasses) {
+                            [sLGLoggedVolumeClasses addObject:clsName];
+                        }
+                    }
+                }
+                [queue addObjectsFromArray:view.subviews];
+            }
+        }
+
+        if (newClasses.count > 0) {
+            LGLog(@"[Volume-Scan] 发现新的音量相关视图类 (%lu 个): %@",
+                  (unsigned long)newClasses.count,
+                  [newClasses componentsJoinedByString:@", "]);
+
+            // 对每个新类，打印其完整视图树（从所在 window 开始）
+            for (NSString *clsName in newClasses) {
+                for (UIWindow *window in windows) {
+                    __block BOOL found = NO;
+                    void (^searchBlock)(UIView *) = nil;
+                    searchBlock = ^(UIView *v) {
+                        if (found) return;
+                        if ([NSStringFromClass([v class]) isEqualToString:clsName]) {
+                            found = YES;
+                            LGLog(@"[Volume-Scan] 找到 %@ 的完整视图树:\n%@",
+                                  clsName, LGViewTreeDescription(window, 0));
+                            return;
+                        }
+                        for (UIView *sv in v.subviews) {
+                            searchBlock(sv);
+                            if (found) return;
+                        }
+                    };
+                    searchBlock(window);
+                    if (found) break;
+                }
+            }
+        }
+    }
+}
+
 %ctor {
     if (!LGIsSpringBoardProcess()) {
         LGLog(@"[Volume] not SpringBoard process, skipping volume hooks");
         return;
     }
     LGLog(@"[Volume] LandscapeVolume tweak loaded in SpringBoard");
+
+    // 初始化类名扫描器：每 2 秒扫描一次，发现新的音量相关视图就打日志
+    sLGLoggedVolumeClasses = [NSMutableSet set];
+    sLGVolumeScanTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(sLGVolumeScanTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+                              2 * NSEC_PER_SEC,
+                              0.5 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(sLGVolumeScanTimer, ^{
+        LGScanForVolumeViews();
+    });
+    dispatch_resume(sLGVolumeScanTimer);
+    LGLog(@"[Volume-Scan] 扫描器已启动，每 2 秒扫描一次视图层级");
+
     lgObservePreferenceReload(^{
         LGLog(@"[Volume] preferences reloaded");
         // Glass views will update on next layout pass
