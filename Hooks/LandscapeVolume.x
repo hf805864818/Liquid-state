@@ -143,6 +143,9 @@
 
 @end
 
+#pragma mark - Probe Utils (forward declaration)
+static void LGPrintViewHierarchy(UIView *view, NSString *indent);
+
 #pragma mark - Volume HUD (Elastic Slider)
 
 static const void * const kLGVolumeHUDGlassKey = &kLGVolumeHUDGlassKey;
