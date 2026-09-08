@@ -13,6 +13,9 @@ LiquidAssPrefs_INSTALL_PATH = /Library/PreferenceBundles
 LiquidAssPrefs_CFLAGS = -fobjc-arc -I../Shared -DLG_PACKAGE_VERSION=@\"$(LG_PACKAGE_VERSION)\" -DLIQUIDASS_DEBUG=$(LIQUIDASS_DEBUG)
 LiquidAssPrefs_LDFLAGS += -Wl,-undefined,dynamic_lookup
 
+# 显式包含 Resources 目录（.lproj 语言文件），确保本地化资源始终被打入 bundle
+# 并保持与 $(THEOS) 默认资源行为的兼容
+LiquidAssPrefs_RESOURCE_DIRS = Resources
 LiquidAssPrefs_RESOURCE_FILES = ../changelogs
 
 include $(THEOS_MAKE_PATH)/bundle.mk

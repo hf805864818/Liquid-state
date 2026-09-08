@@ -3224,7 +3224,9 @@ static void LGRefreshAllClockHosts(void) {
 
 - (void)setText:(NSString *)text {
     %orig;
-    if (LGIsLegacyClockDateLabel((UIView *)self)) {
+    // 同时处理 Legacy(SBFLockScreenDateSubtitleDateView) 与 Modern(CSProminentSubtitleDateView)
+    // 日期标签：无论系统在哪个生命周期重设日期文本，都能立即应用自定义格式
+    if (LGIsLegacyClockDateLabel((UIView *)self) || LGIsModernClockDateLabel((UIView *)self)) {
         LGApplyAbbreviatedDateTextToLabel((UILabel *)self);
         return;
     }
