@@ -450,30 +450,47 @@ static void LGVolumeChangedHandler(CFNotificationCenterRef center,
     }
 }
 
-#pragma mark - iOS 17+ 候选音量 HUD 类探测 Hook
+#pragma mark - iOS 17+ 音量 HUD 类名探测（Hook UIView 通用方式）
 
-// 这些类可能是 iOS 17 上音量 HUD 的实际类名
-// 如果类不存在，Logos 会自动跳过，不会崩溃
-// 只要任何一个 hook 触发了 didMoveToWindow，我们就知道了正确的类名
+// 通用方式：hook 所有 UIView 的 didMoveToWindow
+// 只在类名包含音量相关关键词时打印日志，避免刷屏
+// 这样不管 iOS 17 上音量 HUD 类名是什么都能抓到
 
-%hook SBHUDView
+%hook UIView
 - (void)didMoveToWindow {
     %orig;
     UIView *selfView = (UIView *)self;
-    LGLog(@"[Volume-Probe] SBHUDView didMoveToWindow: class=%@ frame=%@ window=%@",
-          NSStringFromClass([selfView class]),
+    if (!selfView.window) return; // 只记录显示到 window 上的
+
+    NSString *clsName = NSStringFromClass([selfView class]);
+    if (!LGIsVolumeLikeClass(clsName)) return;
+
+    // 去重：同一个类只打一次
+    static NSMutableSet *sLoggedClasses = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sLoggedClasses = [NSMutableSet set];
+    });
+
+    @synchronized(sLoggedClasses) {
+        if ([sLoggedClasses containsObject:clsName]) return;
+        [sLoggedClasses addObject:clsName];
+    }
+
+    LGLog(@"[Volume-Probe] 发现音量相关视图: %@ frame=%@ superview=%@",
+          clsName,
           NSStringFromCGRect(selfView.frame),
-          selfView.window);
-}
-%end
+          NSStringFromClass([selfView.superview class]));
 
-%hook SBPresentationObservationWindow
-- (void)didMoveToWindow {
-    %orig;
-    UIView *selfView = (UIView *)self;
-    LGLog(@"[Volume-Probe] SBPresentationObservationWindow didMoveToWindow: class=%@ frame=%@",
-          NSStringFromClass([selfView class]),
-          NSStringFromCGRect(selfView.frame));
+    // 打印父视图链，方便定位层级
+    NSMutableString *chain = [NSMutableString string];
+    UIView *cur = selfView;
+    while (cur) {
+        [chain appendFormat:@"%@", NSStringFromClass([cur class])];
+        cur = cur.superview;
+        if (cur) [chain appendString:@" → "];
+    }
+    LGLog(@"[Volume-Probe] 视图层级链: %@", chain);
 }
 %end
 
