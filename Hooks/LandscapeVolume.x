@@ -279,6 +279,7 @@ static void LGUpdateVolumeHUDGlass(SBElasticSliderMaterialWrapperView *self) {
 - (instancetype)initWithFrame:(CGRect)frame {
     self = %orig;
     if (self) {
+        LGLog(@"[VolumeHUD] initWithFrame: %@", NSStringFromCGRect(frame));
         LGUpdateVolumeHUDGlass(self);
     }
     return self;
@@ -287,6 +288,7 @@ static void LGUpdateVolumeHUDGlass(SBElasticSliderMaterialWrapperView *self) {
 - (instancetype)initWithSliderView:(id)sliderView {
     self = %orig;
     if (self) {
+        LGLog(@"[VolumeHUD] initWithSliderView: class=%@", NSStringFromClass([sliderView class]));
         LGUpdateVolumeHUDGlass(self);
     }
     return self;
@@ -294,6 +296,8 @@ static void LGUpdateVolumeHUDGlass(SBElasticSliderMaterialWrapperView *self) {
 
 - (void)layoutSubviews {
     %orig;
+    LGLog(@"[VolumeHUD] layoutSubviews bounds=%@ enabled=%d",
+          NSStringFromCGRect(self.bounds), LGVolumeHUDEnabled());
     LGUpdateVolumeHUDGlass(self);
 }
 
@@ -520,6 +524,13 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
 
 %ctor {
     if (!LGIsSpringBoardProcess()) return;
+    LGLog(@"[VolumeHUD] VolumeHUD tweak loaded");
+    LGLog(@"[VolumeHUD] SBElasticSliderMaterialWrapperView exists: %d",
+          NSClassFromString(@"SBElasticSliderMaterialWrapperView") != nil);
+    LGLog(@"[VolumeHUD] SBRingerPillView exists: %d",
+          NSClassFromString(@"SBRingerPillView") != nil);
+    LGLog(@"[VolumeHUD] PLPillView exists: %d",
+          NSClassFromString(@"PLPillView") != nil);
     lgObservePreferenceReload(^{
         LGLog(@"VolumeHUD: Preferences reloaded");
     });
