@@ -55,6 +55,115 @@ static void vhPrintViewHierarchy(UIView *view, NSString *indent) {
 
 %end
 
+#pragma mark - Volume HUD Vibrance View
+
+// 饱和度+对比度增强层，叠加在液态玻璃上面增强通透感
+@interface LGVolumeHUDVibranceView : UIView
+@end
+
+@implementation LGVolumeHUDVibranceView
+
++ (Class)layerClass {
+    return NSClassFromString(@"CABackdropLayer") ?: [CALayer class];
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.userInteractionEnabled = NO;
+        self.backgroundColor = [UIColor clearColor];
+        self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    }
+    return self;
+}
+
+- (void)updateSaturation:(CGFloat)saturation contrast:(CGFloat)contrast {
+    @try {
+        CALayer *layer = self.layer;
+        if (![layer isKindOfClass:NSClassFromString(@"CABackdropLayer")]) return;
+
+        Class filterCls = NSClassFromString(@"CAFilter");
+        if (!filterCls) return;
+
+        NSMutableArray *filters = [NSMutableArray array];
+
+        id satFilter = ((id (*)(Class, SEL, NSString *))objc_msgSend)(
+            filterCls, NSSelectorFromString(@"filterWithType:"), @"colorSaturate");
+        if (satFilter) {
+            @try { [satFilter setValue:@(saturation) forKey:@"inputAmount"]; } @catch (...) {}
+            [filters addObject:satFilter];
+        }
+
+        id contrastFilter = ((id (*)(Class, SEL, NSString *))objc_msgSend)(
+            filterCls, NSSelectorFromString(@"filterWithType:"), @"colorContrast");
+        if (contrastFilter) {
+            @try { [contrastFilter setValue:@(contrast) forKey:@"inputAmount"]; } @catch (...) {}
+            [filters addObject:contrastFilter];
+        }
+
+        layer.filters = filters;
+    } @catch (NSException *e) {}
+}
+
+@end
+
+static const void * const kVHVibranceKey = &kVHVibranceKey;
+
+static void vhUpdateVibranceForMaterial(UIView *material) {
+    if (!material) return;
+    if (!LG_prefBool(@"VolumeHUDGlass.Enabled", NO)) return;
+    
+    LGLiveBackdropView *glass = objc_getAssociatedObject(material, kGlassKey);
+    if (!glass) return;
+    
+    CGFloat saturation = LG_prefFloat(@"VolumeHUDGlass.Saturation", 1.85);
+    CGFloat contrast = LG_prefFloat(@"VolumeHUDGlass.Contrast", 1.06);
+    
+    // 如果饱和度和对比度都是 1.0（无增强），移除 vibrance 视图
+    if (saturation <= 1.0 && contrast <= 1.0) {
+        LGVolumeHUDVibranceView *existing = objc_getAssociatedObject(material, kVHVibranceKey);
+        if (existing) {
+            [existing removeFromSuperview];
+            objc_setAssociatedObject(material, kVHVibranceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+    
+    LGVolumeHUDVibranceView *vibrance = objc_getAssociatedObject(material, kVHVibranceKey);
+    if (!vibrance) {
+        vibrance = [[LGVolumeHUDVibranceView alloc] initWithFrame:glass.bounds];
+        if (!vibrance) return;
+        objc_setAssociatedObject(material, kVHVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [glass.superview insertSubview:vibrance aboveSubview:glass];
+    }
+    
+    vibrance.frame = glass.frame;
+    vibrance.layer.cornerRadius = glass.layer.cornerRadius;
+    if (@available(iOS 13.0, *)) {
+        vibrance.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+    vibrance.layer.masksToBounds = YES;
+    [vibrance updateSaturation:saturation contrast:contrast];
+}
+
+static void vhVolumeHUDPostInstall(UIView *material, LGLiveBackdropView *glass) {
+    // 安装后立即添加 vibrance 层
+    vhUpdateVibranceForMaterial(material);
+}
+
+// 前向声明
+static BOOL vhIsVolumeHUDMaterial(UIView *material);
+
+// 每次 layoutSubviews 时更新 vibrance 层（保证偏好变化时也能生效）
+%hook MTMaterialView
+- (void)layoutSubviews {
+    %orig;
+    if (vhIsVolumeHUDMaterial(self)) {
+        vhUpdateVibranceForMaterial(self);
+    }
+}
+%end
+
 #pragma mark - Volume HUD Material Host
 
 // 判断一个 MTMaterialView 是不是在音量 HUD 里（音量条 + 铃声药丸）
@@ -129,9 +238,14 @@ static CGFloat vhVolumeHUDCornerRadius(UIView *material) {
         return vhIsVolumeHUDMaterial(material);
     }, UIEdgeInsetsZero, ^CGFloat(UIView *material) {
         return vhVolumeHUDCornerRadius(material);
-    }, nil, nil);
+    }, nil, ^void(UIView *material, LGLiveBackdropView *glass) {
+        vhVolumeHUDPostInstall(material, glass);
+    });
     
     lgObservePreferenceReload(^{
         LGLog(@"VolumeHUD: Preferences reloaded");
+        // 偏好更新时，更新所有已安装的 vibrance 层
+        // 这里我们没法遍历所有 material，依赖下次 layout 时更新
+        // 但 LGGlassKit 会在 reload 时触发所有 glass 的 update，所以 vibrance 也需要跟着更新
     });
 }
