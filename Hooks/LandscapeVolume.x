@@ -598,33 +598,93 @@ static void LGPrintViewHierarchy(UIView *view, NSString *indent) {
 - (void)didMoveToWindow {
     %orig;
     if (self.window) {
-        LGLog(@"[VolumeProbe] SBElasticSliderView didMoveToWindow");
-        LGLog(@"[VolumeProbe]   self class: %@", NSStringFromClass([self class]));
-        LGLog(@"[VolumeProbe]   self frame: %@", NSStringFromCGRect(self.frame));
-        LGLog(@"[VolumeProbe]   superview class: %@", NSStringFromClass([self.superview class]));
-        
-        // 向上遍历父视图，找到包含 MTMaterialView 的容器
-        UIView *current = self.superview;
-        NSInteger level = 0;
-        Class materialClass = NSClassFromString(@"MTMaterialView");
-        while (current && level < 10) {
-            BOOL hasMaterial = NO;
-            for (UIView *subview in current.subviews) {
-                if (materialClass && [subview isKindOfClass:materialClass]) {
-                    hasMaterial = YES;
-                    break;
+        LGLog(@"[VolumeProbe] SBElasticSliderView didMoveToWindow  frame=%@",
+              NSStringFromCGRect(self.frame));
+    }
+}
+
+- (void)layoutSubviews {
+    %orig;
+    // 只在有尺寸时打印，避免输出太多
+    if (self.window && self.bounds.size.width > 0 && self.bounds.size.height > 0) {
+        static BOOL hasLogged = NO;
+        if (!hasLogged) {
+            hasLogged = YES;
+            LGLog(@"[VolumeProbe] SBElasticSliderView layoutSubviews  bounds=%@",
+                  NSStringFromCGRect(self.bounds));
+            LGLog(@"[VolumeProbe]   superview class: %@", NSStringFromClass([self.superview class]));
+            LGLog(@"[VolumeProbe]   --- full hierarchy:");
+            LGPrintViewHierarchy(self, @"     ");
+            
+            // 也向上找3层
+            UIView *current = self.superview;
+            for (NSInteger i = 0; i < 5 && current; i++) {
+                LGLog(@"[VolumeProbe]   ancestor level %ld: %@  frame=%@",
+                      (long)i, NSStringFromClass([current class]),
+                      NSStringFromCGRect(current.frame));
+                current = current.superview;
+            }
+        }
+    }
+}
+
+%end
+
+#pragma mark - MTMaterialView Probe (catch-all)
+
+// hook MTMaterialView，当它出现在 HUD window 中时打印父视图链
+%hook MTMaterialView
+
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window) {
+        // 只关心 HUD window 中的材质视图
+        NSString *windowClass = NSStringFromClass([self.window class]);
+        if ([windowClass containsString:@"HUD"] || [windowClass containsString:@"SBHUD"]) {
+            // 检查是不是音量/铃声相关的
+            UIView *parent = self.superview;
+            BOOL isVolumeRelated = NO;
+            NSString *parentChain = @"";
+            NSInteger level = 0;
+            while (parent && level < 8) {
+                NSString *pClass = NSStringFromClass([parent class]);
+                parentChain = [parentChain stringByAppendingFormat:@" <- %@", pClass];
+                if ([pClass containsString:@"Elastic"] || 
+                    [pClass containsString:@"Volume"] || 
+                    [pClass containsString:@"Ringer"] ||
+                    [pClass containsString:@"Pill"] ||
+                    [pClass containsString:@"HUD"]) {
+                    isVolumeRelated = YES;
                 }
+                parent = parent.superview;
+                level++;
             }
-            LGLog(@"[VolumeProbe]   level %ld: %@  frame=%@  hasMaterial=%d",
-                  (long)level, NSStringFromClass([current class]),
-                  NSStringFromCGRect(current.frame), hasMaterial);
-            if (hasMaterial) {
-                LGLog(@"[VolumeProbe]   *** Found material container at level %ld: %@",
-                      (long)level, NSStringFromClass([current class]));
-                LGPrintViewHierarchy(current, @"      ");
+            
+            if (isVolumeRelated) {
+                LGLog(@"[MaterialProbe] MTMaterialView in HUD window");
+                LGLog(@"[MaterialProbe]   self frame: %@", NSStringFromCGRect(self.frame));
+                LGLog(@"[MaterialProbe]   parent chain:%@", parentChain);
+                LGLog(@"[MaterialProbe]   --- full hierarchy from top material container:");
+                
+                // 找到最顶层的包含 MTMaterialView 的容器
+                UIView *container = self;
+                UIView *topContainer = self;
+                while (container.superview) {
+                    BOOL hasSiblingMaterial = NO;
+                    for (UIView *sibling in container.superview.subviews) {
+                        if ([sibling isKindOfClass:[self class]] && sibling != self) {
+                            hasSiblingMaterial = YES;
+                            break;
+                        }
+                    }
+                    if (hasSiblingMaterial) {
+                        topContainer = container.superview;
+                    }
+                    container = container.superview;
+                }
+                
+                LGPrintViewHierarchy(topContainer, @"     ");
             }
-            current = current.superview;
-            level++;
         }
     }
 }
