@@ -38,7 +38,7 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
                        attributes:nil
                             error:&error];
         if (error) {
-            NSLog(@"[CCBg] ERROR: Failed to create base media directory '%@': %@", _baseMediaDirectory, error);
+            // NSLog(@"[CCBg] ERROR: Failed to create base media directory '%@': %@", _baseMediaDirectory, error);
         }
     }
     // 确保三个子目录都存在
@@ -57,7 +57,7 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
                        attributes:nil
                             error:&error];
         if (error) {
-            NSLog(@"[CCBg] ERROR: Failed to create media directory '%@': %@", dir, error);
+            // NSLog(@"[CCBg] ERROR: Failed to create media directory '%@': %@", dir, error);
         }
     }
 }
@@ -114,13 +114,13 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
             // 保存原图
             NSData *imageData = UIImageJPEGRepresentation(image, kCCBgImageQuality);
             if (!imageData) {
-                NSLog(@"[CCBg] ERROR: UIImageJPEGRepresentation returned nil");
+                // NSLog(@"[CCBg] ERROR: UIImageJPEGRepresentation returned nil");
                 success = NO;
             } else {
                 NSError *writeError = nil;
                 success = [imageData writeToFile:imagePath options:NSDataWritingAtomic error:&writeError];
                 if (writeError) {
-                    NSLog(@"[CCBg] ERROR: Failed to write image to '%@': %@", imagePath, writeError);
+                    // NSLog(@"[CCBg] ERROR: Failed to write image to '%@': %@", imagePath, writeError);
                 }
             }
 
@@ -170,7 +170,7 @@ static const NSTimeInterval kCCBgVideoThumbTime = 0.5;
             }
             success = [fm copyItemAtPath:videoURL.path toPath:videoPath error:&error];
             if (!success && error) {
-                NSLog(@"[CCBg] ERROR: Failed to copy video from '%@' to '%@': %@", videoURL.path, videoPath, error);
+                // NSLog(@"[CCBg] ERROR: Failed to copy video from '%@' to '%@': %@", videoURL.path, videoPath, error);
             }
 
             // 生成视频首帧缩略图

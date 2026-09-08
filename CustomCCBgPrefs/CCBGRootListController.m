@@ -6,35 +6,14 @@
 #import "CCBGMediaManager.h"
 #import "CCBGThumbnailButtonCell.h"
 
-// MARK: - 文件日志（可在 Filza 中查看）
-static NSString * const kCCBgLogFile = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media/debug.log";
+// MARK: - 文件日志（已禁用，控制中心功能稳定后不再输出）
+// 如需重新开启，取消下面注释即可
+// static NSString * const kCCBgLogFile = @"/var/mobile/Library/Preferences/dylv.Deepliquid.ccbg.media/debug.log";
 
 static void ccbg_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 static void ccbg_log(NSString *format, ...) {
-    va_list args;
-    va_start(args, format);
-    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
-    va_end(args);
-
-    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-    [fmt setDateFormat:@"HH:mm:ss.SSS"];
-    NSString *timestamp = [fmt stringFromDate:[NSDate date]];
-    NSString *logLine = [NSString stringWithFormat:@"[%@] %@\n", timestamp, message];
-
-    NSLog(@"[CCBg] %@", message);
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *dir = [kCCBgLogFile stringByDeletingLastPathComponent];
-    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-
-    if (![fm fileExistsAtPath:kCCBgLogFile]) {
-        [logLine writeToFile:kCCBgLogFile atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    } else {
-        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:kCCBgLogFile];
-        [handle seekToEndOfFile];
-        [handle writeData:[logLine dataUsingEncoding:NSUTF8StringEncoding]];
-        [handle closeFile];
-    }
+    // 日志已禁用
+    (void)format;
 }
 
 // MARK: - 常量
@@ -343,8 +322,8 @@ static NSString * const kCCBgMediaBlurAlphaKey = @"MediaModuleBlurAlpha";
             break;
         }
     }
-    NSLog(@"[CCBg] provider registeredTypeIdentifiers: %@", provider.registeredTypeIdentifiers);
-    NSLog(@"[CCBg] detected videoType: %@", videoType);
+    // NSLog(@"[CCBg] provider registeredTypeIdentifiers: %@", provider.registeredTypeIdentifiers);
+    // NSLog(@"[CCBg] detected videoType: %@", videoType);
     ccbg_log(@"PHPicker provider UTIs: %@", provider.registeredTypeIdentifiers);
     ccbg_log(@"PHPicker detected videoType: %@", videoType);
 

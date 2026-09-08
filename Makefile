@@ -1,6 +1,6 @@
 export TARGET ?= iphone:clang:16.5:14.0
 export ARCHS ?= arm64 arm64e
-LIQUIDASS_DEBUG ?= 0
+LIQUIDASS_DEBUG ?= 1
 export LIQUIDASS_DEBUG
 
 LG_PACKAGE_VERSION := $(shell sed -n 's/^Version: //p' control | head -n 1)

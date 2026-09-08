@@ -83,31 +83,54 @@ static CGFloat LGVolumeHUDGlassCornerRadius(void) {
 // Find and hide/show system MTMaterialView subviews
 static void LGHideSystemMaterialViews(UIView *view, BOOL hide) {
     Class materialClass = NSClassFromString(@"MTMaterialView");
-    if (!materialClass) return;
+    if (!materialClass) {
+        LGLog(@"[Volume] MTMaterialView class not found!");
+        return;
+    }
+    NSUInteger found = 0;
     for (UIView *subview in view.subviews) {
         if ([subview isKindOfClass:materialClass]) {
             subview.hidden = hide;
+            found++;
         }
+    }
+    if (found > 0) {
+        LGLog(@"[Volume] found %lu MTMaterialView subviews, hidden=%d", (unsigned long)found, hide);
     }
 }
 
 #pragma mark - Landscape volume (SBVolumePressBand)
 
 static void LGLandscapeVolumeApplyGlassToView(UIView *view) {
-    if (!LGLandscapeVolumeGlassEnabled() || !view) return;
+    if (!LGLandscapeVolumeGlassEnabled() || !view) {
+        LGLog(@"[Volume-Landscape] apply skipped: enabled=%d view=%@", LGLandscapeVolumeGlassEnabled(), view);
+        return;
+    }
+
+    LGLog(@"[Volume-Landscape] apply glass to view: %@ (frame=%@ subviews=%lu)",
+          NSStringFromClass([view class]),
+          NSStringFromCGRect(view.frame),
+          (unsigned long)view.subviews.count);
 
     // Hide system material views so our glass is visible
     LGHideSystemMaterialViews(view, YES);
 
     LGLiveBackdropView *glassView = objc_getAssociatedObject(view, kLGLandscapeVolumeGlassKey);
     if (!glassView) {
+        LGLog(@"[Volume-Landscape] creating new glass view (bounds=%@)", NSStringFromCGRect(view.bounds));
         glassView = LGCreateRegisteredGlass(view.bounds, nil, @"LandscapeVolume");
-        if (!glassView) return;
+        if (!glassView) {
+            LGLog(@"[Volume-Landscape] ERROR: LGCreateRegisteredGlass returned nil!");
+            return;
+        }
         objc_setAssociatedObject(view, kLGLandscapeVolumeGlassKey, glassView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         lgTrackGlass(glassView, @"LandscapeVolume", view);
         // Insert on top so it's visible above remaining system subviews
         [view addSubview:glassView];
         glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        LGLog(@"[Volume-Landscape] glass view created and added as subview");
+    } else {
+        LGLog(@"[Volume-Landscape] reusing existing glass view");
     }
 
     CGFloat radius = LGLandscapeVolumeGlassCornerRadius();
@@ -118,6 +141,7 @@ static void LGLandscapeVolumeApplyGlassToView(UIView *view) {
         glassView.layer.cornerCurve = kCACornerCurveContinuous;
     }
     glassView.hidden = NO;
+    LGLog(@"[Volume-Landscape] calling applyFilters on glass view");
     [glassView applyFilters];
 
     // Add vibrance layer on top of glass
@@ -128,6 +152,9 @@ static void LGLandscapeVolumeApplyGlassToView(UIView *view) {
             objc_setAssociatedObject(view, kLGLandscapeVolumeVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             [view addSubview:vibrance];
             vibrance.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            LGLog(@"[Volume-Landscape] vibrance view created and added");
+        } else {
+            LGLog(@"[Volume-Landscape] ERROR: vibrance view creation failed");
         }
     }
     if (vibrance) {
@@ -146,6 +173,8 @@ static void LGLandscapeVolumeApplyGlassToView(UIView *view) {
     if (@available(iOS 13.0, *)) {
         view.layer.cornerCurve = kCACornerCurveContinuous;
     }
+    LGLog(@"[Volume-Landscape] apply done: radius=%.1f glass=%@ vibrance=%@",
+          radius, glassView, vibrance);
 }
 
 static void LGLandscapeVolumeRemoveGlassFromView(UIView *view) {
@@ -170,20 +199,35 @@ static void LGLandscapeVolumeRemoveGlassFromView(UIView *view) {
 #pragma mark - Portrait volume HUD (SBVolumeHUDView)
 
 static void LGVolumeHUDApplyGlassToView(UIView *view) {
-    if (!LGVolumeHUDGlassEnabled() || !view) return;
+    if (!LGVolumeHUDGlassEnabled() || !view) {
+        LGLog(@"[Volume-HUD] apply skipped: enabled=%d view=%@", LGVolumeHUDGlassEnabled(), view);
+        return;
+    }
+
+    LGLog(@"[Volume-HUD] apply glass to view: %@ (frame=%@ subviews=%lu)",
+          NSStringFromClass([view class]),
+          NSStringFromCGRect(view.frame),
+          (unsigned long)view.subviews.count);
 
     // Hide system material views so our glass is visible
     LGHideSystemMaterialViews(view, YES);
 
     LGLiveBackdropView *glassView = objc_getAssociatedObject(view, kLGVolumeHUDGlassKey);
     if (!glassView) {
+        LGLog(@"[Volume-HUD] creating new glass view (bounds=%@)", NSStringFromCGRect(view.bounds));
         glassView = LGCreateRegisteredGlass(view.bounds, nil, @"VolumeHUD");
-        if (!glassView) return;
+        if (!glassView) {
+            LGLog(@"[Volume-HUD] ERROR: LGCreateRegisteredGlass returned nil!");
+            return;
+        }
         objc_setAssociatedObject(view, kLGVolumeHUDGlassKey, glassView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         lgTrackGlass(glassView, @"VolumeHUD", view);
         // Insert on top so it's visible above remaining system subviews
         [view addSubview:glassView];
         glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        LGLog(@"[Volume-HUD] glass view created and added as subview");
+    } else {
+        LGLog(@"[Volume-HUD] reusing existing glass view");
     }
 
     CGFloat radius = LGVolumeHUDGlassCornerRadius();
@@ -194,6 +238,7 @@ static void LGVolumeHUDApplyGlassToView(UIView *view) {
         glassView.layer.cornerCurve = kCACornerCurveContinuous;
     }
     glassView.hidden = NO;
+    LGLog(@"[Volume-HUD] calling applyFilters on glass view");
     [glassView applyFilters];
 
     // Add vibrance layer on top of glass
@@ -204,6 +249,9 @@ static void LGVolumeHUDApplyGlassToView(UIView *view) {
             objc_setAssociatedObject(view, kLGVolumeHUDVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             [view addSubview:vibrance];
             vibrance.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            LGLog(@"[Volume-HUD] vibrance view created and added");
+        } else {
+            LGLog(@"[Volume-HUD] ERROR: vibrance view creation failed");
         }
     }
     if (vibrance) {
@@ -222,6 +270,8 @@ static void LGVolumeHUDApplyGlassToView(UIView *view) {
     if (@available(iOS 13.0, *)) {
         view.layer.cornerCurve = kCACornerCurveContinuous;
     }
+    LGLog(@"[Volume-HUD] apply done: radius=%.1f glass=%@ vibrance=%@",
+          radius, glassView, vibrance);
 }
 
 static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
@@ -250,6 +300,7 @@ static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
+    LGLog(@"[Volume-Landscape] SBVolumePressBand layoutSubviews called (window=%@)", [(UIView *)self window]);
     if (LGLandscapeVolumeGlassEnabled()) {
         LGLandscapeVolumeApplyGlassToView((UIView *)self);
     } else {
@@ -260,6 +311,7 @@ static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
 - (void)didMoveToWindow {
     %orig;
     UIView *selfView = (UIView *)self;
+    LGLog(@"[Volume-Landscape] SBVolumePressBand didMoveToWindow (window=%@)", selfView.window);
     if (selfView.window && LGLandscapeVolumeGlassEnabled()) {
         dispatch_async(dispatch_get_main_queue(), ^{
             LGLandscapeVolumeApplyGlassToView(selfView);
@@ -276,6 +328,7 @@ static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
+    LGLog(@"[Volume-HUD] SBVolumeHUDView layoutSubviews called (window=%@)", [(UIView *)self window]);
     if (LGVolumeHUDGlassEnabled()) {
         LGVolumeHUDApplyGlassToView((UIView *)self);
     } else {
@@ -286,6 +339,7 @@ static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
 - (void)didMoveToWindow {
     %orig;
     UIView *selfView = (UIView *)self;
+    LGLog(@"[Volume-HUD] SBVolumeHUDView didMoveToWindow (window=%@)", selfView.window);
     if (selfView.window && LGVolumeHUDGlassEnabled()) {
         dispatch_async(dispatch_get_main_queue(), ^{
             LGVolumeHUDApplyGlassToView(selfView);
@@ -298,8 +352,13 @@ static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
 %end
 
 %ctor {
-    if (!LGIsSpringBoardProcess()) return;
+    if (!LGIsSpringBoardProcess()) {
+        LGLog(@"[Volume] not SpringBoard process, skipping volume hooks");
+        return;
+    }
+    LGLog(@"[Volume] LandscapeVolume tweak loaded in SpringBoard");
     lgObservePreferenceReload(^{
+        LGLog(@"[Volume] preferences reloaded");
         // Glass views will update on next layout pass
     });
 }
