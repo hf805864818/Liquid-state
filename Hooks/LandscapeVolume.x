@@ -506,6 +506,28 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
 
 %hook SBRingerPillView
 
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window) {
+        LGLog(@"[PillProbe] SBRingerPillView didMoveToWindow  frame=%@  enabled=%d",
+              NSStringFromCGRect(self.frame), LGPillHUDEnabled());
+        // 打印所有 ivar
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList([self class], &count);
+        NSMutableArray *ivarNames = [NSMutableArray array];
+        for (unsigned int i = 0; i < count; i++) {
+            const char *name = ivar_getName(ivars[i]);
+            NSString *nsName = [NSString stringWithUTF8String:name];
+            [ivarNames addObject:nsName];
+        }
+        free(ivars);
+        LGLog(@"[PillProbe] SBRingerPillView ivars: %@", ivarNames);
+        
+        // 打印子视图层级
+        LGPrintViewHierarchy(self, @"  ");
+    }
+}
+
 - (void)layoutSubviews {
     %orig;
     LGUpdateRingerPillGlass(self);
@@ -514,6 +536,28 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
 %end
 
 %hook PLPillView
+
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window) {
+        LGLog(@"[PillProbe] PLPillView didMoveToWindow  frame=%@  enabled=%d",
+              NSStringFromCGRect(self.frame), LGPillHUDEnabled());
+        // 打印所有 ivar
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList([self class], &count);
+        NSMutableArray *ivarNames = [NSMutableArray array];
+        for (unsigned int i = 0; i < count; i++) {
+            const char *name = ivar_getName(ivars[i]);
+            NSString *nsName = [NSString stringWithUTF8String:name];
+            [ivarNames addObject:nsName];
+        }
+        free(ivars);
+        LGLog(@"[PillProbe] PLPillView ivars: %@", ivarNames);
+        
+        // 打印子视图层级
+        LGPrintViewHierarchy(self, @"  ");
+    }
+}
 
 - (void)layoutSubviews {
     %orig;
