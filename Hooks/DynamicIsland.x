@@ -18,7 +18,9 @@ static CGFloat LGDynamicIslandCornerRadiusForSize(CGSize size) {
     return 18.0;
 }
 
-// 安装灵动岛液态玻璃（参考 LGInjectGlassIntoMaterialGroupType 的模式）
+// 安装灵动岛液态玻璃
+// 注意：使用 gain map view 作为锚点，因为它是灵动岛的核心形状视图
+// 在不同 iOS 版本中类名可能变化，但 _SBGainMapView 通常是稳定的内部类
 static void LGInstallDynamicIslandGlass(UIView *containerView) {
     if (!containerView || !containerView.window) return;
     if (!LGDynamicIslandEnabled()) return;
@@ -30,6 +32,8 @@ static void LGInstallDynamicIslandGlass(UIView *containerView) {
     if (!glassView) {
         CGFloat radius = LGDynamicIslandCornerRadiusForSize(containerView.bounds.size);
         glassView = LGCreateRegisteredGlass(containerView.bounds, nil, @"DynamicIsland");
+        if (!glassView) return;
+
         glassView.userInteractionEnabled = NO;
         glassView.backgroundColor = UIColor.clearColor;
         glassView.layer.cornerRadius = radius;
@@ -50,8 +54,15 @@ static void LGInstallDynamicIslandGlass(UIView *containerView) {
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
+    // 确保 glassView 在最上层（防止其他子视图遮挡）
+    [parent bringSubviewToFront:glassView];
+
     // 更新位置和大小
-    glassView.frame = containerView.frame;
+    CGRect targetFrame = containerView.frame;
+    if (!CGRectEqualToRect(glassView.frame, targetFrame)) {
+        glassView.frame = targetFrame;
+    }
+
     CGFloat radius = LGDynamicIslandCornerRadiusForSize(containerView.bounds.size);
     if (fabs(glassView.layer.cornerRadius - radius) > 0.5) {
         glassView.layer.cornerRadius = radius;
@@ -69,8 +80,34 @@ static void LGRemoveDynamicIslandGlass(UIView *containerView) {
     }
 }
 
-#pragma mark - Hook SBDynamicIslandView（主路径：确保类存在）
+#pragma mark - Hook _SBGainMapView（主路径：灵动岛核心形状视图）
 
+// _SBGainMapView 是灵动岛的增益图视图，负责定义灵动岛的形状
+// 这是内部类，类名通常以 _ 开头，在各 iOS 版本中相对稳定
+%hook _SBGainMapView
+- (void)didMoveToWindow {
+    %orig;
+    UIView *selfView = (UIView *)self;
+    if (selfView.window) {
+        LGInstallDynamicIslandGlass(selfView);
+    } else {
+        LGRemoveDynamicIslandGlass(selfView);
+    }
+}
+- (void)layoutSubviews {
+    %orig;
+    LGInstallDynamicIslandGlass((UIView *)self);
+}
+- (void)setHidden:(BOOL)hidden {
+    %orig;
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(self, kLGDynamicIslandGlassKey);
+    if (glassView) glassView.hidden = hidden;
+}
+%end
+
+#pragma mark - Hook SBDynamicIslandView（备用路径：部分 iOS 版本可能使用此类）
+
+// 某些 iOS 版本中灵动岛的主容器视图可能叫 SBDynamicIslandView
 %hook SBDynamicIslandView
 - (void)didMoveToWindow {
     %orig;
@@ -92,22 +129,9 @@ static void LGRemoveDynamicIslandGlass(UIView *containerView) {
 }
 %end
 
-#pragma mark - Hook _SBGainMapView（优化路径：获取更精确的形状）
-
-// 如果 _SBGainMapView 存在，优先用它的形状（更贴近真实灵动岛）
-%hook _SBGainMapView
-- (void)didMoveToWindow {
-    %orig;
-    // 暂时只做日志验证，确认类是否存在
-    // 后续版本会用 gain map 形状替换 SDF 胶囊形状
-}
-- (void)layoutSubviews {
-    %orig;
-}
-%end
-
 #pragma mark - Hook SBUIProudLockContainerView（锁屏场景）
 
+// 锁屏状态下的灵动岛容器视图
 %hook SBUIProudLockContainerView
 - (void)didMoveToWindow {
     %orig;
@@ -128,6 +152,6 @@ static void LGRemoveDynamicIslandGlass(UIView *containerView) {
 
 %ctor {
     lgObservePreferenceReload(^{
-        // Glass will be re-evaluated on next layout pass
+        // 偏好设置变更时，glass 会在下一次 layout 时重新评估
     });
 }
