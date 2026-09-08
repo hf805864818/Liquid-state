@@ -238,7 +238,7 @@ static void vhMigrateLegacyPreferences(void) {
         kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (migrated && [migrated isKindOfClass:[NSNumber class]] && [migrated boolValue]) return;
     
-    BOOL hasLegacy = NO;
+    __block BOOL hasLegacy = NO;
     
     // 辅助函数：迁移单个 key
     void (^migrateKey)(NSString *, NSString *) = ^(NSString *oldKey, NSString *newKey) {
