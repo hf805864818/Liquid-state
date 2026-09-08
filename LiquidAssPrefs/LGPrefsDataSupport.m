@@ -74,7 +74,7 @@ static NSDictionary<NSString *, id> *LGExportablePreferenceDefaults(void) {
 }
 
 static NSBundle *LGActiveLocalizationBundle(void) {
-    NSString *languageCode = [LGPrefsUIStateDefaults() stringForKey:kLGPrefsLanguageKey];
+    NSString *languageCode = LGCurrentPrefsLanguageCode();
     NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
     if (!languageCode.length) {
         languageCode = @"zh-Hans";
@@ -207,18 +207,52 @@ NSString *LGPrefsAppName(void) {
 }
 
 NSString *LGCurrentPrefsLanguageCode(void) {
-    NSString *languageCode = [LGPrefsUIStateDefaults() stringForKey:kLGPrefsLanguageKey];
-    return languageCode.length ? languageCode : @"zh-Hans";
+    // 从 CFPreferences（插件 domain，跨进程）直接读取
+    CFTypeRef cfValue = CFPreferencesCopyAppValue((__bridge CFStringRef)kLGPrefsLanguageKey,
+                                                   (__bridge CFStringRef)LGPrefsDomain);
+    NSString *languageCode = CFBridgingRelease(cfValue);
+    if ([languageCode isKindOfClass:[NSString class]] && languageCode.length) {
+        return languageCode;
+    }
+
+    // 向后兼容：如果新位置没有，尝试从旧的 standardUserDefaults 读取并迁移
+    NSString *oldValue = [LGPrefsUIStateDefaults() stringForKey:kLGPrefsLanguageKey];
+    if (oldValue.length) {
+        // 迁移到新位置（直接写入磁盘，不走 pending）
+        CFPreferencesSetAppValue((__bridge CFStringRef)kLGPrefsLanguageKey,
+                                 (__bridge CFStringRef)oldValue,
+                                 (__bridge CFStringRef)LGPrefsDomain);
+        CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+        // 从旧位置移除
+        [LGPrefsUIStateDefaults() removeObjectForKey:kLGPrefsLanguageKey];
+        LGSynchronizeSurfaceStateDefaults();
+        return oldValue;
+    }
+
+    return @"zh-Hans";
 }
 
 void LGSetCurrentPrefsLanguageCode(NSString *languageCode) {
-    NSUserDefaults *defaults = LGPrefsUIStateDefaults();
+    // 直接写入 CFPreferences 插件 domain（不走 pending，立即持久化）
+    // 确保跨进程可读，且 respring 后不丢失
     if (!languageCode.length || [languageCode isEqualToString:@"zh-Hans"]) {
-        [defaults removeObjectForKey:kLGPrefsLanguageKey];
+        CFPreferencesSetAppValue((__bridge CFStringRef)kLGPrefsLanguageKey,
+                                 NULL,
+                                 (__bridge CFStringRef)LGPrefsDomain);
     } else {
-        [defaults setObject:languageCode forKey:kLGPrefsLanguageKey];
+        CFPreferencesSetAppValue((__bridge CFStringRef)kLGPrefsLanguageKey,
+                                 (__bridge CFStringRef)languageCode,
+                                 (__bridge CFStringRef)LGPrefsDomain);
     }
+    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+
+    // 清理旧位置的值
+    [LGPrefsUIStateDefaults() removeObjectForKey:kLGPrefsLanguageKey];
     LGSynchronizeSurfaceStateDefaults();
+
+    // 通知其他进程刷新
+    notify_post(LGPrefsChangedNotificationCString);
+
     [[NSNotificationCenter defaultCenter] postNotificationName:kLGPrefsLanguageChangedNotification object:nil];
 }
 
