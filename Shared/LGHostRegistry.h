@@ -25,8 +25,8 @@ typedef struct {
     X(FolderIcon,     "dylv.liquidglass.folder",       "FolderIcon",    28.0f / 220.0f, (28.0f / 220.0f) * 1.8f,       18.0f, 2.6f, 1.85f, 1.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
     X(OpenFolder,     "dylv.liquidglass.openfolder",   "OpenFolder",    28.0f / 220.0f, (28.0f / 220.0f) * 0.9f,       18.0f, 2.6f, 1.85f, 0.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
     X(Dock,           "dylv.liquidglass.dock",         "Dock",          0.35f,          (28.0f / 220.0f) * 1.44f,      20.0f, 2.5f, 1.60f, 3.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
-    X(Banner,         "dylv.liquidglass.banner",       "Banner",        28.0f / 220.0f, 0.25f,                         22.0f, 1.6f, 1.60f, 3.0f, 1.0f,  0.0f, "#FFFFFFCC", "#00000080") \
-    X(Notification,   "dylv.liquidglass.notification", "Notification",  28.0f / 220.0f, 0.25f,                         22.0f, 1.6f, 1.60f, 3.0f, 1.0f,  0.0f, "#FFFFFF00", "#00000000") \
+    X(Banner,         "dylv.liquidglass.banner",       "Banner",        28.0f / 220.0f, 0.25f,                         35.0f, 3.0f, 1.75f, 1.0f, 1.0f,  0.6f, "#FFFFFF30", "#00000030") \
+    X(Notification,   "dylv.liquidglass.notification", "Notification",  28.0f / 220.0f, 0.25f,                         35.0f, 3.0f, 1.75f, 1.0f, 1.0f,  0.6f, "#FFFFFF20", "#00000020") \
     X(ControlCenter,  "dylv.liquidglass.cc",           "ControlCenter", 28.0f / 220.0f, (28.0f / 220.0f) * 1.8f,       20.0f, 1.9f, 1.60f, 0.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
     X(AppLibrary,     "dylv.liquidglass.applibpod",    "AppLibrary",    28.0f / 220.0f, (28.0f / 220.0f) * 1.26f,      20.0f, 2.2f, 1.60f, 0.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
     X(AppLibSearch,   "dylv.liquidglass.applibsearch", "AppLibSearch",  0.50f,          (28.0f / 220.0f) * 1.8f,       18.0f, 1.8f, 1.60f, 0.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
