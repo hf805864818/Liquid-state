@@ -70,20 +70,12 @@ static CGFloat LGLandscapeVolumeGlassCornerRadius(void) {
     return LG_prefFloat(@"LandscapeVolumeGlass.CornerRadius", 16.0);
 }
 
-static CGFloat LGLandscapeVolumeGlassBlur(void) {
-    return LG_prefFloat(@"LandscapeVolumeGlass.Blur", 20.0);
-}
-
 static BOOL LGVolumeHUDGlassEnabled(void) {
     return LG_prefBool(@"VolumeHUDGlass.Enabled", NO);
 }
 
 static CGFloat LGVolumeHUDGlassCornerRadius(void) {
     return LG_prefFloat(@"VolumeHUDGlass.CornerRadius", 20.0);
-}
-
-static CGFloat LGVolumeHUDGlassBlur(void) {
-    return LG_prefFloat(@"VolumeHUDGlass.Blur", 15.0);
 }
 
 #pragma mark - System material view helpers
