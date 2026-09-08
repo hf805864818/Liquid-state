@@ -957,6 +957,11 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 - (void)handleLanguageChanged:(NSNotification *)notification {
     (void)notification;
     if (!self.isViewLoaded) return;
+    // 重建导航栏按钮（确保按钮上的文字也跟随语言切换）
+    self.navigationItem.rightBarButtonItem = LGMakeCircularMenuItem(self, @selector(handleApplyPressed),
+                                                                      @selector(handleResetPressed),
+                                                                      LGLocalized(@"prefs.button.reset"));
+    LGRefreshCircularBackItem(self.navigationItem.rightBarButtonItem);
     [self reloadLocalizedContent];
     [self reloadVisibleSettings];
     [self updateRespringBarAnimated:NO];

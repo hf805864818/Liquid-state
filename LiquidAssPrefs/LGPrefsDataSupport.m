@@ -206,18 +206,33 @@ NSString *LGPrefsAppName(void) {
     return LGLocalized(@"prefs.app_name");
 }
 
+static BOOL LGIsValidLanguageCode(NSString *languageCode) {
+    if (![languageCode isKindOfClass:[NSString class]] || languageCode.length == 0) {
+        return NO;
+    }
+    // 校验是否在可用语言列表中
+    NSArray<NSDictionary *> *choices = LGAvailableLanguageChoices();
+    for (NSDictionary *choice in choices) {
+        if ([choice[@"value"] isEqualToString:languageCode]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 NSString *LGCurrentPrefsLanguageCode(void) {
     // 从 CFPreferences（插件 domain，跨进程）直接读取
     CFTypeRef cfValue = CFPreferencesCopyAppValue((__bridge CFStringRef)kLGPrefsLanguageKey,
                                                    (__bridge CFStringRef)LGPrefsDomain);
     NSString *languageCode = CFBridgingRelease(cfValue);
-    if ([languageCode isKindOfClass:[NSString class]] && languageCode.length) {
+    if (LGIsValidLanguageCode(languageCode)) {
         return languageCode;
     }
 
-    // 向后兼容：如果新位置没有，尝试从旧的 standardUserDefaults 读取并迁移
+    // 向后兼容：如果新位置没有有效值，尝试从旧的 standardUserDefaults 读取并迁移
+    // 注意：只在确认是有效值时才迁移，避免其他插件的残留值污染
     NSString *oldValue = [LGPrefsUIStateDefaults() stringForKey:kLGPrefsLanguageKey];
-    if (oldValue.length) {
+    if (LGIsValidLanguageCode(oldValue)) {
         // 迁移到新位置（直接写入磁盘，不走 pending）
         CFPreferencesSetAppValue((__bridge CFStringRef)kLGPrefsLanguageKey,
                                  (__bridge CFStringRef)oldValue,
@@ -229,24 +244,29 @@ NSString *LGCurrentPrefsLanguageCode(void) {
         return oldValue;
     }
 
+    // 清理旧位置的无效值（防止下次再读到）
+    if (oldValue.length) {
+        [LGPrefsUIStateDefaults() removeObjectForKey:kLGPrefsLanguageKey];
+        LGSynchronizeSurfaceStateDefaults();
+    }
+
     return @"zh-Hans";
 }
 
 void LGSetCurrentPrefsLanguageCode(NSString *languageCode) {
-    // 直接写入 CFPreferences 插件 domain（不走 pending，立即持久化）
-    // 确保跨进程可读，且 respring 后不丢失
-    if (!languageCode.length || [languageCode isEqualToString:@"zh-Hans"]) {
-        CFPreferencesSetAppValue((__bridge CFStringRef)kLGPrefsLanguageKey,
-                                 NULL,
-                                 (__bridge CFStringRef)LGPrefsDomain);
-    } else {
-        CFPreferencesSetAppValue((__bridge CFStringRef)kLGPrefsLanguageKey,
-                                 (__bridge CFStringRef)languageCode,
-                                 (__bridge CFStringRef)LGPrefsDomain);
+    // 校验语言值有效性
+    if (!LGIsValidLanguageCode(languageCode)) {
+        languageCode = @"zh-Hans";
     }
+
+    // 直接写入 CFPreferences 插件 domain（不走 pending，立即持久化）
+    // 始终明确写入，即便是默认值 zh-Hans，避免回退到 standardUserDefaults 读到其他插件的残留值
+    CFPreferencesSetAppValue((__bridge CFStringRef)kLGPrefsLanguageKey,
+                             (__bridge CFStringRef)languageCode,
+                             (__bridge CFStringRef)LGPrefsDomain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
 
-    // 清理旧位置的值
+    // 清理旧位置的值（彻底清除，防止其他插件残留干扰）
     [LGPrefsUIStateDefaults() removeObjectForKey:kLGPrefsLanguageKey];
     LGSynchronizeSurfaceStateDefaults();
 
