@@ -238,16 +238,6 @@ static BOOL LGIsStockTabBar(UITabBar *bar) {
 static NSArray<UIView *> *LGStockTabBarButtons(UITabBar *bar);
 static BOOL LGTabBarUsesCustomLayout(UITabBar *bar);
 
-// 判断是否开启了增强模式
-// 注意：不使用 dispatch_once，保证偏好设置变化后能实时生效
-// 默认开启，方便用户直接体验第三方 App 适配
-static BOOL LGTabBarEnhancedModeEnabled(void) {
-    id value = LGGlassPreferenceValue(@"TabBar.EnhancedMode");
-    // key 不存在时默认开启
-    if (!value || ![value isKindOfClass:[NSNumber class]]) return YES;
-    return [value boolValue];
-}
-
 // 解析排除列表字符串（支持换行、逗号、分号分隔）
 static NSArray<NSString *> *LGParseExclusionList(NSString *text) {
     if (!text.length) return @[];
