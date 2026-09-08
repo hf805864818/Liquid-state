@@ -134,7 +134,7 @@ static void vhUpdateVibranceForMaterial(UIView *material) {
         vibrance = [[LGVolumeHUDVibranceView alloc] initWithFrame:glass.bounds];
         if (!vibrance) return;
         objc_setAssociatedObject(material, kVHVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [glass.superview insertSubview:vibrance aboveSubview:glass];
+        [glass.superview insertSubview:vibrance belowSubview:glass];
     }
     
     vibrance.frame = glass.frame;

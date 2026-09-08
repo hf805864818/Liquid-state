@@ -265,6 +265,10 @@
 "prefs.subtitle.volume_hud_radius" = "音量HUD玻璃的圆角大小。";
 "prefs.control.volume_hud_blur" = "模糊强度";
 "prefs.subtitle.volume_hud_blur" = "玻璃效果的模糊程度。";
+"prefs.control.saturation" = "饱和度";
+"prefs.subtitle.saturation" = "控制液态玻璃颜色的鲜艳程度。数值越高颜色越饱和。";
+"prefs.control.contrast" = "对比度";
+"prefs.subtitle.contrast" = "控制明暗区域的对比强度。数值越高通透感越强。";
 "prefs.control.reset_module" = "重置此模块";
 "prefs.subtitle.reset_dock" = "将所有 Dock 玻璃设置恢复为默认值。";
 "prefs.subtitle.reset_dock_confirm" = "确定要将所有 Dock 设置恢复为默认值吗？";

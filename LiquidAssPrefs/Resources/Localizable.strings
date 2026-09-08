@@ -184,6 +184,10 @@
 "prefs.subtitle.volume_hud_radius" = "Corner radius of the volume HUD glass.";
 "prefs.control.volume_hud_blur" = "Blur Amount";
 "prefs.subtitle.volume_hud_blur" = "Blur intensity for the volume HUD glass.";
+"prefs.control.saturation" = "Saturation";
+"prefs.subtitle.saturation" = "Controls the color vibrancy of the liquid glass. Higher values make colors more intense.";
+"prefs.control.contrast" = "Contrast";
+"prefs.subtitle.contrast" = "Controls the contrast between light and dark areas. Higher values enhance clarity.";
 "prefs.control.reset_module" = "Reset This Module";
 "prefs.subtitle.reset_dock" = "Restore all Dock glass settings to default.";
 "prefs.subtitle.reset_dock_confirm" = "Are you sure you want to reset all Dock settings to default?";
