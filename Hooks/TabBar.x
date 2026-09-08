@@ -261,53 +261,98 @@ static NSArray<NSString *> *LGParseExclusionList(NSString *text) {
     return entries.array;
 }
 
-// 增强模式黑名单判断
-// 默认黑名单 + 用户自定义排除列表
-static BOOL LGTabBarEnhancedExcluded(void) {
-    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
-    NSString *processName = [[NSProcessInfo processInfo] processName];
-    
-    // 默认黑名单（已知存在兼容问题的应用，使用原生 TabBar）
-    NSArray<NSString *> *defaultExclusions = @[
-        @"TikTok",
-        @"com.zhiliaoapp.musically",
-        // 抖音
-        @"Aweme",
-        @"com.ss.iphone.ugc.Aweme",
-        // 微信
-        @"WeChat",
-        @"com.tencent.xin",
-        // 小红书
-        @"Discover",
-        @"com.xingin.discover",
-        // 钉钉
-        @"DingTalk",
-        @"com.laiwang.DingTalk",
-        // 米家
-        @"MiHome",
-        @"com.xiaomi.mihome",
-    ];
-    
-    // 先检查默认黑名单
-    for (NSString *exclusion in defaultExclusions) {
+// 检查单个 bundleID / processName 是否匹配排除列表
+static BOOL LGExclusionListMatches(NSArray<NSString *> *list, NSString *bid, NSString *processName) {
+    for (NSString *exclusion in list) {
         if ([bid isEqualToString:exclusion] || [processName isEqualToString:exclusion]) {
             return YES;
         }
     }
+    return NO;
+}
+
+// 获取默认黑名单
+static NSArray<NSString *> *LGDefaultTabBarExclusions(void) {
+    static NSArray *list = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        list = @[
+            @"TikTok",
+            @"com.zhiliaoapp.musically",
+            // 抖音
+            @"Aweme",
+            @"com.ss.iphone.ugc.Aweme",
+            // 微信
+            @"WeChat",
+            @"com.tencent.xin",
+            // 小红书
+            @"Discover",
+            @"com.xingin.discover",
+            // 钉钉
+            @"DingTalk",
+            @"com.laiwang.DingTalk",
+            // 米家
+            @"MiHome",
+            @"com.xiaomi.mihome",
+        ];
+    });
+    return list;
+}
+
+// ===== 性能缓存：进程级状态缓存，避免每次 layoutSubviews 都重复计算 =====
+
+static BOOL sEnhancedModeCached = NO;
+static BOOL sEnhancedModeValid = NO;
+static BOOL sEnhancedExcludedCached = NO;
+static BOOL sEnhancedExcludedValid = NO;
+
+// 刷新所有缓存（在 didMoveToWindow / App 进入前台时调用）
+static void LGRefreshTabBarCaches(void) {
+    // 读增强模式开关
+    id enhancedVal = LGGlassPreferenceValue(@"TabBar.EnhancedMode");
+    sEnhancedModeCached = [enhancedVal isKindOfClass:[NSNumber class]] && [enhancedVal boolValue];
+    sEnhancedModeValid = YES;
+    
+    // 读排除状态
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    NSString *processName = [[NSProcessInfo processInfo] processName];
+    
+    // 先检查默认黑名单
+    NSArray *defaults = LGDefaultTabBarExclusions();
+    BOOL excluded = LGExclusionListMatches(defaults, bid, processName);
     
     // 再检查用户自定义排除列表
-    id customValue = LGGlassPreferenceValue(@"TabBar.EnhancedExclusions");
-    if ([customValue isKindOfClass:[NSString class]] && [(NSString *)customValue length] > 0) {
-        NSArray<NSString *> *customExclusions = LGParseExclusionList(customValue);
-        for (NSString *exclusion in customExclusions) {
-            if ([bid isEqualToString:exclusion] || [processName isEqualToString:exclusion]) {
-                return YES;
-            }
+    if (!excluded) {
+        id customValue = LGGlassPreferenceValue(@"TabBar.EnhancedExclusions");
+        if ([customValue isKindOfClass:[NSString class]] && [(NSString *)customValue length] > 0) {
+            NSArray *customExclusions = LGParseExclusionList(customValue);
+            excluded = LGExclusionListMatches(customExclusions, bid, processName);
         }
     }
     
-    return NO;
+    sEnhancedExcludedCached = excluded;
+    sEnhancedExcludedValid = YES;
 }
+
+// 增强模式开关（带缓存）
+static BOOL LGTabBarEnhancedModeEnabled(void) {
+    if (!sEnhancedModeValid) {
+        LGRefreshTabBarCaches();
+    }
+    return sEnhancedModeCached;
+}
+
+// 增强模式黑名单判断（带缓存）
+static BOOL LGTabBarEnhancedExcluded(void) {
+    if (!sEnhancedExcludedValid) {
+        LGRefreshTabBarCaches();
+    }
+    return sEnhancedExcludedCached;
+}
+
+// 按钮缓存 key
+static const void *kLGTabBarButtonsCacheKey = &kLGTabBarButtonsCacheKey;
+static const void *kLGTabBarButtonsCountKey = &kLGTabBarButtonsCountKey;
 
 // 增强模式下的类检测：适配所有 UITabBar 子类
 static BOOL LGIsStockTabBarEnhanced(UITabBar *bar) {
@@ -339,9 +384,26 @@ static BOOL LGShouldStyleTabBar(UITabBar *bar) {
 }
 
 static NSArray<UIView *> *LGStockTabBarButtons(UITabBar *bar) {
-    NSMutableArray<UIView *> *buttons = [NSMutableArray array];
+    // 缓存：用按钮数量作为有效性检查依据，数量没变就直接用缓存
+    NSNumber *cachedCount = objc_getAssociatedObject(bar, kLGTabBarButtonsCountKey);
+    NSArray *cachedButtons = objc_getAssociatedObject(bar, kLGTabBarButtonsCacheKey);
+    
+    NSUInteger currentCount = 0;
     Class buttonClass = objc_getClass("UITabBarButton");
-    if (!buttonClass) return buttons;
+    if (!buttonClass) return @[];
+    
+    // 先快速数一下有多少个按钮
+    for (UIView *view in bar.subviews) {
+        if ([view isKindOfClass:buttonClass]) currentCount++;
+    }
+    
+    // 如果缓存有效（数量一致且有缓存），直接返回
+    if (cachedCount && cachedButtons && [cachedCount unsignedIntegerValue] == currentCount) {
+        return cachedButtons;
+    }
+    
+    // 否则重新查找并排序
+    NSMutableArray<UIView *> *buttons = [NSMutableArray arrayWithCapacity:currentCount];
     for (UIView *view in bar.subviews) {
         if ([view isKindOfClass:buttonClass]) [buttons addObject:view];
     }
@@ -352,7 +414,12 @@ static NSArray<UIView *> *LGStockTabBarButtons(UITabBar *bar) {
         if (leftX > rightX) return NSOrderedDescending;
         return NSOrderedSame;
     }];
-    return buttons;
+    
+    NSArray *result = [buttons copy];
+    objc_setAssociatedObject(bar, kLGTabBarButtonsCacheKey, result, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, kLGTabBarButtonsCountKey, @(currentCount), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
+    return result;
 }
 
 static BOOL LGTabBarButtonGeometryIsConstraintManaged(UIView *button) {
@@ -1516,6 +1583,8 @@ static void LGScheduleTabBarDump(UITabBar *bar, NSString *reason) {
 - (void)didMoveToWindow {
     %orig;
     if (self.window) {
+        // App 进入前台/窗口可见时刷新缓存，确保设置变更生效
+        LGRefreshTabBarCaches();
         LGStyleStockTabBar(self);
         LGScheduleTabBarDump(self, @"didMoveToWindow");
     }
