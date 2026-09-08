@@ -1924,40 +1924,46 @@ NSArray<NSDictionary *> *LGMoreOptionsItems(void) {
         @"AdaptiveBlur.Enabled", @YES)];
     [items addObject:LGSectionSetting(LGLocalized(@"prefs.section.landscape_volume.title"),
                                       LGLocalized(@"prefs.section.landscape_volume.subtitle"))];
-    [items addObject:LGSwitchSetting(@"LandscapeVolumeGlass.Enabled",
-                                     LGLocalized(@"prefs.control.landscape_volume_glass"),
-                                     LGLocalized(@"prefs.subtitle.landscape_volume_glass"),
-                                     NO)];
+    [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"LandscapeVolume")];
     [items addObject:LGSettingControlledByKey(
-        LGSliderSetting(@"LandscapeVolumeGlass.CornerRadius",
+        LGSliderSetting(@"LandscapeVolume.CornerRadius",
                         LGLocalized(@"prefs.control.landscape_volume_radius"),
                         LGLocalized(@"prefs.subtitle.landscape_volume_radius"),
                         16.0, 0.0, 40.0, 1),
-        @"LandscapeVolumeGlass.Enabled", @YES)];
+        @"LandscapeVolume.Enabled", @YES)];
     [items addObject:LGSettingControlledByKey(
-        LGSliderSetting(@"LandscapeVolumeGlass.Blur",
-                        LGLocalized(@"prefs.control.landscape_volume_blur"),
-                        LGLocalized(@"prefs.subtitle.landscape_volume_blur"),
-                        20.0, 0.0, 50.0, 1),
-        @"LandscapeVolumeGlass.Enabled", @YES)];
+        LGSliderSetting(@"LandscapeVolume.Saturation",
+                        LGLocalized(@"prefs.control.saturation"),
+                        LGLocalized(@"prefs.subtitle.saturation"),
+                        1.85, 1.0, 3.0, 2),
+        @"LandscapeVolume.Enabled", @YES)];
+    [items addObject:LGSettingControlledByKey(
+        LGSliderSetting(@"LandscapeVolume.Contrast",
+                        LGLocalized(@"prefs.control.contrast"),
+                        LGLocalized(@"prefs.subtitle.contrast"),
+                        1.06, 1.0, 2.0, 2),
+        @"LandscapeVolume.Enabled", @YES)];
     [items addObject:LGSectionSetting(LGLocalized(@"prefs.section.volume_hud.title"),
                                       LGLocalized(@"prefs.section.volume_hud.subtitle"))];
-    [items addObject:LGSwitchSetting(@"VolumeHUDGlass.Enabled",
-                                     LGLocalized(@"prefs.control.volume_hud_glass"),
-                                     LGLocalized(@"prefs.subtitle.volume_hud_glass"),
-                                     NO)];
+    [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"VolumeHUD")];
     [items addObject:LGSettingControlledByKey(
-        LGSliderSetting(@"VolumeHUDGlass.CornerRadius",
+        LGSliderSetting(@"VolumeHUD.CornerRadius",
                         LGLocalized(@"prefs.control.volume_hud_radius"),
                         LGLocalized(@"prefs.subtitle.volume_hud_radius"),
                         20.0, 0.0, 50.0, 1),
-        @"VolumeHUDGlass.Enabled", @YES)];
+        @"VolumeHUD.Enabled", @YES)];
     [items addObject:LGSettingControlledByKey(
-        LGSliderSetting(@"VolumeHUDGlass.Blur",
-                        LGLocalized(@"prefs.control.volume_hud_blur"),
-                        LGLocalized(@"prefs.subtitle.volume_hud_blur"),
-                        15.0, 0.0, 50.0, 1),
-        @"VolumeHUDGlass.Enabled", @YES)];
+        LGSliderSetting(@"VolumeHUD.Saturation",
+                        LGLocalized(@"prefs.control.saturation"),
+                        LGLocalized(@"prefs.subtitle.saturation"),
+                        1.85, 1.0, 3.0, 2),
+        @"VolumeHUD.Enabled", @YES)];
+    [items addObject:LGSettingControlledByKey(
+        LGSliderSetting(@"VolumeHUD.Contrast",
+                        LGLocalized(@"prefs.control.contrast"),
+                        LGLocalized(@"prefs.subtitle.contrast"),
+                        1.06, 1.0, 2.0, 2),
+        @"VolumeHUD.Enabled", @YES)];
     [items addObject:LGSectionSetting(LGLocalized(@"prefs.section.banner_animation.title"),
                                       LGLocalized(@"prefs.section.banner_animation.subtitle"))];
     [items addObject:LGSwitchSetting(@"Banner.Animation.SmoothGlass",

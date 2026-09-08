@@ -111,13 +111,13 @@ static const void * const kVHVibranceKey = &kVHVibranceKey;
 
 static void vhUpdateVibranceForMaterial(UIView *material) {
     if (!material) return;
-    if (!LG_prefBool(@"VolumeHUDGlass.Enabled", NO)) return;
+    if (!LG_prefBool(@"VolumeHUD.Enabled", YES)) return;
     
     LGLiveBackdropView *glass = objc_getAssociatedObject(material, kGlassKey);
     if (!glass) return;
     
-    CGFloat saturation = LG_prefFloat(@"VolumeHUDGlass.Saturation", 1.85);
-    CGFloat contrast = LG_prefFloat(@"VolumeHUDGlass.Contrast", 1.06);
+    CGFloat saturation = LG_prefFloat(@"VolumeHUD.Saturation", 1.85);
+    CGFloat contrast = LG_prefFloat(@"VolumeHUD.Contrast", 1.06);
     
     // 如果饱和度和对比度都是 1.0（无增强），移除 vibrance 视图
     if (saturation <= 1.0 && contrast <= 1.0) {
@@ -220,17 +220,68 @@ static CGFloat vhVolumeHUDCornerRadius(UIView *material) {
     }
     
     CGRect bounds = container ? container.bounds : material.bounds;
-    CGFloat prefRadius = LG_prefFloat(@"VolumeHUDGlass.CornerRadius", 0.0);
+    CGFloat prefRadius = LG_prefFloat(@"VolumeHUD.CornerRadius", 0.0);
     
     // 如果用户设置了大于0的圆角，用用户的；否则保持药丸形（完全圆角）
     if (prefRadius > 0) return prefRadius;
     return MIN(bounds.size.width, bounds.size.height) * 0.5f;
 }
 
+#pragma mark - Preference Migration
+
+// 从旧的 VolumeHUDGlass.* 前缀迁移到 VolumeHUD.*
+static void vhMigrateLegacyPreferences(void) {
+    // 检查是否已经迁移过
+    id migrated = (__bridge_transfer id)CFPreferencesCopyValue(
+        (__bridge CFStringRef)@"VolumeHUD.MigratedFromGlassPrefix",
+        (__bridge CFStringRef)LGPrefsDomain,
+        kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    if (migrated && [migrated isKindOfClass:[NSNumber class]] && [migrated boolValue]) return;
+    
+    BOOL hasLegacy = NO;
+    
+    // 辅助函数：迁移单个 key
+    void (^migrateKey)(NSString *, NSString *) = ^(NSString *oldKey, NSString *newKey) {
+        id oldValue = (__bridge_transfer id)CFPreferencesCopyValue(
+            (__bridge CFStringRef)oldKey,
+            (__bridge CFStringRef)LGPrefsDomain,
+            kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (oldValue) {
+            CFPreferencesSetValue((__bridge CFStringRef)newKey,
+                                  (__bridge CFPropertyListRef)oldValue,
+                                  (__bridge CFStringRef)LGPrefsDomain,
+                                  kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+            hasLegacy = YES;
+        }
+    };
+    
+    // 音量 HUD
+    migrateKey(@"VolumeHUDGlass.Enabled", @"VolumeHUD.Enabled");
+    migrateKey(@"VolumeHUDGlass.CornerRadius", @"VolumeHUD.CornerRadius");
+    migrateKey(@"VolumeHUDGlass.Blur", @"VolumeHUD.Blur");
+    
+    // 横屏音量
+    migrateKey(@"LandscapeVolumeGlass.Enabled", @"LandscapeVolume.Enabled");
+    migrateKey(@"LandscapeVolumeGlass.CornerRadius", @"LandscapeVolume.CornerRadius");
+    migrateKey(@"LandscapeVolumeGlass.Blur", @"LandscapeVolume.Blur");
+    
+    // 标记已迁移
+    CFPreferencesSetValue((__bridge CFStringRef)@"VolumeHUD.MigratedFromGlassPrefix",
+                          kCFBooleanTrue,
+                          (__bridge CFStringRef)LGPrefsDomain,
+                          kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+    
+    LGLog(@"VolumeHUD: Legacy preference migration completed (hadLegacy=%d)", hasLegacy);
+}
+
 #pragma mark - Constructor
 
 %ctor {
     if (!LGIsSpringBoardProcess()) return;
+    
+    // 迁移旧版本偏好
+    vhMigrateLegacyPreferences();
     
     // 注册 Volume HUD 材质宿主
     // 覆盖：音量条 + 铃声/静音药丸
@@ -245,8 +296,5 @@ static CGFloat vhVolumeHUDCornerRadius(UIView *material) {
     
     lgObservePreferenceReload(^{
         LGLog(@"VolumeHUD: Preferences reloaded");
-        // 偏好更新时，更新所有已安装的 vibrance 层
-        // 这里我们没法遍历所有 material，依赖下次 layout 时更新
-        // 但 LGGlassKit 会在 reload 时触发所有 glass 的 update，所以 vibrance 也需要跟着更新
     });
 }
