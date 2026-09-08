@@ -351,125 +351,102 @@ static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
 
 %end
 
-#pragma mark - iOS 17+ 音量 HUD 类名探测扫描器
+#pragma mark - iOS 17+ 音量 HUD 类名探测（按需触发，安全模式）
 
-static NSMutableSet<NSString *> *sLGLoggedVolumeClasses = nil;
-static dispatch_source_t sLGVolumeScanTimer = nil;
+static NSMutableSet<NSString *> *sLGFoundVolumeClasses = nil;
 
-static NSString *LGViewTreeDescription(UIView *view, NSInteger depth) {
-    if (!view) return @"";
-    NSMutableString *result = [NSMutableString string];
-    for (NSInteger i = 0; i < depth; i++) {
-        [result appendString:@"  "];
+static void LGPrintViewTree(UIView *view, NSString *prefix) {
+    if (!view) return;
+    NSString *clsName = NSStringFromClass([view class]);
+    LGLog(@"[Volume-Probe] %@%@ frame=%@ hidden=%d alpha=%.2f",
+          prefix, clsName, NSStringFromCGRect(view.frame), view.hidden, view.alpha);
+    for (UIView *sv in view.subviews) {
+        NSString *newPrefix = [prefix stringByAppendingString:@"  "];
+        LGPrintViewTree(sv, newPrefix);
     }
-    [result appendFormat:@"%@ frame=%@ hidden=%d alpha=%.2f\n",
-        NSStringFromClass([view class]),
-        NSStringFromCGRect(view.frame),
-        view.hidden,
-        view.alpha];
-    for (UIView *subview in view.subviews) {
-        [result appendString:LGViewTreeDescription(subview, depth + 1)];
-    }
-    return result;
 }
 
-static BOOL LGIsVolumeRelatedClass(NSString *className) {
+static BOOL LGIsVolumeLikeClass(NSString *className) {
     if (!className || className.length == 0) return NO;
     NSString *lower = [className lowercaseString];
-    NSArray<NSString *> *keywords = @[
-        @"volume", @"hud", @"pressband",
-        @"mediacontrols", @"mediaremote",
-        @"presentation", @"presented",
-        @"slider", @"progress"
-    ];
-    for (NSString *kw in keywords) {
-        if ([lower containsString:[kw lowercaseString]]) {
-            return YES;
-        }
+    NSArray *kws = @[@"volume", @"hud", @"pressband",
+                     @"mediacontrols", @"mediaremote",
+                     @"presentation", @"platter",
+                     @"slider", @"progress"];
+    for (NSString *kw in kws) {
+        if ([lower containsString:kw]) return YES;
     }
     return NO;
 }
 
-static void LGScanForVolumeViews(void) {
+static void LGProbeVolumeViews(void) {
     @autoreleasepool {
-        // 扫描所有 window，找出可能的音量 HUD
+        if (!sLGFoundVolumeClasses) {
+            sLGFoundVolumeClasses = [NSMutableSet set];
+        }
+
         NSArray *windows = nil;
         if (@available(iOS 13.0, *)) {
-            NSMutableArray *allWindows = [NSMutableArray array];
+            NSMutableArray *all = [NSMutableArray array];
             for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
                 if ([scene isKindOfClass:[UIWindowScene class]]) {
-                    [allWindows addObjectsFromArray:scene.windows];
+                    [all addObjectsFromArray:scene.windows];
                 }
             }
-            windows = allWindows;
+            windows = all;
         }
         if (!windows) {
             windows = [UIApplication sharedApplication].windows;
         }
-        if (windows.count == 0) return;
 
-        NSMutableArray<NSString *> *newClasses = [NSMutableArray array];
-
+        NSMutableArray *newFound = [NSMutableArray array];
         for (UIWindow *window in windows) {
-            if (!window || window.bounds.size.width == 0 || window.bounds.size.height == 0) continue;
-
-            // 检查 window 本身的类名
-            NSString *winClass = NSStringFromClass([window class]);
-            if (LGIsVolumeRelatedClass(winClass)) {
-                if (!sLGLoggedVolumeClasses || ![sLGLoggedVolumeClasses containsObject:winClass]) {
-                    [newClasses addObject:winClass];
-                    if (sLGLoggedVolumeClasses) {
-                        [sLGLoggedVolumeClasses addObject:winClass];
+            @try {
+                // 广度优先搜索
+                NSMutableArray *queue = [NSMutableArray arrayWithArray:window.subviews];
+                while (queue.count > 0) {
+                    UIView *v = queue.firstObject;
+                    [queue removeObjectAtIndex:0];
+                    if (!v) continue;
+                    NSString *cls = NSStringFromClass([v class]);
+                    if (LGIsVolumeLikeClass(cls) && ![sLGFoundVolumeClasses containsObject:cls]) {
+                        [sLGFoundVolumeClasses addObject:cls];
+                        [newFound addObject:cls];
+                        LGLog(@"[Volume-Probe] 发现新视图类: %@ (window=%@ frame=%@)",
+                              cls, NSStringFromClass([window class]), NSStringFromCGRect(v.frame));
+                        LGLog(@"[Volume-Probe] %@ 的完整视图树:", cls);
+                        LGPrintViewTree(window, @"");
                     }
+                    [queue addObjectsFromArray:v.subviews];
                 }
-            }
-
-            // 递归检查子视图
-            NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:window.subviews];
-            while (queue.count > 0) {
-                UIView *view = queue.firstObject;
-                [queue removeObjectAtIndex:0];
-                NSString *clsName = NSStringFromClass([view class]);
-                if (LGIsVolumeRelatedClass(clsName)) {
-                    if (!sLGLoggedVolumeClasses || ![sLGLoggedVolumeClasses containsObject:clsName]) {
-                        [newClasses addObject:clsName];
-                        if (sLGLoggedVolumeClasses) {
-                            [sLGLoggedVolumeClasses addObject:clsName];
-                        }
-                    }
-                }
-                [queue addObjectsFromArray:view.subviews];
+            } @catch (NSException *e) {
+                LGLog(@"[Volume-Probe] 扫描异常: %@", e.reason);
             }
         }
 
-        if (newClasses.count > 0) {
-            LGLog(@"[Volume-Scan] 发现新的音量相关视图类 (%lu 个): %@",
-                  (unsigned long)newClasses.count,
-                  [newClasses componentsJoinedByString:@", "]);
-
-            // 对每个新类，打印其完整视图树（从所在 window 开始）
-            for (NSString *clsName in newClasses) {
-                for (UIWindow *window in windows) {
-                    __block BOOL found = NO;
-                    void (^searchBlock)(UIView *) = nil;
-                    searchBlock = ^(UIView *v) {
-                        if (found) return;
-                        if ([NSStringFromClass([v class]) isEqualToString:clsName]) {
-                            found = YES;
-                            LGLog(@"[Volume-Scan] 找到 %@ 的完整视图树:\n%@",
-                                  clsName, LGViewTreeDescription(window, 0));
-                            return;
-                        }
-                        for (UIView *sv in v.subviews) {
-                            searchBlock(sv);
-                            if (found) return;
-                        }
-                    };
-                    searchBlock(window);
-                    if (found) break;
-                }
-            }
+        if (newFound.count == 0) {
+            LGLog(@"[Volume-Probe] 未发现新的音量相关视图类 (已发现 %lu 个)",
+                  (unsigned long)sLGFoundVolumeClasses.count);
         }
+    }
+}
+
+static void LGVolumeChangedHandler(CFNotificationCenterRef center,
+                                   void *observer,
+                                   CFStringRef name,
+                                   const void *object,
+                                   CFDictionaryRef userInfo) {
+    @autoreleasepool {
+        LGLog(@"[Volume-Probe] 检测到音量变化，延迟 0.3 秒后扫描视图...");
+        // 延迟一下，等 HUD 完全显示出来
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            @try {
+                LGProbeVolumeViews();
+            } @catch (NSException *e) {
+                LGLog(@"[Volume-Probe] 扫描崩溃: %@", e.reason);
+            }
+        });
     }
 }
 
@@ -480,18 +457,15 @@ static void LGScanForVolumeViews(void) {
     }
     LGLog(@"[Volume] LandscapeVolume tweak loaded in SpringBoard");
 
-    // 初始化类名扫描器：每 2 秒扫描一次，发现新的音量相关视图就打日志
-    sLGLoggedVolumeClasses = [NSMutableSet set];
-    sLGVolumeScanTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(sLGVolumeScanTimer,
-                              dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
-                              2 * NSEC_PER_SEC,
-                              0.5 * NSEC_PER_SEC);
-    dispatch_source_set_event_handler(sLGVolumeScanTimer, ^{
-        LGScanForVolumeViews();
-    });
-    dispatch_resume(sLGVolumeScanTimer);
-    LGLog(@"[Volume-Scan] 扫描器已启动，每 2 秒扫描一次视图层级");
+    // 注册音量变化通知监听器（用于探测 iOS 17 音量 HUD 类名）
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetLocalCenter(),
+        NULL,
+        LGVolumeChangedHandler,
+        CFSTR("AVSystemController_SystemVolumeDidChangeNotification"),
+        NULL,
+        CFNotificationSuspensionBehaviorDrop);
+    LGLog(@"[Volume-Probe] 音量变化监听器已注册");
 
     lgObservePreferenceReload(^{
         LGLog(@"[Volume] preferences reloaded");
