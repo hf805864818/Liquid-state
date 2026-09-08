@@ -73,56 +73,6 @@ static NSDictionary<NSString *, id> *LGExportablePreferenceDefaults(void) {
     return [defaults copy];
 }
 
-// 直接构造 .lproj 路径，不使用 pathForResource:ofType:@"lproj"
-// 因为 iOS 将 .lproj 视为特殊的本地化容器而非普通资源，
-// pathForResource:ofType: 会受系统首选语言影响而返回 nil
-static NSString *LGLocalizationBundlePath(NSString *languageCode) {
-    NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
-    NSString *lprojName = [NSString stringWithFormat:@"%@.lproj", languageCode];
-    NSString *directPath = [[baseBundle bundlePath] stringByAppendingPathComponent:lprojName];
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:directPath isDirectory:NULL]) {
-        return directPath;
-    }
-
-    // 退路：尝试 pathForResource（某些 iOS 版本可能支持）
-    NSString *fallbackPath = [baseBundle pathForResource:languageCode ofType:@"lproj"];
-    if (fallbackPath.length && [fm fileExistsAtPath:fallbackPath isDirectory:NULL]) {
-        return fallbackPath;
-    }
-
-    return nil;
-}
-
-static NSBundle *LGActiveLocalizationBundle(void) {
-    NSString *languageCode = LGCurrentPrefsLanguageCode();
-    if (!languageCode.length) {
-        languageCode = @"zh-Hans";
-    }
-
-    if ([languageCode isEqualToString:@"en"]) {
-        // English: 使用 bundle 根目录的 Localizable.strings（开发区域）
-        // 不返回 baseBundle，因为 baseBundle 的 localizedStringForKey: 会使用系统首选语言
-        NSString *enPath = LGLocalizationBundlePath(@"en");
-        if (enPath.length) {
-            NSBundle *enBundle = [NSBundle bundleWithPath:enPath];
-            if (enBundle) return enBundle;
-        }
-        // 退路：使用 baseBundle，但后续 LGLocalized 会处理 fallback
-        return [NSBundle bundleForClass:[LGPRootListController class]];
-    }
-
-    NSString *bundlePath = LGLocalizationBundlePath(languageCode);
-    if (!bundlePath.length) {
-        // 找不到 .lproj 目录，退回 baseBundle
-        return [NSBundle bundleForClass:[LGPRootListController class]];
-    }
-
-    NSBundle *localizedBundle = [NSBundle bundleWithPath:bundlePath];
-    return localizedBundle ?: [NSBundle bundleForClass:[LGPRootListController class]];
-}
-
 static NSString *LGDisplayNameForLanguageCode(NSString *languageCode) {
     if (!languageCode.length) return @"";
     if ([languageCode isEqualToString:@"en"]) return @"English";
@@ -273,7 +223,7 @@ static NSDictionary *LGFallbackStringsTable(void) {
 static NSDictionary *LGLanguageStringsTable(NSString *languageCode) {
     static NSMutableDictionary *cachedTables;
     static dispatch_once_t onceToken;
-    __block NSDictionary *result = nil;
+    NSDictionary *result = nil;
     dispatch_once(&onceToken, ^{
         cachedTables = [NSMutableDictionary dictionary];
     });
