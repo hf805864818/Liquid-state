@@ -10,8 +10,8 @@
     CFBundleSignature = "????";
     CFBundleVersion = "1.0";
     NSPrincipalClass = LGCCToggleModule;
-    "CCModuleIdentifier" = "dylv.liquidglass.cctoggle";
-    "CCSupportedModuleSizes" = (
+    "CCUIModuleIdentifier" = "dylv.liquidglass.cctoggle";
+    "CCUISupportedModuleSizes" = (
         small
     );
 }
