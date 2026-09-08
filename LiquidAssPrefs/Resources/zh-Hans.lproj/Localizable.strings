@@ -284,6 +284,10 @@
 "prefs.subtitle.reset_clock_confirm" = "确定要将所有时钟设置恢复为默认值吗？";
 "prefs.subtitle.reset_tab_bar" = "将所有标签栏玻璃设置恢复为默认值。";
 "prefs.subtitle.reset_tab_bar_confirm" = "确定要将所有标签栏设置恢复为默认值吗？";
+"prefs.section.tabbar_enhanced.title" = "增强模式";
+"prefs.section.tabbar_enhanced.subtitle" = "适配更多第三方 App 的底栏，同时保留双重阴影修复。";
+"prefs.control.tabbar_enhanced_mode" = "增强模式";
+"prefs.subtitle.tabbar_enhanced_mode" = "开启后支持更多第三方 App 的底栏液态玻璃效果。默认排除 TikTok 等有兼容性问题的应用。";
 "prefs.subtitle.reset_lockscreen" = "将所有锁屏玻璃设置恢复为默认值。";
 "prefs.subtitle.reset_lockscreen_confirm" = "确定要将所有锁屏设置恢复为默认值吗？";
 "prefs.subtitle.reset_app_library" = "将所有资源库玻璃设置恢复为默认值。";

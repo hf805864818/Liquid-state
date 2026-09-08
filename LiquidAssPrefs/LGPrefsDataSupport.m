@@ -1713,6 +1713,14 @@ NSArray<NSDictionary *> *LGClockItems(void) {
 
 NSArray<NSDictionary *> *LGTabBarItems(void) {
     return LGJoinItemGroups(@[
+        @[
+            LGSectionSetting(LGLocalized(@"prefs.section.tabbar_enhanced.title"),
+                             LGLocalized(@"prefs.section.tabbar_enhanced.subtitle")),
+            LGSwitchSetting(@"TabBar.EnhancedMode",
+                            LGLocalized(@"prefs.control.tabbar_enhanced_mode"),
+                            LGLocalized(@"prefs.subtitle.tabbar_enhanced_mode"),
+                            @NO),
+        ],
         LGRendererItemsForHostPrefix(@"TabBar"),
         @[
             LGSectionSetting(LGLocalized(@"prefs.surface.tab_bar_selection.title"), nil),

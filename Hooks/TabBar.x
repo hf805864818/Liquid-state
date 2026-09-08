@@ -234,6 +234,61 @@ static BOOL LGIsStockTabBar(UITabBar *bar) {
     return bar && object_getClass(bar) == objc_getClass("UITabBar");
 }
 
+// 判断是否开启了增强模式
+// 注意：不使用 dispatch_once，保证偏好设置变化后能实时生效
+static BOOL LGTabBarEnhancedModeEnabled(void) {
+    id value = LGGlassPreferenceValue(@"TabBar.EnhancedMode");
+    return [value isKindOfClass:[NSNumber class]] && [value boolValue];
+}
+
+// 增强模式黑名单判断
+static BOOL LGTabBarEnhancedExcluded(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    NSString *processName = [[NSProcessInfo processInfo] processName];
+    
+    // 默认黑名单（与原版一致）
+    NSArray<NSString *> *defaultExclusions = @[
+        @"TikTok",
+        @"com.zhiliaoapp.musically",
+    ];
+    
+    for (NSString *exclusion in defaultExclusions) {
+        if ([bid isEqualToString:exclusion] || [processName isEqualToString:exclusion]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// 增强模式下的类检测：适配所有 UITabBar 子类
+static BOOL LGIsStockTabBarEnhanced(UITabBar *bar) {
+    return bar && [bar isKindOfClass:UITabBar.class];
+}
+
+// 统一入口：判断这个 TabBar 是否应该被样式化
+// 标准模式：精确类匹配 + 自定义布局检测 + 小红书跳过
+// 增强模式：子类兼容 + 黑名单机制
+static BOOL LGShouldStyleTabBar(UITabBar *bar) {
+    if (!lgHostEnabled(@"TabBar")) return NO;
+    if (!bar || !bar.window) return NO;
+    
+    if (LGTabBarEnhancedModeEnabled()) {
+        // 增强模式
+        if (!LGIsStockTabBarEnhanced(bar)) return NO;
+        if (LGTabBarEnhancedExcluded()) return NO;
+        // 增强模式下也要有基本的按钮存在检查
+        NSArray<UIView *> *buttons = LGStockTabBarButtons(bar);
+        if (buttons.count == 0) return NO;
+        return YES;
+    } else {
+        // 标准模式（现有逻辑，保持不动）
+        if (!LGIsStockTabBar(bar)) return NO;
+        if (LGIsXiaohongshuBundle()) return NO;
+        if (LGTabBarUsesCustomLayout(bar)) return NO;
+        return YES;
+    }
+}
+
 static NSArray<UIView *> *LGStockTabBarButtons(UITabBar *bar) {
     NSMutableArray<UIView *> *buttons = [NSMutableArray array];
     Class buttonClass = objc_getClass("UITabBarButton");
@@ -608,18 +663,11 @@ static void LGStyleStockTabBar(UITabBar *bar) {
         LGRemoveTabBarInjection(bar);
         return;
     }
-    if (!LGIsStockTabBar(bar) || !bar.window) return;
-
-    // 小红书: 完全跳过样式化, 保留原始 TabBar 布局和交互
-    // 小红书使用自定义 UIImageView 子类做图标和标签,
-    // 我们的样式化(隐藏背景/重排按钮/插入覆盖层)会导致标签不可见和点击失效
-    if (LGIsXiaohongshuBundle()) {
-        LGRemoveTabBarInjection(bar);
-        return;
-    }
-
-    if (LGTabBarUsesCustomLayout(bar)) {
-        LGRemoveTabBarInjection(bar);
+    if (!LGShouldStyleTabBar(bar)) {
+        // 不满足样式化条件时，确保已注入的内容被清理
+        if ([objc_getAssociatedObject(bar, kLGTabBarStylingKey) boolValue]) {
+            LGRemoveTabBarInjection(bar);
+        }
         return;
     }
 
@@ -789,7 +837,7 @@ static void LGStopTabBarSelectionAnimation(LGLiveBackdropView *lens) {
 }
 
 static LGLiveBackdropView *LGTabBarSelectionLens(UITabBar *bar) {
-    if (!lgHostEnabled(@"TabBar") || !LGIsStockTabBar(bar)) return nil;
+    if (!LGShouldStyleTabBar(bar)) return nil;
     LGLiveBackdropView *lens =
         objc_getAssociatedObject(bar, kLGTabBarSelectionGlassKey);
     if (lens) return lens;
@@ -896,7 +944,7 @@ static void LGBeginTabBarLiquidMotion(UITabBar *bar,
 static void LGShowTabBarSelectionLens(UITabBarButton *button, UITouch *touch) {
     if (!lgHostEnabled(@"TabBar")) return;
     UITabBar *bar = LGTabBarForButton(button);
-    if (!LGIsStockTabBar(bar)) return;
+    if (!LGShouldStyleTabBar(bar)) return;
     LGStyleStockTabBar(bar);
 
     LGLiveBackdropView *lens = LGTabBarSelectionLens(bar);
@@ -1411,7 +1459,7 @@ static void LGScheduleTabBarDump(UITabBar *bar, NSString *reason) {
 %hook UITabBar
 
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    if (lgHostEnabled(@"TabBar") && LGIsStockTabBar(self) && self.window &&
+    if (LGShouldStyleTabBar(self) &&
         CGRectContainsPoint(LGTabBarPillFrame(self), point)) return YES;
     return %orig;
 }
@@ -1465,12 +1513,8 @@ static void LGRefreshTabBarsInView(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
-    // 小红书: 完全跳过按钮级别的样式化(居中和清除),
-    // 保留原始按钮内容和交互
-    if (LGIsXiaohongshuBundle()) return;
-
     UITabBar *bar = LGTabBarForButton(self);
-    if (lgHostEnabled(@"TabBar") && LGIsStockTabBar(bar)) {
+    if (LGShouldStyleTabBar(bar)) {
         LGCenterStockTabBarButtonContent(self);
         // iOS 在按钮布局时设置选中背景 — 此时清除才能去掉方块阴影
         LGClearSingleTabBarButton(self);
@@ -1479,15 +1523,14 @@ static void LGRefreshTabBarsInView(UIView *view) {
 
 - (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
     BOOL tracking = %orig;
-    // 小红书: 跳过选中镜头效果, 避免覆盖层挡住按钮内容
-    if (tracking && lgHostEnabled(@"TabBar") && !LGIsXiaohongshuBundle())
+    if (tracking && lgHostEnabled(@"TabBar"))
         LGShowTabBarSelectionLens(self, touch);
     return tracking;
 }
 
 - (BOOL)continueTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
     BOOL tracking = %orig;
-    if (!lgHostEnabled(@"TabBar") || LGIsXiaohongshuBundle()) return tracking;
+    if (!lgHostEnabled(@"TabBar")) return tracking;
     LGTabBarMotionState *state =
         LGTabBarMotionStateForBar(LGTabBarForButton(self), NO);
     if (tracking || state.active) LGMoveTabBarSelectionLens(self, touch);
@@ -1496,14 +1539,14 @@ static void LGRefreshTabBarsInView(UIView *view) {
 
 - (void)endTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
     %orig;
-    if (!lgHostEnabled(@"TabBar") || LGIsXiaohongshuBundle()) return;
+    if (!lgHostEnabled(@"TabBar")) return;
     LGCommitTabBarSelectionAtLens(self, touch);
     LGHideTabBarSelectionLens(self);
 }
 
 - (void)cancelTrackingWithEvent:(UIEvent *)event {
     %orig;
-    if (lgHostEnabled(@"TabBar") && !LGIsXiaohongshuBundle())
+    if (lgHostEnabled(@"TabBar"))
         LGHideTabBarSelectionLens(self);
 }
 

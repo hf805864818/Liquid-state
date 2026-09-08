@@ -203,6 +203,10 @@
 "prefs.subtitle.reset_clock_confirm" = "Are you sure you want to reset all Clock settings to default?";
 "prefs.subtitle.reset_tab_bar" = "Restore all Tab Bar glass settings to default.";
 "prefs.subtitle.reset_tab_bar_confirm" = "Are you sure you want to reset all Tab Bar settings to default?";
+"prefs.section.tabbar_enhanced.title" = "Enhanced Mode";
+"prefs.section.tabbar_enhanced.subtitle" = "Support more third-party app tab bars with double shadow fix preserved.";
+"prefs.control.tabbar_enhanced_mode" = "Enhanced Mode";
+"prefs.subtitle.tabbar_enhanced_mode" = "When enabled, liquid glass works on more third-party app tab bars. TikTok and other incompatible apps are excluded by default.";
 "prefs.subtitle.reset_lockscreen" = "Restore all Lock Screen glass settings to default.";
 "prefs.subtitle.reset_lockscreen_confirm" = "Are you sure you want to reset all Lock Screen settings to default?";
 "prefs.subtitle.reset_app_library" = "Restore all App Library glass settings to default.";
