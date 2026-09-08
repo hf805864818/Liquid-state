@@ -206,7 +206,7 @@
 "prefs.section.tabbar_enhanced.title" = "Enhanced Mode";
 "prefs.section.tabbar_enhanced.subtitle" = "Support more third-party app tab bars with double shadow fix preserved.";
 "prefs.control.tabbar_enhanced_mode" = "Enhanced Mode";
-"prefs.subtitle.tabbar_enhanced_mode" = "When enabled, liquid glass works on more third-party app tab bars. TikTok and other incompatible apps are excluded by default.";
+"prefs.subtitle.tabbar_enhanced_mode" = "When enabled, liquid glass works on more third-party app tab bars. Apps like TikTok, WeChat, Xiaohongshu, DingTalk, and MiHome are excluded by default due to compatibility issues.";
 "prefs.control.tabbar_enhanced_exclusion" = "Exclusion List";
 "prefs.subtitle.tabbar_enhanced_exclusion" = "Disable enhanced mode tab bar effects in these apps.";
 "prefs.tabbar_enhanced_exclusion.title" = "Enhanced Mode Exclusions";

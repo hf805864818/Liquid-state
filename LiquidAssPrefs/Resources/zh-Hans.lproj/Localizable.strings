@@ -287,7 +287,7 @@
 "prefs.section.tabbar_enhanced.title" = "增强模式";
 "prefs.section.tabbar_enhanced.subtitle" = "适配更多第三方 App 的底栏，同时保留双重阴影修复。";
 "prefs.control.tabbar_enhanced_mode" = "增强模式";
-"prefs.subtitle.tabbar_enhanced_mode" = "开启后支持更多第三方 App 的底栏液态玻璃效果。默认排除 TikTok 等有兼容性问题的应用。";
+"prefs.subtitle.tabbar_enhanced_mode" = "开启后支持更多第三方 App 的底栏液态玻璃效果。默认排除抖音、微信、小红书、钉钉、米家等有兼容性问题的应用。";
 "prefs.control.tabbar_enhanced_exclusion" = "排除列表";
 "prefs.subtitle.tabbar_enhanced_exclusion" = "在这些应用中禁用增强模式底栏效果。";
 "prefs.tabbar_enhanced_exclusion.title" = "增强模式排除列表";

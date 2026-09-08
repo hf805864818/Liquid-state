@@ -267,10 +267,25 @@ static BOOL LGTabBarEnhancedExcluded(void) {
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     NSString *processName = [[NSProcessInfo processInfo] processName];
     
-    // 默认黑名单（与原版一致）
+    // 默认黑名单（已知存在兼容问题的应用，使用原生 TabBar）
     NSArray<NSString *> *defaultExclusions = @[
         @"TikTok",
         @"com.zhiliaoapp.musically",
+        // 抖音
+        @"Aweme",
+        @"com.ss.iphone.ugc.Aweme",
+        // 微信
+        @"WeChat",
+        @"com.tencent.xin",
+        // 小红书
+        @"Discover",
+        @"com.xingin.discover",
+        // 钉钉
+        @"DingTalk",
+        @"com.laiwang.DingTalk",
+        // 米家
+        @"MiHome",
+        @"com.xiaomi.mihome",
     ];
     
     // 先检查默认黑名单
