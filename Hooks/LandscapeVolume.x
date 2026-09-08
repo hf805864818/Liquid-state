@@ -569,7 +569,118 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
 
 %end
 
-#pragma mark - iOS 17 Volume Slider Probe
+#pragma mark - iOS 17 Volume Slider (SBElasticSliderView)
+
+// iOS 17 上 SBElasticSliderMaterialWrapperView 不存在了
+// SBElasticSliderView 本身就是最外层容器，内部通过 _CCUIBaseSliderContentView 承载 MTMaterialView
+
+static const void * const kLGSBElasticSliderGlassKey = &kLGSBElasticSliderGlassKey;
+static const void * const kLGSBElasticSliderVibranceKey = &kLGSBElasticSliderVibranceKey;
+
+// 找到 SBElasticSliderView 中的所有 MTMaterialView
+static NSArray *LGFindSliderMaterialViews(UIView *view) {
+    Class materialClass = NSClassFromString(@"MTMaterialView");
+    if (!materialClass) return @[];
+    
+    NSMutableArray *result = [NSMutableArray array];
+    for (UIView *subview in view.subviews) {
+        if ([subview isKindOfClass:materialClass]) {
+            [result addObject:subview];
+        }
+        NSArray *nested = LGFindSliderMaterialViews(subview);
+        [result addObjectsFromArray:nested];
+    }
+    return result;
+}
+
+static void LGUpdateSBElasticSliderGlass(SBElasticSliderView *self) {
+    if (!self) return;
+    
+    if (!LGVolumeHUDEnabled()) {
+        LGLiveBackdropView *existing = objc_getAssociatedObject(self, kLGSBElasticSliderGlassKey);
+        if (existing) existing.hidden = YES;
+        LGVolumeHUDVibranceView *existingVib = objc_getAssociatedObject(self, kLGSBElasticSliderVibranceKey);
+        if (existingVib) existingVib.hidden = YES;
+        // 恢复原材质视图
+        NSArray *materialViews = LGFindSliderMaterialViews(self);
+        for (UIView *mv in materialViews) {
+            mv.hidden = NO;
+        }
+        return;
+    }
+    
+    // 隐藏所有原材质视图
+    NSArray *materialViews = LGFindSliderMaterialViews(self);
+    for (UIView *mv in materialViews) {
+        mv.hidden = YES;
+    }
+    
+    CGFloat radius = LGVolumeHUDCornerRadius(self.bounds);
+    
+    // 添加 vibrance view
+    LGVolumeHUDVibranceView *vibrance = objc_getAssociatedObject(self, kLGSBElasticSliderVibranceKey);
+    if (!vibrance) {
+        vibrance = [[LGVolumeHUDVibranceView alloc] initWithFrame:self.bounds];
+        if (vibrance) {
+            objc_setAssociatedObject(self, kLGSBElasticSliderVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [self insertSubview:vibrance atIndex:0];
+        }
+    }
+    
+    // 添加液态玻璃视图
+    LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGSBElasticSliderGlassKey);
+    if (!glass) {
+        glass = LGCreateRegisteredGlass(self.bounds, nil, @"VolumeHUD");
+        if (!glass) return;
+        objc_setAssociatedObject(self, kLGSBElasticSliderGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        lgTrackGlass(glass, @"VolumeHUD", self);
+        
+        if (vibrance) {
+            [self insertSubview:glass belowSubview:vibrance];
+        } else {
+            [self insertSubview:glass atIndex:0];
+        }
+    }
+    
+    glass.hidden = NO;
+    glass.frame = self.bounds;
+    glass.layer.cornerRadius = radius;
+    if (@available(iOS 13.0, *)) {
+        glass.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+    glass.layer.masksToBounds = YES;
+    [glass applyFilters];
+    
+    if (vibrance) {
+        vibrance.hidden = NO;
+        vibrance.frame = self.bounds;
+        vibrance.layer.cornerRadius = radius;
+        if (@available(iOS 13.0, *)) {
+            vibrance.layer.cornerCurve = kCACornerCurveContinuous;
+        }
+        vibrance.layer.masksToBounds = YES;
+    }
+    
+    self.layer.cornerRadius = radius;
+    if (@available(iOS 13.0, *)) {
+        self.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+    self.layer.masksToBounds = YES;
+}
+
+%hook SBElasticSliderView
+
+- (void)layoutSubviews {
+    %orig;
+    // 只在有实际尺寸时处理
+    if (self.bounds.size.width > 0 && self.bounds.size.height > 0) {
+        LGUpdateSBElasticSliderGlass(self);
+    }
+}
+
+%end
+
+#pragma mark - MTMaterialView Probe (for ringer pill)
 
 // 遍历视图层级，打印包含 MTMaterialView 的父视图链
 static void LGPrintViewHierarchy(UIView *view, NSString *indent) {
@@ -593,46 +704,9 @@ static void LGPrintViewHierarchy(UIView *view, NSString *indent) {
     }
 }
 
-%hook SBElasticSliderView
+#pragma mark - MTMaterialView Probe (for ringer pill)
 
-- (void)didMoveToWindow {
-    %orig;
-    if (self.window) {
-        LGLog(@"[VolumeProbe] SBElasticSliderView didMoveToWindow  frame=%@",
-              NSStringFromCGRect(self.frame));
-    }
-}
-
-- (void)layoutSubviews {
-    %orig;
-    // 只在有尺寸时打印，避免输出太多
-    if (self.window && self.bounds.size.width > 0 && self.bounds.size.height > 0) {
-        static BOOL hasLogged = NO;
-        if (!hasLogged) {
-            hasLogged = YES;
-            LGLog(@"[VolumeProbe] SBElasticSliderView layoutSubviews  bounds=%@",
-                  NSStringFromCGRect(self.bounds));
-            LGLog(@"[VolumeProbe]   superview class: %@", NSStringFromClass([self.superview class]));
-            LGLog(@"[VolumeProbe]   --- full hierarchy:");
-            LGPrintViewHierarchy(self, @"     ");
-            
-            // 也向上找3层
-            UIView *current = self.superview;
-            for (NSInteger i = 0; i < 5 && current; i++) {
-                LGLog(@"[VolumeProbe]   ancestor level %ld: %@  frame=%@",
-                      (long)i, NSStringFromClass([current class]),
-                      NSStringFromCGRect(current.frame));
-                current = current.superview;
-            }
-        }
-    }
-}
-
-%end
-
-#pragma mark - MTMaterialView Probe (catch-all)
-
-// hook MTMaterialView，当它出现在 HUD window 中时打印父视图链
+// hook MTMaterialView，找出 HUD window 中除了音量条之外的材质视图（铃声/静音药丸）
 %hook MTMaterialView
 
 - (void)didMoveToWindow {
@@ -641,30 +715,28 @@ static void LGPrintViewHierarchy(UIView *view, NSString *indent) {
         // 只关心 HUD window 中的材质视图
         NSString *windowClass = NSStringFromClass([self.window class]);
         if ([windowClass containsString:@"HUD"] || [windowClass containsString:@"SBHUD"]) {
-            // 检查是不是音量/铃声相关的
+            // 检查是不是在 SBElasticSliderView 内部（音量条，我们已经处理了）
+            BOOL isInSlider = NO;
             UIView *parent = self.superview;
-            BOOL isVolumeRelated = NO;
             NSString *parentChain = @"";
             NSInteger level = 0;
-            while (parent && level < 8) {
+            while (parent && level < 10) {
                 NSString *pClass = NSStringFromClass([parent class]);
                 parentChain = [parentChain stringByAppendingFormat:@" <- %@", pClass];
-                if ([pClass containsString:@"Elastic"] || 
-                    [pClass containsString:@"Volume"] || 
-                    [pClass containsString:@"Ringer"] ||
-                    [pClass containsString:@"Pill"] ||
-                    [pClass containsString:@"HUD"]) {
-                    isVolumeRelated = YES;
+                if ([pClass isEqualToString:@"SBElasticSliderView"]) {
+                    isInSlider = YES;
+                    break;
                 }
                 parent = parent.superview;
                 level++;
             }
             
-            if (isVolumeRelated) {
-                LGLog(@"[MaterialProbe] MTMaterialView in HUD window");
-                LGLog(@"[MaterialProbe]   self frame: %@", NSStringFromCGRect(self.frame));
-                LGLog(@"[MaterialProbe]   parent chain:%@", parentChain);
-                LGLog(@"[MaterialProbe]   --- full hierarchy from top material container:");
+            // 只打印不在音量条里的材质视图（可能是铃声药丸）
+            if (!isInSlider) {
+                LGLog(@"[PillProbe] MTMaterialView in HUD window (NOT in slider)");
+                LGLog(@"[PillProbe]   self frame: %@", NSStringFromCGRect(self.frame));
+                LGLog(@"[PillProbe]   parent chain:%@", parentChain);
+                LGLog(@"[PillProbe]   --- full hierarchy from top container:");
                 
                 // 找到最顶层的包含 MTMaterialView 的容器
                 UIView *container = self;
@@ -680,6 +752,8 @@ static void LGPrintViewHierarchy(UIView *view, NSString *indent) {
                     if (hasSiblingMaterial) {
                         topContainer = container.superview;
                     }
+                    // 到达 HUD window 就停止
+                    if ([NSStringFromClass([container.superview class]) containsString:@"Window"]) break;
                     container = container.superview;
                 }
                 
