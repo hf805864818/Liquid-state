@@ -531,6 +531,33 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
           NSClassFromString(@"SBRingerPillView") != nil);
     LGLog(@"[VolumeHUD] PLPillView exists: %d",
           NSClassFromString(@"PLPillView") != nil);
+    LGLog(@"[VolumeHUD] SBVolumeControl exists: %d",
+          NSClassFromString(@"SBVolumeControl") != nil);
+    LGLog(@"[VolumeHUD] SBHUDController exists: %d",
+          NSClassFromString(@"SBHUDController") != nil);
+
+    // 探测：列出所有包含 slider/elastic/material 关键词的类
+    int numClasses = objc_getClassList(NULL, 0);
+    if (numClasses > 0) {
+        Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
+        numClasses = objc_getClassList(classes, numClasses);
+        NSMutableArray *matches = [NSMutableArray array];
+        for (int i = 0; i < numClasses; i++) {
+            const char *name = class_getName(classes[i]);
+            NSString *nsName = [NSString stringWithUTF8String:name];
+            NSString *lower = nsName.lowercaseString;
+            if ([lower containsString:@"elastic"] ||
+                [lower containsString:@"volumehud"] ||
+                ([lower containsString:@"volume"] && [lower containsString:@"slider"]) ||
+                ([lower containsString:@"sb"] && [lower containsString:@"slider"] && [lower containsString:@"material"])) {
+                [matches addObject:nsName];
+            }
+        }
+        free(classes);
+        LGLog(@"[VolumeHUD] Found %d elastic/volume-slider classes: %@",
+              (unsigned long)matches.count, matches);
+    }
+
     lgObservePreferenceReload(^{
         LGLog(@"VolumeHUD: Preferences reloaded");
     });
