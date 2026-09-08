@@ -266,24 +266,50 @@ static NSDictionary *LGFallbackStringsTable(void) {
     return fallbackStrings;
 }
 
+// 缓存各语言的字符串表
+// 直接从 .lproj/Localizable.strings 文件加载，完全绕过 NSBundle 的本地化解析
+// 因为 [NSBundle bundleWithPath:.lproj路径] + localizedStringForKey: 在 iOS 上
+// 无法正确工作（.lproj 是本地化容器而非独立 bundle，没有 Info.plist）
+static NSDictionary *LGLanguageStringsTable(NSString *languageCode) {
+    static NSMutableDictionary *cachedTables;
+    static dispatch_once_t onceToken;
+    __block NSDictionary *result = nil;
+    dispatch_once(&onceToken, ^{
+        cachedTables = [NSMutableDictionary dictionary];
+    });
+    @synchronized(cachedTables) {
+        result = cachedTables[languageCode];
+        if (!result) {
+            // 直接构造 .lproj/Localizable.strings 路径
+            NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
+            NSString *lprojDir = [NSString stringWithFormat:@"%@.lproj", languageCode];
+            NSString *stringsPath = [[baseBundle bundlePath]
+                stringByAppendingPathComponent:lprojDir]
+                .stringByAppendingPathComponent:@"Localizable.strings"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:stringsPath]) {
+                result = [NSDictionary dictionaryWithContentsOfFile:stringsPath];
+            }
+            if (!result) result = @{};
+            cachedTables[languageCode] = result;
+        }
+    }
+    return result;
+}
+
 NSString *LGLocalized(NSString *key) {
     NSString *languageCode = LGCurrentPrefsLanguageCode();
-
-    // English: 直接使用根目录 Localizable.strings
-    // 不使用 baseBundle 的 localizedStringForKey:，因为 iOS 会根据系统首选语言
-    // 返回 zh-Hant-TW 等非英文字符串，导致语言切换失效
-    if ([languageCode isEqualToString:@"en"]) {
-        NSDictionary *fallback = LGFallbackStringsTable();
-        NSString *value = fallback[key];
-        if (value.length) return value;
-        return key;
+    if (!languageCode.length) {
+        languageCode = @"zh-Hans";
     }
 
-    NSBundle *bundle = LGActiveLocalizationBundle();
-    NSString *localized = [bundle localizedStringForKey:key value:key table:nil];
-    if (localized.length && ![localized isEqualToString:key]) return localized;
+    // 所有语言统一走直接文件读取，不使用 NSBundle 的本地化解析
+    // 因为 [NSBundle bundleWithPath:.lproj] 的 localizedStringForKey:
+    // 在 iOS 上受系统首选语言干扰，无法返回正确语言的字符串
+    NSDictionary *table = LGLanguageStringsTable(languageCode);
+    NSString *value = table[key];
+    if (value.length) return value;
 
-    // Fallback: 直接从根目录 Localizable.strings 查找（不受系统首选语言干扰）
+    // Fallback: 如果当前语言找不到，退回根目录 Localizable.strings
     NSDictionary *fallback = LGFallbackStringsTable();
     NSString *fallbackValue = fallback[key];
     if (fallbackValue.length) return fallbackValue;

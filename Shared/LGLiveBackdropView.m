@@ -376,8 +376,17 @@ static CGFloat LGNativeBlurRadiusForFilterType(NSString *filterType) {
 
     NSString *key = [prefix stringByAppendingString:@".Blur"];
     id value = LGGlassPreferenceValue(key);
-    return [value respondsToSelector:@selector(doubleValue)]
-        ? MAX(0.0, [value doubleValue]) : host->blur;
+    if (![value respondsToSelector:@selector(doubleValue)]) {
+        // 音量相关：设置页使用 *Glass 后缀的键名，注册表 prefix 无后缀
+        // 例如 LandscapeVolume.Blur 找不到时，尝试 LandscapeVolumeGlass.Blur
+        NSString *glassKey = [prefix stringByAppendingString:@"Glass.Blur"];
+        id glassValue = LGGlassPreferenceValue(glassKey);
+        if ([glassValue respondsToSelector:@selector(doubleValue)]) {
+            return MAX(0.0, [glassValue doubleValue]);
+        }
+        return host->blur;
+    }
+    return MAX(0.0, [value doubleValue]);
 }
 
 static id LGCreateNativeGaussianFilter(Class filterCls, CGFloat radius) {

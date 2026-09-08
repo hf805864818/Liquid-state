@@ -39,11 +39,14 @@ BOOL lgHostEnabled(NSString *prefix) {
         static dispatch_once_t once;
         dispatch_once(&once, ^{
             legacyPrefixes = @{
-                @"OpenFolder":   @"FolderOpen",
-                @"AppLibSearch": @"AppLibrary.Search",
-                @"Passcode":     @"Lockscreen.Passcode",
-                @"Clock":        @"Lockscreen.Clock",
-                @"QuickActions": @"LockscreenQuickActions",
+                @"OpenFolder":     @"FolderOpen",
+                @"AppLibSearch":    @"AppLibrary.Search",
+                @"Passcode":        @"Lockscreen.Passcode",
+                @"Clock":           @"Lockscreen.Clock",
+                @"QuickActions":   @"LockscreenQuickActions",
+                // 音量相关：设置页使用 *Glass 后缀，注册表 prefix 无后缀
+                @"LandscapeVolume": @"LandscapeVolumeGlass",
+                @"VolumeHUD":       @"VolumeHUDGlass",
             };
         });
         NSString *legacy = legacyPrefixes[prefix];

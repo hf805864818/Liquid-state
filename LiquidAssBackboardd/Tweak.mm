@@ -1002,9 +1002,14 @@ static void lgReloadHostPrefs(void) {
         }
         if (!prefs) continue;
         NSString *p = [NSString stringWithUTF8String:kHostDefaults[i].prefPrefix];
+        // 音量相关 surface 在设置页使用 *Glass 后缀的键名（如 LandscapeVolumeGlass.Blur），
+        // 但注册表 prefix 无后缀（LandscapeVolume），需要额外检查
+        NSString *glassP = [p stringByAppendingString:@"Glass"];
         NSNumber *v;
         #define LG_OVR(field, key) \
             if ((v = prefs[[p stringByAppendingString:@"." key]]) && \
+                [v isKindOfClass:[NSNumber class]]) { g_hostParams[i].field = v.floatValue; overrides++; } \
+            else if ((v = prefs[[glassP stringByAppendingString:@"." key]]) && \
                 [v isKindOfClass:[NSNumber class]]) { g_hostParams[i].field = v.floatValue; overrides++; }
 
         LG_OVR(bezelRatio,      @"BezelRatio");
@@ -1020,19 +1025,22 @@ static void lgReloadHostPrefs(void) {
         LG_OVR(centerTintFactor,     @"CenterTintFactor");
         LG_OVR(darkCenterTintFactor, @"CenterTintFactorDark");
         #undef LG_OVR
-        NSNumber *dispersionEnabled = prefs[[p stringByAppendingString:@".DispersionEnabled"]];
+        NSNumber *dispersionEnabled = prefs[[p stringByAppendingString:@".DispersionEnabled"]]
+            ?: prefs[[glassP stringByAppendingString:@".DispersionEnabled"]];
         if ([dispersionEnabled isKindOfClass:[NSNumber class]]) {
             if (!dispersionEnabled.boolValue) g_hostParams[i].dispersionStrength = 0.0f;
             overrides++;
         }
-        NSString *tintHex = prefs[[p stringByAppendingString:@".LightTintColor"]];
+        NSString *tintHex = prefs[[p stringByAppendingString:@".LightTintColor"]]
+            ?: prefs[[glassP stringByAppendingString:@".LightTintColor"]];
         simd_float4 tint;
         if (lgDecodeTintColor(tintHex, &tint)) {
             g_hostParams[i].tintR = tint.x; g_hostParams[i].tintG = tint.y;
             g_hostParams[i].tintB = tint.z; g_hostParams[i].tintStrength = tint.w;
             overrides++;
         }
-        if (lgDecodeTintColor(prefs[[p stringByAppendingString:@".DarkTintColor"]], &tint)) {
+        if (lgDecodeTintColor(prefs[[p stringByAppendingString:@".DarkTintColor"]]
+                ?: prefs[[glassP stringByAppendingString:@".DarkTintColor"]], &tint)) {
             g_hostParams[i].darkTintR = tint.x; g_hostParams[i].darkTintG = tint.y;
             g_hostParams[i].darkTintB = tint.z; g_hostParams[i].darkTintStrength = tint.w;
             overrides++;
