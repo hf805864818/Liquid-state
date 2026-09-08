@@ -6,6 +6,55 @@
 #import "../Shared/LGGlassKit.h"
 #import "../Shared/LGSharedSupport.h"
 
+#pragma mark - Ringer Pill Probe (iOS 17)
+
+// 遍历视图层级
+static void vhPrintViewHierarchy(UIView *view, NSString *indent) {
+    if (!view) return;
+    NSString *className = NSStringFromClass([view class]);
+    NSString *frameStr = NSStringFromCGRect(view.frame);
+    NSString *bgColor = @"none";
+    if (view.backgroundColor) {
+        CGColorRef cgColor = view.backgroundColor.CGColor;
+        size_t numComponents = CGColorGetNumberOfComponents(cgColor);
+        if (numComponents >= 4) {
+            const CGFloat *components = CGColorGetComponents(cgColor);
+            bgColor = [NSString stringWithFormat:@"rgba(%.0f,%.0f,%.0f,%.2f)",
+                       components[0]*255, components[1]*255, components[2]*255, components[3]];
+        }
+    }
+    LGLog(@"[RingerProbe] %@%@  frame=%@  hidden=%d  alpha=%.2f  bg=%@",
+          indent, className, frameStr, view.hidden, view.alpha, bgColor);
+    
+    Class materialClass = NSClassFromString(@"MTMaterialView");
+    for (UIView *subview in view.subviews) {
+        if (materialClass && [subview isKindOfClass:materialClass]) {
+            LGLog(@"[RingerProbe] %@  -> contains MTMaterialView: %@",
+                  indent, NSStringFromClass([subview class]));
+        }
+    }
+    
+    for (UIView *subview in view.subviews) {
+        vhPrintViewHierarchy(subview, [indent stringByAppendingString:@"  "]);
+    }
+}
+
+@interface SBRingerHUDViewController : UIViewController
+@end
+
+%hook SBRingerHUDViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    LGLog(@"[RingerProbe] SBRingerHUDViewController viewDidAppear");
+    LGLog(@"[RingerProbe]   view class: %@", NSStringFromClass([self.view class]));
+    LGLog(@"[RingerProbe]   view frame: %@", NSStringFromCGRect(self.view.frame));
+    LGLog(@"[RingerProbe]   --- view hierarchy:");
+    vhPrintViewHierarchy(self.view, @"     ");
+}
+
+%end
+
 #pragma mark - Volume HUD Material Host
 
 // 判断一个 MTMaterialView 是不是在音量 HUD 里（音量条 + 铃声药丸）
