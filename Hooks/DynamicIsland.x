@@ -69,26 +69,6 @@ static void LGRemoveDynamicIslandGlass(UIView *containerView) {
     }
 }
 
-// 判断 view 是否是灵动岛的 gain map 视图
-static BOOL LGIsGainMapView(UIView *view) {
-    if (!view) return NO;
-    Class cls = object_getClass(view);
-    NSString *name = NSStringFromClass(cls);
-    if ([name containsString:@"GainMap"]) return YES;
-    return NO;
-}
-
-// 递归查找 gain map view
-static UIView *LGFindGainMapViewInView(UIView *view) {
-    if (!view) return nil;
-    if (LGIsGainMapView(view)) return view;
-    for (UIView *subview in view.subviews) {
-        UIView *found = LGFindGainMapViewInView(subview);
-        if (found) return found;
-    }
-    return nil;
-}
-
 #pragma mark - Hook SBDynamicIslandView（主路径：确保类存在）
 
 %hook SBDynamicIslandView
