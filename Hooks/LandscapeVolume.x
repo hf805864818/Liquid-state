@@ -522,6 +522,68 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
 
 %end
 
+#pragma mark - iOS 17 Volume Slider Probe
+
+// 遍历视图层级，打印包含 MTMaterialView 的父视图链
+static void LGPrintViewHierarchy(UIView *view, NSString *indent) {
+    if (!view) return;
+    NSString *className = NSStringFromClass([view class]);
+    NSString *frameStr = NSStringFromCGRect(view.frame);
+    LGLog(@"[VolumeProbe] %@%@  frame=%@  hidden=%d  alpha=%.2f",
+          indent, className, frameStr, view.hidden, view.alpha);
+    
+    // 检查是否有 MTMaterialView 子视图
+    Class materialClass = NSClassFromString(@"MTMaterialView");
+    for (UIView *subview in view.subviews) {
+        if (materialClass && [subview isKindOfClass:materialClass]) {
+            LGLog(@"[VolumeProbe] %@  -> contains MTMaterialView: %@",
+                  indent, NSStringFromClass([subview class]));
+        }
+    }
+    
+    for (UIView *subview in view.subviews) {
+        LGPrintViewHierarchy(subview, [indent stringByAppendingString:@"  "]);
+    }
+}
+
+%hook SBElasticSliderView
+
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window) {
+        LGLog(@"[VolumeProbe] SBElasticSliderView didMoveToWindow");
+        LGLog(@"[VolumeProbe]   self class: %@", NSStringFromClass([self class]));
+        LGLog(@"[VolumeProbe]   self frame: %@", NSStringFromCGRect(self.frame));
+        LGLog(@"[VolumeProbe]   superview class: %@", NSStringFromClass([self.superview class]));
+        
+        // 向上遍历父视图，找到包含 MTMaterialView 的容器
+        UIView *current = self.superview;
+        NSInteger level = 0;
+        Class materialClass = NSClassFromString(@"MTMaterialView");
+        while (current && level < 10) {
+            BOOL hasMaterial = NO;
+            for (UIView *subview in current.subviews) {
+                if (materialClass && [subview isKindOfClass:materialClass]) {
+                    hasMaterial = YES;
+                    break;
+                }
+            }
+            LGLog(@"[VolumeProbe]   level %ld: %@  frame=%@  hasMaterial=%d",
+                  (long)level, NSStringFromClass([current class]),
+                  NSStringFromCGRect(current.frame), hasMaterial);
+            if (hasMaterial) {
+                LGLog(@"[VolumeProbe]   *** Found material container at level %ld: %@",
+                      (long)level, NSStringFromClass([current class]));
+                LGPrintViewHierarchy(current, @"      ");
+            }
+            current = current.superview;
+            level++;
+        }
+    }
+}
+
+%end
+
 %ctor {
     if (!LGIsSpringBoardProcess()) return;
     LGLog(@"[VolumeHUD] VolumeHUD tweak loaded");
@@ -535,35 +597,14 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
           NSClassFromString(@"SBVolumeControl") != nil);
     LGLog(@"[VolumeHUD] SBHUDController exists: %d",
           NSClassFromString(@"SBHUDController") != nil);
-
-    // 探测：列出所有可能和音量HUD相关的类
-    int numClasses = objc_getClassList(NULL, 0);
-    if (numClasses > 0) {
-        Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
-        numClasses = objc_getClassList(classes, numClasses);
-        NSMutableArray *matches = [NSMutableArray array];
-        for (int i = 0; i < numClasses; i++) {
-            const char *name = class_getName(classes[i]);
-            NSString *nsName = [NSString stringWithUTF8String:name];
-            NSString *lower = nsName.lowercaseString;
-            // 扩大搜索范围
-            BOOL match = NO;
-            if ([lower containsString:@"elastic"]) match = YES;
-            if ([lower containsString:@"volumehud"]) match = YES;
-            if ([lower containsString:@"hudview"]) match = YES;
-            if ([lower containsString:@"volumepress"]) match = YES;
-            if ([lower containsString:@"sbvolume"]) match = YES;
-            if ([lower containsString:@"sbhud"]) match = YES;
-            if ([lower containsString:@"mediacontrols"] && [lower containsString:@"volume"]) match = YES;
-            if ([lower containsString:@"mru"] && [lower containsString:@"volume"]) match = YES;
-            if ([lower containsString:@"pill"] && ([lower containsString:@"volume"] || [lower containsString:@"hud"])) match = YES;
-            if ([lower containsString:@"slider"] && [lower containsString:@"material"] && [lower containsString:@"wrapper"]) match = YES;
-            if (match) [matches addObject:nsName];
-        }
-        free(classes);
-        LGLog(@"[VolumeHUD] Found %lu volume-HUD-related classes: %@",
-              (unsigned long)matches.count, matches);
-    }
+    LGLog(@"[VolumeHUD] SBElasticSliderView exists: %d",
+          NSClassFromString(@"SBElasticSliderView") != nil);
+    LGLog(@"[VolumeHUD] SBElasticHUDViewController exists: %d",
+          NSClassFromString(@"SBElasticHUDViewController") != nil);
+    LGLog(@"[VolumeHUD] MRUVolumeView exists: %d",
+          NSClassFromString(@"MRUVolumeView") != nil);
+    LGLog(@"[VolumeHUD] MediaControlsVolumeContainerView exists: %d",
+          NSClassFromString(@"MediaControlsVolumeContainerView") != nil);
 
     lgObservePreferenceReload(^{
         LGLog(@"VolumeHUD: Preferences reloaded");
