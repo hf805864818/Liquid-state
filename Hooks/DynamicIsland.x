@@ -18,31 +18,44 @@ static CGFloat LGDynamicIslandCornerRadiusForSize(CGSize size) {
     return 18.0;
 }
 
-// 安装灵动岛液态玻璃
+// 安装灵动岛液态玻璃（参考 LGInjectGlassIntoMaterialGroupType 的模式）
 static void LGInstallDynamicIslandGlass(UIView *containerView) {
     if (!containerView || !containerView.window) return;
     if (!LGDynamicIslandEnabled()) return;
 
+    UIView *parent = containerView.superview;
+    if (!parent) return;
+
     LGLiveBackdropView *glassView = objc_getAssociatedObject(containerView, kLGDynamicIslandGlassKey);
     if (!glassView) {
+        CGFloat radius = LGDynamicIslandCornerRadiusForSize(containerView.bounds.size);
         glassView = LGCreateRegisteredGlass(containerView.bounds, nil, @"DynamicIsland");
-        glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         glassView.userInteractionEnabled = NO;
         glassView.backgroundColor = UIColor.clearColor;
-        // 胶囊形状：圆角 = 高度的一半
-        CGFloat radius = LGDynamicIslandCornerRadiusForSize(containerView.bounds.size);
         glassView.layer.cornerRadius = radius;
+        glassView.layer.cornerCurve = kCACornerCurveContinuous;
         glassView.layer.masksToBounds = YES;
+
+        // 延迟重试 applyFilters（防止 backboardd filter 还没注册好）
+        __weak LGLiveBackdropView *weakGlass = glassView;
+        for (NSNumber *delay in @[ @1.5, @3.0, @5.0, @8.0, @12.0 ]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [weakGlass applyFilters];
+            });
+        }
+
+        [parent insertSubview:glassView aboveSubview:containerView];
         objc_setAssociatedObject(containerView, kLGDynamicIslandGlassKey, glassView,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [containerView insertSubview:glassView atIndex:0];
     }
 
-    glassView.frame = containerView.bounds;
-    // 更新圆角（展开/收起时高度变化）
+    // 更新位置和大小
+    glassView.frame = containerView.frame;
     CGFloat radius = LGDynamicIslandCornerRadiusForSize(containerView.bounds.size);
     if (fabs(glassView.layer.cornerRadius - radius) > 0.5) {
         glassView.layer.cornerRadius = radius;
+        [glassView applyFilters];
     }
 }
 
@@ -76,9 +89,9 @@ static UIView *LGFindGainMapViewInView(UIView *view) {
     return nil;
 }
 
-#pragma mark - Hook _SBGainMapView（主路径：真实形状 + 跟随动画）
+#pragma mark - Hook SBDynamicIslandView（主路径：确保类存在）
 
-%hook _SBGainMapView
+%hook SBDynamicIslandView
 - (void)didMoveToWindow {
     %orig;
     UIView *selfView = (UIView *)self;
@@ -99,25 +112,17 @@ static UIView *LGFindGainMapViewInView(UIView *view) {
 }
 %end
 
-#pragma mark - Hook SBDynamicIslandView（Fallback：老版本兼容）
+#pragma mark - Hook _SBGainMapView（优化路径：获取更精确的形状）
 
-%hook SBDynamicIslandView
+// 如果 _SBGainMapView 存在，优先用它的形状（更贴近真实灵动岛）
+%hook _SBGainMapView
 - (void)didMoveToWindow {
     %orig;
-    UIView *selfView = (UIView *)self;
-    // 如果子视图里有 GainMapView，说明主路径已经在工作了，不重复装
-    if (LGFindGainMapViewInView(selfView)) return;
-    if (selfView.window) {
-        LGInstallDynamicIslandGlass(selfView);
-    } else {
-        LGRemoveDynamicIslandGlass(selfView);
-    }
+    // 暂时只做日志验证，确认类是否存在
+    // 后续版本会用 gain map 形状替换 SDF 胶囊形状
 }
 - (void)layoutSubviews {
     %orig;
-    UIView *selfView = (UIView *)self;
-    if (LGFindGainMapViewInView(selfView)) return;
-    LGInstallDynamicIslandGlass(selfView);
 }
 %end
 
