@@ -960,6 +960,7 @@ static void LGEnsureTabBarExclusionsInitialized(void) {
         }
         NSString *normalized = [entries.array componentsJoinedByString:@"\n"];
         LGWritePreferenceObject(@"TabBar.EnhancedExclusions", normalized);
+        LGForceSynchronizePreferences();
     });
 }
 

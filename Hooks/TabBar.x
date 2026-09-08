@@ -1639,8 +1639,18 @@ static void LGRefreshTabBarsInView(UIView *view) {
     for (UIView *subview in view.subviews) LGRefreshTabBarsInView(subview);
 }
 
+// 失效所有 TabBar 缓存（偏好设置变更时调用）
+static void LGInvalidateTabBarCaches(void) {
+    sEnhancedModeValid = NO;
+    sEnhancedExcludedValid = NO;
+    // 同时清除所有 TabBar 实例的按钮缓存
+    // （实例缓存在 UIView 层面，不需要在这里处理）
+}
+
 %ctor {
     lgObservePreferenceReload(^{
+        // 先失效缓存，确保重新读取最新的排除列表和增强模式开关
+        LGInvalidateTabBarCaches();
         dispatch_async(dispatch_get_main_queue(), ^{
             for (UIWindow *window in UIApplication.sharedApplication.windows) {
                 LGRefreshTabBarsInView(window);
