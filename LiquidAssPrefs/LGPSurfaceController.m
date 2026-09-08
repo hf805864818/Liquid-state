@@ -402,7 +402,8 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
 - (void)performAnimatedSurfacePreferenceReset {
     if ([_screenIdentifier isEqualToString:@"PrefsSettings"]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            LGSetCurrentPrefsLanguageCode(@"en");
+            // 重置为默认值 zh-Hans，而非 en
+            LGSetCurrentPrefsLanguageCode(@"zh-Hans");
         });
         return;
     }

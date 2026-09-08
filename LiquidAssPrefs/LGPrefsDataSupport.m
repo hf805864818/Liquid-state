@@ -73,23 +73,54 @@ static NSDictionary<NSString *, id> *LGExportablePreferenceDefaults(void) {
     return [defaults copy];
 }
 
+// 直接构造 .lproj 路径，不使用 pathForResource:ofType:@"lproj"
+// 因为 iOS 将 .lproj 视为特殊的本地化容器而非普通资源，
+// pathForResource:ofType: 会受系统首选语言影响而返回 nil
+static NSString *LGLocalizationBundlePath(NSString *languageCode) {
+    NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
+    NSString *lprojName = [NSString stringWithFormat:@"%@.lproj", languageCode];
+    NSString *directPath = [[baseBundle bundlePath] stringByAppendingPathComponent:lprojName];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:directPath isDirectory:NULL]) {
+        return directPath;
+    }
+
+    // 退路：尝试 pathForResource（某些 iOS 版本可能支持）
+    NSString *fallbackPath = [baseBundle pathForResource:languageCode ofType:@"lproj"];
+    if (fallbackPath.length && [fm fileExistsAtPath:fallbackPath isDirectory:NULL]) {
+        return fallbackPath;
+    }
+
+    return nil;
+}
+
 static NSBundle *LGActiveLocalizationBundle(void) {
     NSString *languageCode = LGCurrentPrefsLanguageCode();
-    NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
     if (!languageCode.length) {
         languageCode = @"zh-Hans";
     }
+
     if ([languageCode isEqualToString:@"en"]) {
-        return baseBundle;
+        // English: 使用 bundle 根目录的 Localizable.strings（开发区域）
+        // 不返回 baseBundle，因为 baseBundle 的 localizedStringForKey: 会使用系统首选语言
+        NSString *enPath = LGLocalizationBundlePath(@"en");
+        if (enPath.length) {
+            NSBundle *enBundle = [NSBundle bundleWithPath:enPath];
+            if (enBundle) return enBundle;
+        }
+        // 退路：使用 baseBundle，但后续 LGLocalized 会处理 fallback
+        return [NSBundle bundleForClass:[LGPRootListController class]];
     }
 
-    NSString *bundlePath = [baseBundle pathForResource:languageCode ofType:@"lproj"];
+    NSString *bundlePath = LGLocalizationBundlePath(languageCode);
     if (!bundlePath.length) {
-        return baseBundle;
+        // 找不到 .lproj 目录，退回 baseBundle
+        return [NSBundle bundleForClass:[LGPRootListController class]];
     }
 
     NSBundle *localizedBundle = [NSBundle bundleWithPath:bundlePath];
-    return localizedBundle ?: baseBundle;
+    return localizedBundle ?: [NSBundle bundleForClass:[LGPRootListController class]];
 }
 
 static NSString *LGDisplayNameForLanguageCode(NSString *languageCode) {
@@ -115,10 +146,27 @@ static NSArray<NSDictionary *> *LGAvailableLanguageChoices(void) {
     dispatch_once(&onceToken, ^{
         NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
         NSMutableOrderedSet<NSString *> *codes = [NSMutableOrderedSet orderedSetWithObjects:@"zh-Hans", @"en", nil];
+
+        // 方式1: 使用 pathsForResourcesOfType 扫描 .lproj 目录
         for (NSString *path in [baseBundle pathsForResourcesOfType:@"lproj" inDirectory:nil]) {
             NSString *languageCode = [[path lastPathComponent] stringByDeletingPathExtension];
             if (languageCode.length && ![languageCode isEqualToString:@"Base"]) {
                 [codes addObject:languageCode];
+            }
+        }
+
+        // 方式2: 使用 NSFileManager 直接扫描 bundle 目录（更可靠的退路）
+        if (codes.count <= 2) {
+            NSString *bundlePath = [baseBundle bundlePath];
+            NSFileManager *fm = [NSFileManager defaultManager];
+            NSArray<NSString *> *contents = [fm contentsOfDirectoryAtPath:bundlePath error:nil];
+            for (NSString *item in contents) {
+                if (![item hasSuffix:@".lproj"]) continue;
+                if ([item isEqualToString:@"Base.lproj"]) continue;
+                NSString *languageCode = [item stringByDeletingPathExtension];
+                if (languageCode.length) {
+                    [codes addObject:languageCode];
+                }
             }
         }
 
@@ -194,12 +242,53 @@ void LGObservePrefsNotifications(id target) {
                  object:nil];
 }
 
+// 缓存根目录 Localizable.strings（开发区域/English fallback）
+// 直接从文件加载，不通过 NSBundle 的本地化解析（避免受系统首选语言干扰）
+static NSDictionary *LGFallbackStringsTable(void) {
+    static NSDictionary *fallbackStrings;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
+        // 直接构造根目录路径，避免 pathForResource: 受系统首选语言干扰
+        // 返回 zh-Hant-TW.lproj/Localizable.strings 而非根目录的英文版本
+        NSString *stringsPath = [[baseBundle bundlePath] stringByAppendingPathComponent:@"Localizable.strings"];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:stringsPath]) {
+            // 退路：使用 pathForResource
+            stringsPath = [baseBundle pathForResource:@"Localizable" ofType:@"strings"];
+        }
+        if (stringsPath.length) {
+            fallbackStrings = [NSDictionary dictionaryWithContentsOfFile:stringsPath];
+        }
+        if (!fallbackStrings) {
+            fallbackStrings = @{};
+        }
+    });
+    return fallbackStrings;
+}
+
 NSString *LGLocalized(NSString *key) {
+    NSString *languageCode = LGCurrentPrefsLanguageCode();
+
+    // English: 直接使用根目录 Localizable.strings
+    // 不使用 baseBundle 的 localizedStringForKey:，因为 iOS 会根据系统首选语言
+    // 返回 zh-Hant-TW 等非英文字符串，导致语言切换失效
+    if ([languageCode isEqualToString:@"en"]) {
+        NSDictionary *fallback = LGFallbackStringsTable();
+        NSString *value = fallback[key];
+        if (value.length) return value;
+        return key;
+    }
+
     NSBundle *bundle = LGActiveLocalizationBundle();
     NSString *localized = [bundle localizedStringForKey:key value:key table:nil];
     if (localized.length && ![localized isEqualToString:key]) return localized;
-    NSBundle *baseBundle = [NSBundle bundleForClass:[LGPRootListController class]];
-    return [baseBundle localizedStringForKey:key value:key table:nil];
+
+    // Fallback: 直接从根目录 Localizable.strings 查找（不受系统首选语言干扰）
+    NSDictionary *fallback = LGFallbackStringsTable();
+    NSString *fallbackValue = fallback[key];
+    if (fallbackValue.length) return fallbackValue;
+
+    return key;
 }
 
 NSString *LGPrefsAppName(void) {
@@ -258,6 +347,12 @@ void LGSetCurrentPrefsLanguageCode(NSString *languageCode) {
     if (!LGIsValidLanguageCode(languageCode)) {
         languageCode = @"zh-Hans";
     }
+
+    // 清除 pending 系统中对语言键的暂存状态
+    // 防止之前 reset 操作暂存的 removal 被 Apply 按钮误删已写入的值
+    LGEnsurePendingPreferencesInitialized();
+    [sLGPendingPreferences removeObjectForKey:kLGPrefsLanguageKey];
+    [sLGPendingPreferenceRemovals removeObject:kLGPrefsLanguageKey];
 
     // 直接写入 CFPreferences 插件 domain（不走 pending，立即持久化）
     // 始终明确写入，即便是默认值 zh-Hans，避免回退到 standardUserDefaults 读到其他插件的残留值
@@ -2202,10 +2297,12 @@ void LGResetAllPreferences(void) {
         if (![key isKindOfClass:[NSString class]]) continue;
         if ([(NSString *)key isEqualToString:@"Global.Enabled"]) continue;
         if ([(NSString *)key hasPrefix:kLGDynamicDefaultPrefix]) continue;
+        // 跳过语言设置，避免被 pending removal 暂存后由 Apply 按钮误删
+        if ([(NSString *)key isEqualToString:kLGPrefsLanguageKey]) continue;
         LGRemovePreference((NSString *)key);
     }
-    [LGPrefsUIStateDefaults() removeObjectForKey:kLGPrefsLanguageKey];
-    LGSynchronizeSurfaceStateDefaults();
+    // 语言设置直接重置为默认值 zh-Hans（不走 pending，直接写入 CFPreferences）
+    LGSetCurrentPrefsLanguageCode(@"zh-Hans");
     [[NSNotificationCenter defaultCenter] postNotificationName:kLGPrefsUIRefreshNotification object:nil];
     [[NSNotificationCenter defaultCenter] postNotificationName:kLGPrefsLanguageChangedNotification object:nil];
 }
@@ -2219,6 +2316,8 @@ void LGResetPreferencesForKeys(NSArray<NSString *> *keys) {
         if (![(NSString *)key length]) continue;
         if ([(NSString *)key isEqualToString:@"Global.Enabled"]) continue;
         if ([(NSString *)key hasPrefix:kLGDynamicDefaultPrefix]) continue;
+        // 跳过语言设置键，语言只能通过 LGSetCurrentPrefsLanguageCode 管理
+        if ([(NSString *)key isEqualToString:kLGPrefsLanguageKey]) continue;
         [uniqueKeys addObject:(NSString *)key];
     }
     if (uniqueKeys.count == 0) return;
