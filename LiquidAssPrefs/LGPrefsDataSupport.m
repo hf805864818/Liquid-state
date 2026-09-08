@@ -1209,7 +1209,7 @@ NSArray<NSDictionary *> *LGClockBuiltinPresets(void) {
                     @"Enabled": @YES,
                     @"Name": @"adaptive",
                     @"Weight": @950.0,
-                    @"SizeScale": @1.6,
+                    @"SizeScale": @1.35,
                     @"Width": @110.0,
                     @"Height": @350.0,
                     @"Softness": @55.0,
