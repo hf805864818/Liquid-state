@@ -459,19 +459,21 @@ static void LGVolumeChangedHandler(CFNotificationCenterRef center,
 %hook SBHUDView
 - (void)didMoveToWindow {
     %orig;
+    UIView *selfView = (UIView *)self;
     LGLog(@"[Volume-Probe] SBHUDView didMoveToWindow: class=%@ frame=%@ window=%@",
-          NSStringFromClass([self class]),
-          NSStringFromCGRect([(UIView *)self frame]),
-          [(UIView *)self window]);
+          NSStringFromClass([selfView class]),
+          NSStringFromCGRect(selfView.frame),
+          selfView.window);
 }
 %end
 
 %hook SBPresentationObservationWindow
 - (void)didMoveToWindow {
     %orig;
+    UIView *selfView = (UIView *)self;
     LGLog(@"[Volume-Probe] SBPresentationObservationWindow didMoveToWindow: class=%@ frame=%@",
-          NSStringFromClass([self class]),
-          NSStringFromCGRect([(UIView *)self frame]));
+          NSStringFromClass([selfView class]),
+          NSStringFromCGRect(selfView.frame));
 }
 %end
 
