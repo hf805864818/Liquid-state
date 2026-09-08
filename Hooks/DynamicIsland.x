@@ -6,46 +6,19 @@
 #import <QuartzCore/QuartzCore.h>
 
 static const void *kLGDynamicIslandGlassKey = &kLGDynamicIslandGlassKey;
-static const void *kLGDynamicIslandMaskKey = &kLGDynamicIslandMaskKey;
 
 static BOOL LGDynamicIslandEnabled(void) {
     return lgHostEnabled(@"DynamicIsland");
 }
 
-static CGFloat LGDynamicIslandCornerRadiusForView(UIView *view) {
-    CGFloat height = CGRectGetHeight(view.bounds);
+// 计算灵动岛玻璃的圆角（胶囊形状 = 高度的一半）
+static CGFloat LGDynamicIslandCornerRadiusForSize(CGSize size) {
+    CGFloat height = size.height;
     if (height > 0) return height * 0.5;
     return 18.0;
 }
 
-static void LGUpdateDynamicIslandMask(LGLiveBackdropView *glassView, UIView *containerView) {
-    if (!glassView || !containerView || CGRectIsEmpty(glassView.bounds)) return;
-
-    CAShapeLayer *mask = objc_getAssociatedObject(glassView, kLGDynamicIslandMaskKey);
-    if (!mask) {
-        mask = [CAShapeLayer layer];
-        mask.fillColor = UIColor.blackColor.CGColor;
-        objc_setAssociatedObject(glassView, kLGDynamicIslandMaskKey, mask,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        glassView.layer.mask = mask;
-    }
-
-    CGRect bounds = glassView.bounds;
-    CGFloat cornerRadius = LGDynamicIslandCornerRadiusForView(containerView);
-    if (cornerRadius > CGRectGetHeight(bounds) * 0.5) {
-        cornerRadius = CGRectGetHeight(bounds) * 0.5;
-    }
-
-    UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:bounds
-                                               byRoundingCorners:UIRectCornerAllCorners
-                                                     cornerRadii:CGSizeMake(cornerRadius, cornerRadius)];
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    mask.path = path.CGPath;
-    mask.frame = bounds;
-    [CATransaction commit];
-}
-
+// 安装灵动岛液态玻璃
 static void LGInstallDynamicIslandGlass(UIView *containerView) {
     if (!containerView || !containerView.window) return;
     if (!LGDynamicIslandEnabled()) return;
@@ -56,13 +29,21 @@ static void LGInstallDynamicIslandGlass(UIView *containerView) {
         glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         glassView.userInteractionEnabled = NO;
         glassView.backgroundColor = UIColor.clearColor;
+        // 胶囊形状：圆角 = 高度的一半
+        CGFloat radius = LGDynamicIslandCornerRadiusForSize(containerView.bounds.size);
+        glassView.layer.cornerRadius = radius;
+        glassView.layer.masksToBounds = YES;
         objc_setAssociatedObject(containerView, kLGDynamicIslandGlassKey, glassView,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [containerView insertSubview:glassView atIndex:0];
     }
 
     glassView.frame = containerView.bounds;
-    LGUpdateDynamicIslandMask(glassView, containerView);
+    // 更新圆角（展开/收起时高度变化）
+    CGFloat radius = LGDynamicIslandCornerRadiusForSize(containerView.bounds.size);
+    if (fabs(glassView.layer.cornerRadius - radius) > 0.5) {
+        glassView.layer.cornerRadius = radius;
+    }
 }
 
 static void LGRemoveDynamicIslandGlass(UIView *containerView) {
@@ -75,8 +56,29 @@ static void LGRemoveDynamicIslandGlass(UIView *containerView) {
     }
 }
 
-// Hook Dynamic Island container views
-%hook SBDynamicIslandView
+// 判断 view 是否是灵动岛的 gain map 视图
+static BOOL LGIsGainMapView(UIView *view) {
+    if (!view) return NO;
+    Class cls = object_getClass(view);
+    NSString *name = NSStringFromClass(cls);
+    if ([name containsString:@"GainMap"]) return YES;
+    return NO;
+}
+
+// 递归查找 gain map view
+static UIView *LGFindGainMapViewInView(UIView *view) {
+    if (!view) return nil;
+    if (LGIsGainMapView(view)) return view;
+    for (UIView *subview in view.subviews) {
+        UIView *found = LGFindGainMapViewInView(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
+#pragma mark - Hook _SBGainMapView（主路径：真实形状 + 跟随动画）
+
+%hook _SBGainMapView
 - (void)didMoveToWindow {
     %orig;
     UIView *selfView = (UIView *)self;
@@ -90,9 +92,37 @@ static void LGRemoveDynamicIslandGlass(UIView *containerView) {
     %orig;
     LGInstallDynamicIslandGlass((UIView *)self);
 }
+- (void)setHidden:(BOOL)hidden {
+    %orig;
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(self, kLGDynamicIslandGlassKey);
+    if (glassView) glassView.hidden = hidden;
+}
 %end
 
-// Alternative: hook the proud lock container which holds the dynamic island on lockscreen
+#pragma mark - Hook SBDynamicIslandView（Fallback：老版本兼容）
+
+%hook SBDynamicIslandView
+- (void)didMoveToWindow {
+    %orig;
+    UIView *selfView = (UIView *)self;
+    // 如果子视图里有 GainMapView，说明主路径已经在工作了，不重复装
+    if (LGFindGainMapViewInView(selfView)) return;
+    if (selfView.window) {
+        LGInstallDynamicIslandGlass(selfView);
+    } else {
+        LGRemoveDynamicIslandGlass(selfView);
+    }
+}
+- (void)layoutSubviews {
+    %orig;
+    UIView *selfView = (UIView *)self;
+    if (LGFindGainMapViewInView(selfView)) return;
+    LGInstallDynamicIslandGlass(selfView);
+}
+%end
+
+#pragma mark - Hook SBUIProudLockContainerView（锁屏场景）
+
 %hook SBUIProudLockContainerView
 - (void)didMoveToWindow {
     %orig;
