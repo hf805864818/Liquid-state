@@ -1719,7 +1719,7 @@ NSArray<NSDictionary *> *LGTabBarItems(void) {
             LGSwitchSetting(@"TabBar.EnhancedMode",
                             LGLocalized(@"prefs.control.tabbar_enhanced_mode"),
                             LGLocalized(@"prefs.subtitle.tabbar_enhanced_mode"),
-                            @NO),
+                            @YES),
         ],
         LGRendererItemsForHostPrefix(@"TabBar"),
         @[
