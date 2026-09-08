@@ -337,8 +337,14 @@ static void LGRefreshTabBarCaches(void) {
     LGTabBarEnsureExclusionsInitialized();
     
     // 读增强模式开关
+    // key 不存在时默认开启（与 v0.1.206b 行为一致）
+    // 修复 root 应用（如 Sileo）读取不到偏好设置时增强模式失效的问题
     id enhancedVal = LGGlassPreferenceValue(@"TabBar.EnhancedMode");
-    sEnhancedModeCached = [enhancedVal isKindOfClass:[NSNumber class]] && [enhancedVal boolValue];
+    if (!enhancedVal || ![enhancedVal isKindOfClass:[NSNumber class]]) {
+        sEnhancedModeCached = YES;
+    } else {
+        sEnhancedModeCached = [enhancedVal boolValue];
+    }
     sEnhancedModeValid = YES;
     
     // 读排除状态（只判断用户排除列表，默认值已在初始化时写入）
