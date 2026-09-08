@@ -372,7 +372,9 @@ static BOOL LGIsVolumeLikeClass(NSString *className) {
     NSArray *kws = @[@"volume", @"hud", @"pressband",
                      @"mediacontrols", @"mediaremote",
                      @"presentation", @"platter",
-                     @"slider", @"progress"];
+                     @"slider", @"progress",
+                     @"pill", @"aperture", @"island",
+                     @"dynamic", @"saelement"];
     for (NSString *kw in kws) {
         if ([lower containsString:kw]) return YES;
     }
@@ -491,6 +493,43 @@ static void LGVolumeChangedHandler(CFNotificationCenterRef center,
         if (cur) [chain appendString:@" → "];
     }
     LGLog(@"[Volume-Probe] 视图层级链: %@", chain);
+}
+%end
+
+#pragma mark - 窗口级别监控（记录所有新出现的窗口）
+
+// 监控所有 UIWindow 的 becomeKeyWindow
+// 这样不管音量 HUD 窗口叫什么名字都能发现
+%hook UIWindow
+- (void)becomeKeyWindow {
+    %orig;
+    UIWindow *selfWin = (UIWindow *)self;
+    NSString *clsName = NSStringFromClass([selfWin class]);
+    
+    static NSMutableSet *sLoggedWindows = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sLoggedWindows = [NSMutableSet set];
+    });
+    
+    NSString *key = [NSString stringWithFormat:@"%@-%p", clsName, selfWin];
+    @synchronized(sLoggedWindows) {
+        if ([sLoggedWindows containsObject:key]) return;
+        [sLoggedWindows addObject:key];
+    }
+    
+    LGLog(@"[Volume-Probe] 新窗口成为KeyWindow: %@ frame=%@ windowLevel=%.0f rootVC=%@",
+          clsName,
+          NSStringFromCGRect(selfWin.frame),
+          selfWin.windowLevel,
+          NSStringFromClass([selfWin.rootViewController class]));
+    
+    // 打印顶层子视图类名
+    NSMutableArray *topClasses = [NSMutableArray array];
+    for (UIView *sub in selfWin.subviews) {
+        [topClasses addObject:NSStringFromClass([sub class])];
+    }
+    LGLog(@"[Volume-Probe]   顶层子视图: %@", topClasses);
 }
 %end
 
