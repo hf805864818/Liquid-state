@@ -536,7 +536,7 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
     LGLog(@"[VolumeHUD] SBHUDController exists: %d",
           NSClassFromString(@"SBHUDController") != nil);
 
-    // 探测：列出所有包含 slider/elastic/material 关键词的类
+    // 探测：列出所有可能和音量HUD相关的类
     int numClasses = objc_getClassList(NULL, 0);
     if (numClasses > 0) {
         Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
@@ -546,15 +546,22 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
             const char *name = class_getName(classes[i]);
             NSString *nsName = [NSString stringWithUTF8String:name];
             NSString *lower = nsName.lowercaseString;
-            if ([lower containsString:@"elastic"] ||
-                [lower containsString:@"volumehud"] ||
-                ([lower containsString:@"volume"] && [lower containsString:@"slider"]) ||
-                ([lower containsString:@"sb"] && [lower containsString:@"slider"] && [lower containsString:@"material"])) {
-                [matches addObject:nsName];
-            }
+            // 扩大搜索范围
+            BOOL match = NO;
+            if ([lower containsString:@"elastic"]) match = YES;
+            if ([lower containsString:@"volumehud"]) match = YES;
+            if ([lower containsString:@"hudview"]) match = YES;
+            if ([lower containsString:@"volumepress"]) match = YES;
+            if ([lower containsString:@"sbvolume"]) match = YES;
+            if ([lower containsString:@"sbhud"]) match = YES;
+            if ([lower containsString:@"mediacontrols"] && [lower containsString:@"volume"]) match = YES;
+            if ([lower containsString:@"mru"] && [lower containsString:@"volume"]) match = YES;
+            if ([lower containsString:@"pill"] && ([lower containsString:@"volume"] || [lower containsString:@"hud"])) match = YES;
+            if ([lower containsString:@"slider"] && [lower containsString:@"material"] && [lower containsString:@"wrapper"]) match = YES;
+            if (match) [matches addObject:nsName];
         }
         free(classes);
-        LGLog(@"[VolumeHUD] Found %d elastic/volume-slider classes: %@",
+        LGLog(@"[VolumeHUD] Found %d volume-HUD-related classes: %@",
               (unsigned long)matches.count, matches);
     }
 
