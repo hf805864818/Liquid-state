@@ -561,7 +561,7 @@ static void LGUpdatePLPillGlass(PLPillView *self) {
             if (match) [matches addObject:nsName];
         }
         free(classes);
-        LGLog(@"[VolumeHUD] Found %d volume-HUD-related classes: %@",
+        LGLog(@"[VolumeHUD] Found %lu volume-HUD-related classes: %@",
               (unsigned long)matches.count, matches);
     }
 
