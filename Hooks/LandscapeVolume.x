@@ -9,11 +9,44 @@
 @interface MTMaterialView : UIView
 @end
 
-// Vibrance view: sits on top of glass, boosts saturation/contrast for visual richness
-@interface LGVolumeVibranceView : UIView
+@interface MTShadowView : UIImageView
 @end
 
-@implementation LGVolumeVibranceView
+@interface CCUIContinuousSliderView : UIControl
+@end
+
+@interface SBElasticSliderView : CCUIContinuousSliderView
+@end
+
+@interface SBElasticVolumeSliderView : SBElasticSliderView
+@end
+
+@interface SBElasticSliderMaterialWrapperView : UIView {
+    MTMaterialView *_captureOnlyMaterialView;
+    MTMaterialView *_baseMaterialView;
+    UIView *_shadowView;
+    UIView *_sliderWrapperView;
+    UIView *_maskView;
+    SBElasticVolumeSliderView *_sliderView;
+}
+- (void)_setContinuousCornerRadius:(double)radius;
+@end
+
+@interface SBRingerPillView : UIView
+@end
+
+@interface PLPillContentView : UIView
+@end
+
+@interface PLPillView : UIView
+@end
+
+#pragma mark - Vibrance Views
+
+@interface LGVolumeHUDVibranceView : UIView
+@end
+
+@implementation LGVolumeHUDVibranceView
 
 + (Class)layerClass {
     return NSClassFromString(@"CABackdropLayer") ?: [CALayer class];
@@ -34,539 +67,460 @@
     @try {
         CALayer *layer = self.layer;
         if (![layer isKindOfClass:NSClassFromString(@"CABackdropLayer")]) return;
+
         Class filterCls = NSClassFromString(@"CAFilter");
         if (!filterCls) return;
+
         NSMutableArray *filters = [NSMutableArray array];
+
         id satFilter = ((id (*)(Class, SEL, NSString *))objc_msgSend)(
             filterCls, NSSelectorFromString(@"filterWithType:"), @"colorSaturate");
         if (satFilter) {
             @try { [satFilter setValue:@(1.85) forKey:@"inputAmount"]; } @catch (...) {}
             [filters addObject:satFilter];
         }
+
         id contrastFilter = ((id (*)(Class, SEL, NSString *))objc_msgSend)(
             filterCls, NSSelectorFromString(@"filterWithType:"), @"colorContrast");
         if (contrastFilter) {
             @try { [contrastFilter setValue:@(1.06) forKey:@"inputAmount"]; } @catch (...) {}
             [filters addObject:contrastFilter];
         }
+
         layer.filters = filters;
     } @catch (NSException *e) {}
 }
 
 @end
 
-static const void * const kLGLandscapeVolumeGlassKey = &kLGLandscapeVolumeGlassKey;
-static const void * const kLGLandscapeVolumeVibranceKey = &kLGLandscapeVolumeVibranceKey;
+@interface LGPillHUDVibranceView : UIView
+@end
+
+@implementation LGPillHUDVibranceView
+
++ (Class)layerClass {
+    return NSClassFromString(@"CABackdropLayer") ?: [CALayer class];
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.userInteractionEnabled = NO;
+        self.backgroundColor = [UIColor clearColor];
+        self.autoresizingMask = UIViewAutoresizingNone;
+        [self applyVibranceFilters];
+    }
+    return self;
+}
+
+- (void)applyVibranceFilters {
+    @try {
+        CALayer *layer = self.layer;
+        if (![layer isKindOfClass:NSClassFromString(@"CABackdropLayer")]) return;
+
+        Class filterCls = NSClassFromString(@"CAFilter");
+        if (!filterCls) return;
+
+        NSMutableArray *filters = [NSMutableArray array];
+
+        id satFilter = ((id (*)(Class, SEL, NSString *))objc_msgSend)(
+            filterCls, NSSelectorFromString(@"filterWithType:"), @"colorSaturate");
+        if (satFilter) {
+            @try { [satFilter setValue:@(1.85) forKey:@"inputAmount"]; } @catch (...) {}
+            [filters addObject:satFilter];
+        }
+
+        id contrastFilter = ((id (*)(Class, SEL, NSString *))objc_msgSend)(
+            filterCls, NSSelectorFromString(@"filterWithType:"), @"colorContrast");
+        if (contrastFilter) {
+            @try { [contrastFilter setValue:@(1.06) forKey:@"inputAmount"]; } @catch (...) {}
+            [filters addObject:contrastFilter];
+        }
+
+        layer.filters = filters;
+    } @catch (NSException *e) {}
+}
+
+@end
+
+#pragma mark - Volume HUD (Elastic Slider)
+
 static const void * const kLGVolumeHUDGlassKey = &kLGVolumeHUDGlassKey;
 static const void * const kLGVolumeHUDVibranceKey = &kLGVolumeHUDVibranceKey;
 
-#pragma mark - Preference helpers
-
-static BOOL LGLandscapeVolumeGlassEnabled(void) {
-    return LG_prefBool(@"LandscapeVolumeGlass.Enabled", NO);
-}
-
-static CGFloat LGLandscapeVolumeGlassCornerRadius(void) {
-    return LG_prefFloat(@"LandscapeVolumeGlass.CornerRadius", 16.0);
-}
-
-static BOOL LGVolumeHUDGlassEnabled(void) {
+static BOOL LGVolumeHUDEnabled(void) {
     return LG_prefBool(@"VolumeHUDGlass.Enabled", NO);
 }
 
-static CGFloat LGVolumeHUDGlassCornerRadius(void) {
-    return LG_prefFloat(@"VolumeHUDGlass.CornerRadius", 20.0);
+static CGFloat LGVolumeHUDCornerRadius(CGRect bounds) {
+    CGFloat prefRadius = LG_prefFloat(@"VolumeHUDGlass.CornerRadius", 20.0);
+    // 如果用户设置了大于0的圆角，用用户的；否则保持药丸形（完全圆角）
+    if (prefRadius > 0) {
+        return prefRadius;
+    }
+    return MIN(bounds.size.width, bounds.size.height) * 0.5f;
 }
 
-#pragma mark - System material view helpers
-
-// Find and hide/show system MTMaterialView subviews
-static void LGHideSystemMaterialViews(UIView *view, BOOL hide) {
+static UIView *LGVolumeHUDSliderBackground(UIView *slider) {
     Class materialClass = NSClassFromString(@"MTMaterialView");
-    if (!materialClass) {
-        LGLog(@"[Volume] MTMaterialView class not found!");
-        return;
-    }
-    NSUInteger found = 0;
-    for (UIView *subview in view.subviews) {
-        if ([subview isKindOfClass:materialClass]) {
-            subview.hidden = hide;
-            found++;
-        }
-    }
-    if (found > 0) {
-        LGLog(@"[Volume] found %lu MTMaterialView subviews, hidden=%d", (unsigned long)found, hide);
-    }
+    for (UIView *subview in slider.subviews)
+        if ([subview isKindOfClass:materialClass]) return subview;
+    return nil;
 }
 
-#pragma mark - Landscape volume (SBVolumePressBand)
+static void LGUpdateVolumeHUDGlass(SBElasticSliderMaterialWrapperView *self) {
+    if (!self) return;
 
-static void LGLandscapeVolumeApplyGlassToView(UIView *view) {
-    if (!LGLandscapeVolumeGlassEnabled() || !view) {
-        LGLog(@"[Volume-Landscape] apply skipped: enabled=%d view=%@", LGLandscapeVolumeGlassEnabled(), view);
+    MTMaterialView *base = nil;
+    MTMaterialView *cap = nil;
+    UIView *shadow = nil;
+    UIView *sliderWrapper = nil;
+    UIView *sliderView = nil;
+    @try {
+        base = [self valueForKey:@"_baseMaterialView"];
+        cap = [self valueForKey:@"_captureOnlyMaterialView"];
+        shadow = [self valueForKey:@"_shadowView"];
+        sliderWrapper = [self valueForKey:@"_sliderWrapperView"];
+        sliderView = [self valueForKey:@"_sliderView"];
+    } @catch (...) {}
+
+    if (!LGVolumeHUDEnabled()) {
+        LGLiveBackdropView *existing = objc_getAssociatedObject(self, kLGVolumeHUDGlassKey);
+        if (existing) existing.hidden = YES;
+        LGVolumeHUDVibranceView *existingVib = objc_getAssociatedObject(self, kLGVolumeHUDVibranceKey);
+        if (existingVib) existingVib.hidden = YES;
+        if (base) base.hidden = NO;
+        if (cap) cap.hidden = NO;
+        if (shadow) shadow.hidden = NO;
+        if (sliderView) LGVolumeHUDSliderBackground(sliderView).hidden = NO;
         return;
     }
 
-    LGLog(@"[Volume-Landscape] apply glass to view: %@ (frame=%@ subviews=%lu)",
-          NSStringFromClass([view class]),
-          NSStringFromCGRect(view.frame),
-          (unsigned long)view.subviews.count);
+    if (base) base.hidden = YES;
+    if (cap) cap.hidden = YES;
+    if (shadow) shadow.hidden = YES;
 
-    // Hide system material views so our glass is visible
-    LGHideSystemMaterialViews(view, YES);
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(view, kLGLandscapeVolumeGlassKey);
-    if (!glassView) {
-        LGLog(@"[Volume-Landscape] creating new glass view (bounds=%@)", NSStringFromCGRect(view.bounds));
-        glassView = LGCreateRegisteredGlass(view.bounds, nil, @"LandscapeVolume");
-        if (!glassView) {
-            LGLog(@"[Volume-Landscape] ERROR: LGCreateRegisteredGlass returned nil!");
-            return;
-        }
-        objc_setAssociatedObject(view, kLGLandscapeVolumeGlassKey, glassView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        lgTrackGlass(glassView, @"LandscapeVolume", view);
-        // Insert on top so it's visible above remaining system subviews
-        [view addSubview:glassView];
-        glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        LGLog(@"[Volume-Landscape] glass view created and added as subview");
-    } else {
-        LGLog(@"[Volume-Landscape] reusing existing glass view");
-    }
-
-    CGFloat radius = LGLandscapeVolumeGlassCornerRadius();
-    glassView.frame = view.bounds;
-    glassView.layer.cornerRadius = radius;
-    glassView.layer.masksToBounds = YES;
-    if (@available(iOS 13.0, *)) {
-        glassView.layer.cornerCurve = kCACornerCurveContinuous;
-    }
-    glassView.hidden = NO;
-    LGLog(@"[Volume-Landscape] calling applyFilters on glass view");
-    [glassView applyFilters];
-
-    // Add vibrance layer on top of glass
-    LGVolumeVibranceView *vibrance = objc_getAssociatedObject(view, kLGLandscapeVolumeVibranceKey);
+    LGVolumeHUDVibranceView *vibrance = objc_getAssociatedObject(self, kLGVolumeHUDVibranceKey);
     if (!vibrance) {
-        vibrance = [[LGVolumeVibranceView alloc] initWithFrame:view.bounds];
+        vibrance = [[LGVolumeHUDVibranceView alloc] initWithFrame:self.bounds];
         if (vibrance) {
-            objc_setAssociatedObject(view, kLGLandscapeVolumeVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [view addSubview:vibrance];
-            vibrance.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            LGLog(@"[Volume-Landscape] vibrance view created and added");
-        } else {
-            LGLog(@"[Volume-Landscape] ERROR: vibrance view creation failed");
+            objc_setAssociatedObject(self, kLGVolumeHUDVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (sliderWrapper) {
+                [self insertSubview:vibrance belowSubview:sliderWrapper];
+            } else {
+                [self addSubview:vibrance];
+            }
         }
     }
+
+    LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGVolumeHUDGlassKey);
+    if (!glass) {
+        glass = LGCreateRegisteredGlass(self.bounds, nil, @"VolumeHUD");
+        if (!glass) return;
+        objc_setAssociatedObject(self, kLGVolumeHUDGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        lgTrackGlass(glass, @"VolumeHUD", self);
+
+        if (vibrance) {
+            [self insertSubview:glass belowSubview:vibrance];
+        } else if (sliderWrapper) {
+            [self insertSubview:glass belowSubview:sliderWrapper];
+        } else {
+            [self addSubview:glass];
+        }
+    }
+
+    CGFloat radius = LGVolumeHUDCornerRadius(self.bounds);
+
+    glass.hidden = NO;
+    glass.frame = self.bounds;
+    glass.layer.cornerRadius = radius;
+    if (@available(iOS 13.0, *)) {
+        glass.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+    glass.layer.masksToBounds = YES;
+    [glass applyFilters];
+
     if (vibrance) {
-        vibrance.frame = view.bounds;
+        vibrance.hidden = NO;
+        vibrance.frame = self.bounds;
         vibrance.layer.cornerRadius = radius;
-        vibrance.layer.masksToBounds = YES;
         if (@available(iOS 13.0, *)) {
             vibrance.layer.cornerCurve = kCACornerCurveContinuous;
         }
-        vibrance.hidden = NO;
+        vibrance.layer.masksToBounds = YES;
     }
 
-    // Apply corner radius to the host view itself
-    view.layer.cornerRadius = radius;
-    view.layer.masksToBounds = YES;
+    self.layer.cornerRadius = radius;
     if (@available(iOS 13.0, *)) {
-        view.layer.cornerCurve = kCACornerCurveContinuous;
+        self.layer.cornerCurve = kCACornerCurveContinuous;
     }
-    LGLog(@"[Volume-Landscape] apply done: radius=%.1f glass=%@ vibrance=%@",
-          radius, glassView, vibrance);
-}
 
-static void LGLandscapeVolumeRemoveGlassFromView(UIView *view) {
-    if (!view) return;
-    // Restore system material views
-    LGHideSystemMaterialViews(view, NO);
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(view, kLGLandscapeVolumeGlassKey);
-    if (glassView) {
-        glassView.hidden = YES;
-        [glassView removeFromSuperview];
-        objc_setAssociatedObject(view, kLGLandscapeVolumeGlassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (sliderWrapper) {
+        sliderWrapper.layer.cornerRadius = radius;
+        if (@available(iOS 13.0, *)) {
+            sliderWrapper.layer.cornerCurve = kCACornerCurveContinuous;
+        }
+        sliderWrapper.layer.masksToBounds = YES;
     }
-    LGVolumeVibranceView *vibrance = objc_getAssociatedObject(view, kLGLandscapeVolumeVibranceKey);
-    if (vibrance) {
-        vibrance.hidden = YES;
-        [vibrance removeFromSuperview];
-        objc_setAssociatedObject(view, kLGLandscapeVolumeVibranceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    if (sliderView) {
+        UIView *sliderBg = LGVolumeHUDSliderBackground(sliderView);
+        if (sliderBg) sliderBg.hidden = YES;
+        sliderView.layer.cornerRadius = radius;
+        if (@available(iOS 13.0, *)) {
+            sliderView.layer.cornerCurve = kCACornerCurveContinuous;
+        }
+        sliderView.layer.masksToBounds = YES;
     }
 }
 
-#pragma mark - Portrait volume HUD (SBVolumeHUDView)
+%hook SBElasticSliderMaterialWrapperView
 
-static void LGVolumeHUDApplyGlassToView(UIView *view) {
-    if (!LGVolumeHUDGlassEnabled() || !view) {
-        LGLog(@"[Volume-HUD] apply skipped: enabled=%d view=%@", LGVolumeHUDGlassEnabled(), view);
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = %orig;
+    if (self) {
+        LGUpdateVolumeHUDGlass(self);
+    }
+    return self;
+}
+
+- (instancetype)initWithSliderView:(id)sliderView {
+    self = %orig;
+    if (self) {
+        LGUpdateVolumeHUDGlass(self);
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    %orig;
+    LGUpdateVolumeHUDGlass(self);
+}
+
+- (void)_setContinuousCornerRadius:(double)radius {
+    if (LGVolumeHUDEnabled()) {
+        CGFloat pillRadius = LGVolumeHUDCornerRadius(self.bounds);
+        %orig((double)pillRadius);
+        LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGVolumeHUDGlassKey);
+        if (glass) {
+            glass.layer.cornerRadius = pillRadius;
+            if (@available(iOS 13.0, *)) {
+                glass.layer.cornerCurve = kCACornerCurveContinuous;
+            }
+        }
+        LGVolumeHUDVibranceView *vibrance = objc_getAssociatedObject(self, kLGVolumeHUDVibranceKey);
+        if (vibrance) {
+            vibrance.layer.cornerRadius = pillRadius;
+            if (@available(iOS 13.0, *)) {
+                vibrance.layer.cornerCurve = kCACornerCurveContinuous;
+            }
+        }
+    } else {
+        %orig;
+    }
+}
+
+%end
+
+#pragma mark - Pill HUD (Ringer / Mute)
+
+static const void * const kLGPillHUDGlassKey = &kLGPillHUDGlassKey;
+static const void * const kLGPillHUDVibranceKey = &kLGPillHUDVibranceKey;
+
+static BOOL LGPillHUDEnabled(void) {
+    // 铃声药丸HUD复用VolumeHUD的开关设置
+    return LG_prefBool(@"VolumeHUDGlass.Enabled", NO);
+}
+
+static CGFloat LGPillHUDCornerRadius(CGRect bounds) {
+    CGFloat prefRadius = LG_prefFloat(@"VolumeHUDGlass.CornerRadius", 20.0);
+    if (prefRadius > 0) {
+        return prefRadius;
+    }
+    return MIN(bounds.size.width, bounds.size.height) * 0.5f;
+}
+
+static void LGUpdateRingerPillGlass(SBRingerPillView *self) {
+    if (!self) return;
+
+    MTMaterialView *base = nil;
+    MTShadowView *shadow = nil;
+    @try {
+        base = [self valueForKey:@"_materialView"];
+        shadow = [self valueForKey:@"_shadowView"];
+    } @catch (...) {}
+
+    if (!LGPillHUDEnabled()) {
+        LGLiveBackdropView *existing = objc_getAssociatedObject(self, kLGPillHUDGlassKey);
+        if (existing) existing.hidden = YES;
+        LGPillHUDVibranceView *existingVib = objc_getAssociatedObject(self, kLGPillHUDVibranceKey);
+        if (existingVib) existingVib.hidden = YES;
+        if (base) base.hidden = NO;
         return;
     }
 
-    LGLog(@"[Volume-HUD] apply glass to view: %@ (frame=%@ subviews=%lu)",
-          NSStringFromClass([view class]),
-          NSStringFromCGRect(view.frame),
-          (unsigned long)view.subviews.count);
+    if (base) base.hidden = YES;
 
-    // Hide system material views so our glass is visible
-    LGHideSystemMaterialViews(view, YES);
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(view, kLGVolumeHUDGlassKey);
-    if (!glassView) {
-        LGLog(@"[Volume-HUD] creating new glass view (bounds=%@)", NSStringFromCGRect(view.bounds));
-        glassView = LGCreateRegisteredGlass(view.bounds, nil, @"VolumeHUD");
-        if (!glassView) {
-            LGLog(@"[Volume-HUD] ERROR: LGCreateRegisteredGlass returned nil!");
-            return;
-        }
-        objc_setAssociatedObject(view, kLGVolumeHUDGlassKey, glassView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        lgTrackGlass(glassView, @"VolumeHUD", view);
-        // Insert on top so it's visible above remaining system subviews
-        [view addSubview:glassView];
-        glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        LGLog(@"[Volume-HUD] glass view created and added as subview");
-    } else {
-        LGLog(@"[Volume-HUD] reusing existing glass view");
-    }
-
-    CGFloat radius = LGVolumeHUDGlassCornerRadius();
-    glassView.frame = view.bounds;
-    glassView.layer.cornerRadius = radius;
-    glassView.layer.masksToBounds = YES;
-    if (@available(iOS 13.0, *)) {
-        glassView.layer.cornerCurve = kCACornerCurveContinuous;
-    }
-    glassView.hidden = NO;
-    LGLog(@"[Volume-HUD] calling applyFilters on glass view");
-    [glassView applyFilters];
-
-    // Add vibrance layer on top of glass
-    LGVolumeVibranceView *vibrance = objc_getAssociatedObject(view, kLGVolumeHUDVibranceKey);
+    LGPillHUDVibranceView *vibrance = objc_getAssociatedObject(self, kLGPillHUDVibranceKey);
     if (!vibrance) {
-        vibrance = [[LGVolumeVibranceView alloc] initWithFrame:view.bounds];
+        vibrance = [[LGPillHUDVibranceView alloc] initWithFrame:self.bounds];
         if (vibrance) {
-            objc_setAssociatedObject(view, kLGVolumeHUDVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [view addSubview:vibrance];
-            vibrance.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            LGLog(@"[Volume-HUD] vibrance view created and added");
-        } else {
-            LGLog(@"[Volume-HUD] ERROR: vibrance view creation failed");
+            objc_setAssociatedObject(self, kLGPillHUDVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (shadow) {
+                [self insertSubview:vibrance aboveSubview:shadow];
+            } else {
+                [self insertSubview:vibrance atIndex:0];
+            }
         }
     }
+
+    LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGPillHUDGlassKey);
+    if (!glass) {
+        glass = LGCreateRegisteredGlass(self.bounds, nil, @"VolumeHUD");
+        if (!glass) return;
+        objc_setAssociatedObject(self, kLGPillHUDGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        lgTrackGlass(glass, @"VolumeHUD", self);
+
+        if (vibrance) {
+            [self insertSubview:glass belowSubview:vibrance];
+        } else if (shadow) {
+            [self insertSubview:glass aboveSubview:shadow];
+        } else {
+            [self insertSubview:glass atIndex:0];
+        }
+    }
+
+    CGFloat radius = LGPillHUDCornerRadius(self.bounds);
+
+    glass.hidden = NO;
+    glass.frame = self.bounds;
+    glass.layer.cornerRadius = radius;
+    if (@available(iOS 13.0, *)) {
+        glass.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+    glass.layer.masksToBounds = YES;
+    [glass applyFilters];
+
     if (vibrance) {
-        vibrance.frame = view.bounds;
+        vibrance.hidden = NO;
+        vibrance.frame = self.bounds;
         vibrance.layer.cornerRadius = radius;
-        vibrance.layer.masksToBounds = YES;
         if (@available(iOS 13.0, *)) {
             vibrance.layer.cornerCurve = kCACornerCurveContinuous;
         }
-        vibrance.hidden = NO;
+        vibrance.layer.masksToBounds = YES;
     }
 
-    // Apply corner radius to the host view itself
-    view.layer.cornerRadius = radius;
-    view.layer.masksToBounds = YES;
+    self.layer.cornerRadius = radius;
     if (@available(iOS 13.0, *)) {
-        view.layer.cornerCurve = kCACornerCurveContinuous;
+        self.layer.cornerCurve = kCACornerCurveContinuous;
     }
-    LGLog(@"[Volume-HUD] apply done: radius=%.1f glass=%@ vibrance=%@",
-          radius, glassView, vibrance);
 }
 
-static void LGVolumeHUDRemoveGlassFromView(UIView *view) {
-    if (!view) return;
-    // Restore system material views
-    LGHideSystemMaterialViews(view, NO);
+static void LGUpdatePLPillGlass(PLPillView *self) {
+    if (!self) return;
 
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(view, kLGVolumeHUDGlassKey);
-    if (glassView) {
-        glassView.hidden = YES;
-        [glassView removeFromSuperview];
-        objc_setAssociatedObject(view, kLGVolumeHUDGlassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    MTMaterialView *base = nil;
+    MTShadowView *shadow = nil;
+    UIView *contentView = nil;
+    @try {
+        base = [self valueForKey:@"_materialView"];
+        shadow = [self valueForKey:@"_shadowView"];
+        contentView = [self valueForKey:@"_contentView"];
+    } @catch (...) {}
+
+    if (!LGPillHUDEnabled()) {
+        LGLiveBackdropView *existing = objc_getAssociatedObject(self, kLGPillHUDGlassKey);
+        if (existing) existing.hidden = YES;
+        LGPillHUDVibranceView *existingVib = objc_getAssociatedObject(self, kLGPillHUDVibranceKey);
+        if (existingVib) existingVib.hidden = YES;
+        if (base) base.hidden = NO;
+        return;
     }
-    LGVolumeVibranceView *vibrance = objc_getAssociatedObject(view, kLGVolumeHUDVibranceKey);
+
+    if (base) base.hidden = YES;
+
+    LGPillHUDVibranceView *vibrance = objc_getAssociatedObject(self, kLGPillHUDVibranceKey);
+    if (!vibrance) {
+        vibrance = [[LGPillHUDVibranceView alloc] initWithFrame:self.bounds];
+        if (vibrance) {
+            objc_setAssociatedObject(self, kLGPillHUDVibranceKey, vibrance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (contentView) {
+                [self insertSubview:vibrance belowSubview:contentView];
+            } else if (shadow) {
+                [self insertSubview:vibrance aboveSubview:shadow];
+            } else {
+                [self insertSubview:vibrance atIndex:0];
+            }
+        }
+    }
+
+    LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGPillHUDGlassKey);
+    if (!glass) {
+        glass = LGCreateRegisteredGlass(self.bounds, nil, @"VolumeHUD");
+        if (!glass) return;
+        objc_setAssociatedObject(self, kLGPillHUDGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        lgTrackGlass(glass, @"VolumeHUD", self);
+
+        if (vibrance) {
+            [self insertSubview:glass belowSubview:vibrance];
+        } else if (contentView) {
+            [self insertSubview:glass belowSubview:contentView];
+        } else if (shadow) {
+            [self insertSubview:glass aboveSubview:shadow];
+        } else {
+            [self insertSubview:glass atIndex:0];
+        }
+    }
+
+    CGFloat radius = LGPillHUDCornerRadius(self.bounds);
+
+    glass.hidden = NO;
+    glass.frame = self.bounds;
+    glass.layer.cornerRadius = radius;
+    if (@available(iOS 13.0, *)) {
+        glass.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+    glass.layer.masksToBounds = YES;
+    [glass applyFilters];
+
     if (vibrance) {
-        vibrance.hidden = YES;
-        [vibrance removeFromSuperview];
-        objc_setAssociatedObject(view, kLGVolumeHUDVibranceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-}
-
-#pragma mark - Hooks
-
-// SpringBoard landscape volume press band
-%hook SBVolumePressBand
-
-- (void)layoutSubviews {
-    %orig;
-    LGLog(@"[Volume-Landscape] SBVolumePressBand layoutSubviews called (window=%@)", [(UIView *)self window]);
-    if (LGLandscapeVolumeGlassEnabled()) {
-        LGLandscapeVolumeApplyGlassToView((UIView *)self);
-    } else {
-        LGLandscapeVolumeRemoveGlassFromView((UIView *)self);
-    }
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    UIView *selfView = (UIView *)self;
-    LGLog(@"[Volume-Landscape] SBVolumePressBand didMoveToWindow (window=%@)", selfView.window);
-    if (selfView.window && LGLandscapeVolumeGlassEnabled()) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            LGLandscapeVolumeApplyGlassToView(selfView);
-        });
-    } else if (!selfView.window) {
-        LGLandscapeVolumeRemoveGlassFromView(selfView);
-    }
-}
-
-%end
-
-// Portrait volume HUD view
-%hook SBVolumeHUDView
-
-- (void)layoutSubviews {
-    %orig;
-    LGLog(@"[Volume-HUD] SBVolumeHUDView layoutSubviews called (window=%@)", [(UIView *)self window]);
-    if (LGVolumeHUDGlassEnabled()) {
-        LGVolumeHUDApplyGlassToView((UIView *)self);
-    } else {
-        LGVolumeHUDRemoveGlassFromView((UIView *)self);
-    }
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    UIView *selfView = (UIView *)self;
-    LGLog(@"[Volume-HUD] SBVolumeHUDView didMoveToWindow (window=%@)", selfView.window);
-    if (selfView.window && LGVolumeHUDGlassEnabled()) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            LGVolumeHUDApplyGlassToView(selfView);
-        });
-    } else if (!selfView.window) {
-        LGVolumeHUDRemoveGlassFromView(selfView);
-    }
-}
-
-%end
-
-#pragma mark - iOS 17+ 音量 HUD 类名探测（按需触发，安全模式）
-
-static NSMutableSet<NSString *> *sLGFoundVolumeClasses = nil;
-
-static void LGPrintViewTree(UIView *view, NSString *prefix) {
-    if (!view) return;
-    NSString *clsName = NSStringFromClass([view class]);
-    LGLog(@"[Volume-Probe] %@%@ frame=%@ hidden=%d alpha=%.2f",
-          prefix, clsName, NSStringFromCGRect(view.frame), view.hidden, view.alpha);
-    for (UIView *sv in view.subviews) {
-        NSString *newPrefix = [prefix stringByAppendingString:@"  "];
-        LGPrintViewTree(sv, newPrefix);
-    }
-}
-
-static BOOL LGIsVolumeLikeClass(NSString *className) {
-    if (!className || className.length == 0) return NO;
-    NSString *lower = [className lowercaseString];
-    NSArray *kws = @[@"volume", @"hud", @"pressband",
-                     @"mediacontrols", @"mediaremote",
-                     @"presentation", @"platter",
-                     @"slider", @"progress",
-                     @"pill", @"aperture", @"island",
-                     @"dynamic", @"saelement"];
-    for (NSString *kw in kws) {
-        if ([lower containsString:kw]) return YES;
-    }
-    return NO;
-}
-
-static void LGProbeVolumeViews(void) {
-    @autoreleasepool {
-        if (!sLGFoundVolumeClasses) {
-            sLGFoundVolumeClasses = [NSMutableSet set];
-        }
-
-        NSArray *windows = nil;
+        vibrance.hidden = NO;
+        vibrance.frame = self.bounds;
+        vibrance.layer.cornerRadius = radius;
         if (@available(iOS 13.0, *)) {
-            NSMutableArray *all = [NSMutableArray array];
-            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if ([scene isKindOfClass:[UIWindowScene class]]) {
-                    [all addObjectsFromArray:scene.windows];
-                }
-            }
-            windows = all;
+            vibrance.layer.cornerCurve = kCACornerCurveContinuous;
         }
-        if (!windows) {
-            windows = [UIApplication sharedApplication].windows;
-        }
+        vibrance.layer.masksToBounds = YES;
+    }
 
-        NSMutableArray *newFound = [NSMutableArray array];
-        for (UIWindow *window in windows) {
-            @try {
-                // 广度优先搜索
-                NSMutableArray *queue = [NSMutableArray arrayWithArray:window.subviews];
-                while (queue.count > 0) {
-                    UIView *v = queue.firstObject;
-                    [queue removeObjectAtIndex:0];
-                    if (!v) continue;
-                    NSString *cls = NSStringFromClass([v class]);
-                    if (LGIsVolumeLikeClass(cls) && ![sLGFoundVolumeClasses containsObject:cls]) {
-                        [sLGFoundVolumeClasses addObject:cls];
-                        [newFound addObject:cls];
-                        LGLog(@"[Volume-Probe] 发现新视图类: %@ (window=%@ frame=%@)",
-                              cls, NSStringFromClass([window class]), NSStringFromCGRect(v.frame));
-                        LGLog(@"[Volume-Probe] %@ 的完整视图树:", cls);
-                        LGPrintViewTree(window, @"");
-                    }
-                    [queue addObjectsFromArray:v.subviews];
-                }
-            } @catch (NSException *e) {
-                LGLog(@"[Volume-Probe] 扫描异常: %@", e.reason);
-            }
-        }
-
-        if (newFound.count == 0) {
-            LGLog(@"[Volume-Probe] 未发现新的音量相关视图类 (已发现 %lu 个)",
-                  (unsigned long)sLGFoundVolumeClasses.count);
-        }
+    self.layer.cornerRadius = radius;
+    if (@available(iOS 13.0, *)) {
+        self.layer.cornerCurve = kCACornerCurveContinuous;
     }
 }
 
-static void LGVolumeChangedHandler(CFNotificationCenterRef center,
-                                   void *observer,
-                                   CFStringRef name,
-                                   const void *object,
-                                   CFDictionaryRef userInfo) {
-    @autoreleasepool {
-        LGLog(@"[Volume-Probe] 检测到音量变化，延迟 0.3 秒后扫描视图...");
-        // 延迟一下，等 HUD 完全显示出来
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            @try {
-                LGProbeVolumeViews();
-            } @catch (NSException *e) {
-                LGLog(@"[Volume-Probe] 扫描崩溃: %@", e.reason);
-            }
-        });
-    }
-}
+%hook SBRingerPillView
 
-#pragma mark - iOS 17+ 音量 HUD 类名探测（Hook UIView 通用方式）
-
-// 通用方式：hook 所有 UIView 的 didMoveToWindow
-// 只在类名包含音量相关关键词时打印日志，避免刷屏
-// 这样不管 iOS 17 上音量 HUD 类名是什么都能抓到
-
-%hook UIView
-- (void)didMoveToWindow {
+- (void)layoutSubviews {
     %orig;
-    UIView *selfView = (UIView *)self;
-    if (!selfView.window) return; // 只记录显示到 window 上的
-
-    NSString *clsName = NSStringFromClass([selfView class]);
-    if (!LGIsVolumeLikeClass(clsName)) return;
-
-    // 去重：同一个类只打一次
-    static NSMutableSet *sLoggedClasses = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sLoggedClasses = [NSMutableSet set];
-    });
-
-    @synchronized(sLoggedClasses) {
-        if ([sLoggedClasses containsObject:clsName]) return;
-        [sLoggedClasses addObject:clsName];
-    }
-
-    LGLog(@"[Volume-Probe] 发现音量相关视图: %@ frame=%@ superview=%@",
-          clsName,
-          NSStringFromCGRect(selfView.frame),
-          NSStringFromClass([selfView.superview class]));
-
-    // 打印父视图链，方便定位层级
-    NSMutableString *chain = [NSMutableString string];
-    UIView *cur = selfView;
-    while (cur) {
-        [chain appendFormat:@"%@", NSStringFromClass([cur class])];
-        cur = cur.superview;
-        if (cur) [chain appendString:@" → "];
-    }
-    LGLog(@"[Volume-Probe] 视图层级链: %@", chain);
+    LGUpdateRingerPillGlass(self);
 }
+
 %end
 
-#pragma mark - 窗口级别监控（记录所有新出现的窗口）
+%hook PLPillView
 
-// 监控所有 UIWindow 的 becomeKeyWindow
-// 这样不管音量 HUD 窗口叫什么名字都能发现
-%hook UIWindow
-- (void)becomeKeyWindow {
+- (void)layoutSubviews {
     %orig;
-    UIWindow *selfWin = (UIWindow *)self;
-    NSString *clsName = NSStringFromClass([selfWin class]);
-    
-    static NSMutableSet *sLoggedWindows = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sLoggedWindows = [NSMutableSet set];
-    });
-    
-    NSString *key = [NSString stringWithFormat:@"%@-%p", clsName, selfWin];
-    @synchronized(sLoggedWindows) {
-        if ([sLoggedWindows containsObject:key]) return;
-        [sLoggedWindows addObject:key];
-    }
-    
-    LGLog(@"[Volume-Probe] 新窗口成为KeyWindow: %@ frame=%@ windowLevel=%.0f rootVC=%@",
-          clsName,
-          NSStringFromCGRect(selfWin.frame),
-          selfWin.windowLevel,
-          NSStringFromClass([selfWin.rootViewController class]));
-    
-    // 打印顶层子视图类名
-    NSMutableArray *topClasses = [NSMutableArray array];
-    for (UIView *sub in selfWin.subviews) {
-        [topClasses addObject:NSStringFromClass([sub class])];
-    }
-    LGLog(@"[Volume-Probe]   顶层子视图: %@", topClasses);
+    LGUpdatePLPillGlass(self);
 }
+
 %end
 
 %ctor {
-    if (!LGIsSpringBoardProcess()) {
-        LGLog(@"[Volume] not SpringBoard process, skipping volume hooks");
-        return;
-    }
-    LGLog(@"[Volume] LandscapeVolume tweak loaded in SpringBoard");
-
-    // 注册音量变化通知监听器（用于探测 iOS 17 音量 HUD 类名）
-    // 同时监听 Local 和 Darwin 两个通知中心
-    CFNotificationCenterAddObserver(
-        CFNotificationCenterGetLocalCenter(),
-        NULL,
-        LGVolumeChangedHandler,
-        CFSTR("AVSystemController_SystemVolumeDidChangeNotification"),
-        NULL,
-        CFNotificationSuspensionBehaviorDrop);
-    CFNotificationCenterAddObserver(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        NULL,
-        LGVolumeChangedHandler,
-        CFSTR("com.apple.springboard.volumechanged"),
-        NULL,
-        CFNotificationSuspensionBehaviorDrop);
-    CFNotificationCenterAddObserver(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        NULL,
-        LGVolumeChangedHandler,
-        CFSTR("AVSystemController_SystemVolumeDidChangeNotification"),
-        NULL,
-        CFNotificationSuspensionBehaviorDrop);
-    LGLog(@"[Volume-Probe] 音量变化监听器已注册（Local + Darwin）");
-
+    if (!LGIsSpringBoardProcess()) return;
     lgObservePreferenceReload(^{
-        LGLog(@"[Volume] preferences reloaded");
-        // Glass views will update on next layout pass
+        LGLog(@"VolumeHUD: Preferences reloaded");
     });
 }
