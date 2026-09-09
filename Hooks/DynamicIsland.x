@@ -34,7 +34,6 @@ typedef struct __attribute__((packed)) {
 
 #define LG_DI_MASK_MAGIC 0x4c474449 // "LGDI"
 
-// backboardd reads this packed alpha mask directly
 static BOOL LGDIWriteMaskImage(UIImage *image, CGPoint screenOrigin, uint64_t generation) {
     CGImageRef cg = image.CGImage;
     if (!cg) return NO;
@@ -94,9 +93,31 @@ static inline BOOL LGIsAtLeastiOS16(void) {
 static void *kLGDIGlassViewKey = &kLGDIGlassViewKey;
 static void *kLGDIMaskLayerKey = &kLGDIMaskLayerKey;
 static void *kLGDIAttachedKey = &kLGDIAttachedKey;
-static void *kLGDIOriginalBackgroundColorKey = &kLGDIOriginalBackgroundColorKey;
 
 static uint64_t sLGDIMaskNextGeneration = 0;
+
+// 递归打印视图层级（调试用）
+static NSString *LGDIDumpViewHierarchy(UIView *view, NSInteger indent) {
+    NSMutableString *result = [NSMutableString string];
+    NSString *indentStr = [@"" stringByPaddingToLength:indent * 2 withString:@"  " startingAtIndex:0];
+    NSString *clsName = NSStringFromClass(view.class);
+    CGRect frame = view.frame;
+    CGFloat alpha = view.alpha;
+    BOOL hidden = view.hidden;
+    UIColor *bgColor = view.backgroundColor;
+    NSString *bgDesc = bgColor ? [bgColor description] : @"(nil)";
+    if (bgDesc.length > 50) bgDesc = [bgDesc substringToIndex:50];
+
+    [result appendFormat:@"%@<%@: hidden=%d alpha=%.2f frame=%.1f,%.1f %.1fx%.1f bg=%@>\n",
+                         indentStr, clsName, hidden, alpha,
+                         frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
+                         bgDesc];
+
+    for (UIView *subview in view.subviews) {
+        [result appendString:LGDIDumpViewHierarchy(subview, indent + 1)];
+    }
+    return result;
+}
 
 // 渲染视图为 alpha mask 图片
 static UIImage *LGDIRenderAlphaMaskFromView(UIView *view) {
@@ -112,7 +133,6 @@ static UIImage *LGDIRenderAlphaMaskFromView(UIView *view) {
         return nil;
     }
 
-    // 渲染视图层级到上下文
     [view.layer renderInContext:ctx];
 
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
@@ -121,14 +141,14 @@ static UIImage *LGDIRenderAlphaMaskFromView(UIView *view) {
     return image;
 }
 
-// 更新 glassView 的 layer mask（裁剪掉方形角）
+// 更新 glassView 的 layer mask
 static void LGDIUpdateGlassMask(UIView *glassView, UIImage *maskImage) {
     if (!glassView || !maskImage) return;
 
     CALayer *maskLayer = objc_getAssociatedObject(glassView, kLGDIMaskLayerKey);
     if (!maskLayer) {
         maskLayer = [CALayer layer];
-        maskLayer.contentsGravity = kCAGravityResizeAspect;
+        maskLayer.contentsGravity = kCAGravityResize;
         objc_setAssociatedObject(glassView, kLGDIMaskLayerKey, maskLayer,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         glassView.layer.mask = maskLayer;
@@ -143,13 +163,11 @@ static void LGDIUpdateMask(UIView *sourceView, UIView *glassView) {
     if (!sourceView || !sourceView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
 
-    // 获取在屏幕上的位置
     CGPoint origin = [sourceView convertPoint:CGPointZero toView:nil];
 
     UIImage *maskImage = LGDIRenderAlphaMaskFromView(sourceView);
     if (!maskImage) return;
 
-    // 更新 glassView 的 layer mask（裁剪形状，解决方形角问题）
     if (glassView) {
         LGDIUpdateGlassMask(glassView, maskImage);
     }
@@ -169,7 +187,7 @@ static BOOL sLGDIMaskUpdatePending = NO;
 static __weak UIView *sLGDIPendingSourceView = nil;
 static __weak UIView *sLGDIPendingGlassView = nil;
 
-static const NSTimeInterval kLGDIMaskUpdateThrottle = 1.0 / 30.0; // 30fps 上限
+static const NSTimeInterval kLGDIMaskUpdateThrottle = 1.0 / 30.0;
 
 static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView) {
     if (!sourceView) return;
@@ -202,7 +220,7 @@ static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView) {
     }
 }
 
-#pragma mark - Find gain map view
+#pragma mark - Find views
 
 static UIView *LGDIFindGainMapViewInView(UIView *root) {
     if (!root) return nil;
@@ -219,17 +237,28 @@ static UIView *LGDIFindGainMapViewInView(UIView *root) {
 
 #pragma mark - Install / Remove
 
-static void LGDIInstallGlassInContainer(UIView *containerView, UIView *gainMapView) {
-    if (!containerView || !containerView.window) return;
+// 关键思路：
+// 灵动岛的黑色背景可能是 backboardd 直接渲染的，不是普通 UIView.backgroundColor
+// 所以我们不试图替换背景，而是把 glassView 放到灵动岛容器的父视图中
+// 然后用 mask 裁剪成灵动岛形状，让玻璃显示在灵动岛位置
+static void LGDIInstallGlassForIslandView(UIView *islandView) {
+    if (!islandView || !islandView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
     if (!LGIsAtLeastiOS16()) return;
 
-    // 用 gainMapView 作为 key 存储 glassView
-    UIView *keyView = gainMapView ?: containerView;
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(keyView, kLGDIGlassViewKey);
+    UIView *parent = islandView.superview;
+    if (!parent) return;
 
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(islandView, kLGDIGlassViewKey);
     if (!glassView) {
-        glassView = LGCreateRegisteredGlass(containerView.bounds, nil, @"DynamicIsland");
+        // 打印视图层级（调试用，只打一次）
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            LGDILog(@"=== Dynamic Island view hierarchy ===\n%@",
+                    LGDIDumpViewHierarchy(islandView, 0));
+        });
+
+        glassView = LGCreateRegisteredGlass(islandView.bounds, nil, @"DynamicIsland");
         if (!glassView) return;
 
         glassView.userInteractionEnabled = NO;
@@ -237,104 +266,79 @@ static void LGDIInstallGlassInContainer(UIView *containerView, UIView *gainMapVi
         glassView.layer.cornerRadius = 0.0;
         glassView.layer.masksToBounds = YES;
 
-        // 插入到容器的最底层（作为背景）
-        [containerView insertSubview:glassView atIndex:0];
+        // 插入到灵动岛下方的兄弟层级
+        [parent insertSubview:glassView belowSubview:islandView];
 
-        objc_setAssociatedObject(keyView, kLGDIGlassViewKey, glassView,
+        objc_setAssociatedObject(islandView, kLGDIGlassViewKey, glassView,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(islandView, kLGDIAttachedKey, @(YES),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        // 标记已附加
-        objc_setAssociatedObject(keyView, kLGDIAttachedKey, @(YES),
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-        // 保存原始背景色
-        UIColor *origBg = containerView.backgroundColor;
-        if (origBg) {
-            objc_setAssociatedObject(keyView, kLGDIOriginalBackgroundColorKey, origBg,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-
-        // 把容器背景设为透明，让玻璃层显示出来
-        containerView.backgroundColor = UIColor.clearColor;
-
-        // 延迟重试 applyFilters（防止 backboardd filter 还没注册好）
+        // 延迟重试 applyFilters
         __weak LGLiveBackdropView *weakGlass = glassView;
         for (NSNumber *delay in @[ @1.0, @2.5, @5.0, @8.0 ]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 [weakGlass applyFilters];
-                            });
+            });
         }
 
-        // 生成初始 mask（延迟一点，确保视图布局完成）
-        __weak UIView *weakSource = gainMapView ?: containerView;
+        // 生成初始 mask
+        UIView *gainMapView = LGDIFindGainMapViewInView(islandView);
+        __weak UIView *weakSource = gainMapView ?: islandView;
         __weak LGLiveBackdropView *weakGlass2 = glassView;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
                            LGDIUpdateMask(weakSource, weakGlass2);
                        });
 
-        LGDILog(@"Installed DynamicIsland glass container=%@ gainMap=%@ size=%.1fx%.1f",
-                NSStringFromClass(containerView.class),
+        LGDILog(@"Installed DynamicIsland glass island=%@ gainMap=%@ parent=%@ size=%.1fx%.1f",
+                NSStringFromClass(islandView.class),
                 gainMapView ? NSStringFromClass(gainMapView.class) : @"(nil)",
-                containerView.bounds.size.width, containerView.bounds.size.height);
+                NSStringFromClass(parent.class),
+                islandView.bounds.size.width, islandView.bounds.size.height);
     }
 
-    // 更新位置和大小
-    CGRect targetFrame = containerView.bounds;
+    // 更新位置和大小（跟随灵动岛）
+    CGRect targetFrame = islandView.frame;
     if (!CGRectEqualToRect(glassView.frame, targetFrame)) {
         glassView.frame = targetFrame;
-        // 更新 mask layer 的 frame
-        CALayer *maskLayer = objc_getAssociatedObject(keyView, kLGDIMaskLayerKey);
+        CALayer *maskLayer = objc_getAssociatedObject(glassView, kLGDIMaskLayerKey);
         if (maskLayer) {
             maskLayer.frame = glassView.bounds;
         }
     }
 
-    // 确保 glassView 在最底层
-    [containerView sendSubviewToBack:glassView];
+    // 确保 glassView 紧贴在灵动岛下方
+    [parent insertSubview:glassView belowSubview:islandView];
 }
 
-static void LGDIRemoveGlassFromContainer(UIView *containerView, UIView *gainMapView) {
-    UIView *keyView = gainMapView ?: containerView;
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(keyView, kLGDIGlassViewKey);
+static void LGDIRemoveGlassForIslandView(UIView *islandView) {
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(islandView, kLGDIGlassViewKey);
     if (glassView) {
         [glassView removeFromSuperview];
-        objc_setAssociatedObject(keyView, kLGDIGlassViewKey, nil,
+        objc_setAssociatedObject(islandView, kLGDIGlassViewKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(keyView, kLGDIAttachedKey, nil,
+        objc_setAssociatedObject(islandView, kLGDIAttachedKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(keyView, kLGDIMaskLayerKey, nil,
+        objc_setAssociatedObject(islandView, kLGDIMaskLayerKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-        // 恢复原始背景色
-        UIColor *origBg = objc_getAssociatedObject(keyView, kLGDIOriginalBackgroundColorKey);
-        if (origBg) {
-            containerView.backgroundColor = origBg;
-            objc_setAssociatedObject(keyView, kLGDIOriginalBackgroundColorKey, nil,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
 
         LGDILog(@"Removed DynamicIsland glass");
     }
 }
 
-#pragma mark - Hook SBDynamicIslandView（主路径：容器视图）
+#pragma mark - Hook SBDynamicIslandView（主路径）
 
-// SBDynamicIslandView 是灵动岛的容器视图
-// 我们在这里插入玻璃层，并隐藏黑色背景
 %hook SBDynamicIslandView
 
 - (void)didMoveToWindow {
     %orig;
     UIView *selfView = (UIView *)self;
     if (selfView.window) {
-        // 找子视图中的 gain map view（作为形状源）
-        UIView *gainMapView = LGDIFindGainMapViewInView(selfView);
-        LGDIInstallGlassInContainer(selfView, gainMapView);
+        LGDIInstallGlassForIslandView(selfView);
     } else {
-        UIView *gainMapView = LGDIFindGainMapViewInView(selfView);
-        LGDIRemoveGlassFromContainer(selfView, gainMapView);
+        LGDIRemoveGlassForIslandView(selfView);
     }
 }
 
@@ -342,25 +346,19 @@ static void LGDIRemoveGlassFromContainer(UIView *containerView, UIView *gainMapV
     %orig;
     UIView *selfView = (UIView *)self;
 
-    UIView *gainMapView = LGDIFindGainMapViewInView(selfView);
-    UIView *keyView = gainMapView ?: selfView;
-    NSNumber *attached = objc_getAssociatedObject(keyView, kLGDIAttachedKey);
-
+    NSNumber *attached = objc_getAssociatedObject(selfView, kLGDIAttachedKey);
     if (attached && attached.boolValue) {
-        LGDIInstallGlassInContainer(selfView, gainMapView);
+        LGDIInstallGlassForIslandView(selfView);
 
-        // 形状可能变化，更新 mask（节流）
-        LGLiveBackdropView *glassView = objc_getAssociatedObject(keyView, kLGDIGlassViewKey);
+        UIView *gainMapView = LGDIFindGainMapViewInView(selfView);
+        LGLiveBackdropView *glassView = objc_getAssociatedObject(selfView, kLGDIGlassViewKey);
         LGDIScheduleMaskUpdate(gainMapView ?: selfView, glassView);
     }
 }
 
 - (void)setHidden:(BOOL)hidden {
     %orig;
-    UIView *selfView = (UIView *)self;
-    UIView *gainMapView = LGDIFindGainMapViewInView(selfView);
-    UIView *keyView = gainMapView ?: selfView;
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(keyView, kLGDIGlassViewKey);
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(self, kLGDIGlassViewKey);
     if (glassView) glassView.hidden = hidden;
 }
 
@@ -368,13 +366,10 @@ static void LGDIRemoveGlassFromContainer(UIView *containerView, UIView *gainMapV
 
 #pragma mark - Hook _SBGainMapView（形状源）
 
-// _SBGainMapView 是灵动岛的增益图视图，负责定义灵动岛的形状
-// 我们主要用它来生成 mask，实际 glassView 插在 SBDynamicIslandView 里
 %hook _SBGainMapView
 
 - (void)layoutSubviews {
     %orig;
-    // 形状变化时，通知容器更新 mask
     UIView *selfView = (UIView *)self;
 
     // 向上找容器视图
@@ -384,10 +379,9 @@ static void LGDIRemoveGlassFromContainer(UIView *containerView, UIView *gainMapV
     }
 
     if (container) {
-        UIView *keyView = selfView;
-        NSNumber *attached = objc_getAssociatedObject(keyView, kLGDIAttachedKey);
+        NSNumber *attached = objc_getAssociatedObject(container, kLGDIAttachedKey);
         if (attached && attached.boolValue) {
-            LGLiveBackdropView *glassView = objc_getAssociatedObject(keyView, kLGDIGlassViewKey);
+            LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIGlassViewKey);
             LGDIScheduleMaskUpdate(selfView, glassView);
         }
     }
@@ -409,7 +403,6 @@ static void LGDynamicIslandInit(void) {
     if (!LGIsSpringBoardProcess()) return;
     if (!LGIsAtLeastiOS16()) return;
 
-    // 监听偏好设置变更
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL, LGDIPrefsChanged,
                                     CFSTR("dylv.liquidglass/PrefsReloaded"),
