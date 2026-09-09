@@ -260,7 +260,7 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
 
     // 用 curtainView 的尺寸创建玻璃
     CGRect glassFrame = curtainView.frame;
-    glassView = LGCreateRegisteredGlass(glassFrame.size, nil, @"DynamicIsland");
+    glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
     if (!glassView) {
         LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil");
         return;
