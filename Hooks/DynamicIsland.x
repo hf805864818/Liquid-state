@@ -193,6 +193,7 @@ static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView, void *
 
 static void *kLGDIPillGlassKey = &kLGDIPillGlassKey;
 static void *kLGDIPillMaskLayerKey __attribute__((unused)) = &kLGDIPillMaskLayerKey;
+static void *kLGDIInstanceNumberKey = &kLGDIInstanceNumberKey;
 
 #pragma mark - Size validation
 
@@ -341,13 +342,22 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
 - (void)didMoveToWindow {
     %orig;
 
+    // 给每个实例分配一个编号（方便追踪）
+    static NSInteger sInstanceCounter = 0;
+    NSNumber *instNum = objc_getAssociatedObject(self, kLGDIInstanceNumberKey);
+    if (!instNum) {
+        instNum = @(++sInstanceCounter);
+        objc_setAssociatedObject(self, kLGDIInstanceNumberKey, instNum,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
     if (self.window) {
-        LGDILog(@"[_SBGainMapView didMoveToWindow] ADDED ptr=%p bounds=%@",
-                (void *)self,
+        LGDILog(@"[_SBGainMapView didMoveToWindow] ADDED #%@ bounds=%@",
+                instNum,
                 NSStringFromCGRect(self.bounds));
         LGDIInstallPillGlass(self);
     } else {
-        LGDILog(@"[_SBGainMapView didMoveToWindow] REMOVED ptr=%p", (void *)self);
+        LGDILog(@"[_SBGainMapView didMoveToWindow] REMOVED #%@", instNum);
         LGDIRemovePillGlass(self);
     }
 }
