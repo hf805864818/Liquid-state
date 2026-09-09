@@ -1,23 +1,15 @@
 // =============================================================================
-//  DynamicIsland.x — Mango 架构精确复制（纯事件驱动，零轮询，零 KVO，零递归扫描）
+//  DynamicIsland.x — Mango 架构事件驱动 + 布局回退
 //
-//  事件源（与 Mango 完全一致）：
-//  1. SBMainWorkspace._performActionsForUIScene:...lifecycleActionType:
-//     → App 场景生命周期（Live Activity、前后台切换）
-//  2. SBMainWorkspace.destroyScene:withTransitionContext:
-//     → 场景销毁
-//  3. Darwin 通知 com.apple.mobiletimer
-//     → 系统计时器/秒表
-//  4. Darwin 通知 com.apple.MediaRemoteUI
-//     → 音乐播放/暂停/切换
-//  5. Darwin 通知 com.apple.springboard.charging
-//     → 充电状态变化
-//  6. SBNCNotificationDispatcher hook
+//  事件源（多路径冗余，任一触发即可）：
+//  1. FBSceneLayerManager 场景生命周期（主路径，多选择器尝试）
+//  2. SBSystemApertureCaptureVisibilityShimViewController viewDidAppear/viewDidLayoutSubviews
+//     → 视图出现时启动周期检测，发现 Pill 视图即安装玻璃
+//  3. SBNCNotificationDispatcher hook
 //     → 通知系统驱动的灵动岛内容（来电、充电指示器等）
 //
-//  零 CPU 开销：没有内容时所有事件源都不触发
-//  零递归扫描：事件本身就是信号，不需要扫描视图层级
-//  零误触发：每个事件源只在对应类型的事件发生时触发
+//  设计原则：场景生命周期 hook 失败不影响功能
+//  viewDidAppear + viewDidLayoutSubviews + 周期检测 = 兜底保障
 // =============================================================================
 
 #import <UIKit/UIKit.h>
@@ -279,6 +271,8 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 @interface LGPillManager : NSObject {
     CADisplayLink *_expandedDisplayLink;
     LGExpandedGlassLinkProxy *_expandedLinkProxy;
+    NSTimer *_fallbackCheckTimer;
+    NSInteger _fallbackCheckCount;
 }
 
 @property (nonatomic, strong) UIView *pillLiquidGlassView;
@@ -319,6 +313,11 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 // CADisplayLink
 - (void)lgStartExpandedGlassLiveRefresh;
 - (void)lgStopExpandedGlassLiveRefresh;
+
+// 周期检测回退（场景 hook 失败时的兜底）
+- (void)startFallbackCheck;
+- (void)stopFallbackCheck;
+- (void)fallbackCheckTick:(NSTimer *)timer;
 
 // 辅助
 - (UIView *)findPillViewInAperture;
@@ -739,6 +738,47 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     }
 }
 
+#pragma mark - Fallback periodic check
+
+- (void)startFallbackCheck {
+    if (_fallbackCheckTimer) return;
+    _fallbackCheckCount = 0;
+    _fallbackCheckTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
+                                                          target:self
+                                                        selector:@selector(fallbackCheckTick:)
+                                                        userInfo:nil
+                                                         repeats:YES];
+    LGDILog(@"startFallbackCheck: timer started (2s interval, 30 retries)");
+}
+
+- (void)stopFallbackCheck {
+    if (_fallbackCheckTimer) {
+        [_fallbackCheckTimer invalidate];
+        _fallbackCheckTimer = nil;
+        LGDILog(@"stopFallbackCheck: timer stopped");
+    }
+    _fallbackCheckCount = 0;
+}
+
+- (void)fallbackCheckTick:(NSTimer *)timer {
+    _fallbackCheckCount++;
+    if (_fallbackCheckCount > 30) {
+        [self stopFallbackCheck];
+        return;
+    }
+    if (self.pillContentActive) {
+        [self stopFallbackCheck];
+        return;
+    }
+    UIView *pillView = [self findPillViewInAperture];
+    if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
+        LGDILog(@"fallbackCheck: pill view found (retry %ld), installing glass",
+                (long)_fallbackCheckCount);
+        [self pillDidAppear:@"fallback-check"];
+        [self stopFallbackCheck];
+    }
+}
+
 @end
 
 // =============================================================================
@@ -760,26 +800,27 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 @end
 
 // =============================================================================
-//  Hook: SBSystemApertureCaptureVisibilityShimViewController
-//  iOS 17 灵动岛窗口根控制器，比 SBSystemApertureViewController 更可靠
+//  Hook: SBSystemApertureViewController (回退)
+//  iOS 17.0 可能没有 ShimVC，用 SBSystemApertureViewController 兜底
 // =============================================================================
 
-%hook SBSystemApertureCaptureVisibilityShimViewController
+%hook SBSystemApertureViewController
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    LGDILog(@"ShimVC viewDidAppear");
+    LGDILog(@"ApertureVC viewDidAppear");
 
     LGPillManager *mgr = [LGPillManager sharedManager];
     mgr.apertureViewController = self;
     mgr.apertureContainerView = self.view;
+    [mgr startFallbackCheck];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
     %orig;
-    LGDILog(@"ShimVC viewDidDisappear");
-
+    LGDILog(@"ApertureVC viewDidDisappear");
     LGPillManager *mgr = [LGPillManager sharedManager];
+    [mgr stopFallbackCheck];
     [mgr removePillGlass];
     [mgr removeExpandedGlass];
     mgr.apertureContainerView = nil;
@@ -793,6 +834,78 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGPillManager *mgr = [LGPillManager sharedManager];
     mgr.apertureContainerView = view;
 
+    if (!mgr.pillContentActive) {
+        UIView *pillView = [mgr findPillViewInAperture];
+        if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
+            LGDILog(@"ApertureVC layoutSubviews: pill view found, installing");
+            [mgr pillDidAppear:@"layoutSubviews"];
+        }
+    }
+
+    LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
+    if (pillGlass) {
+        UIView *pillView = [mgr findPillViewInAperture];
+        if (pillView) {
+            CGRect targetFrame = pillView.frame;
+            if (!CGRectEqualToRect(pillGlass.frame, targetFrame)) {
+                pillGlass.frame = targetFrame;
+            }
+            LGDIScheduleMaskUpdate(pillView, pillGlass, kLGDIPillMaskLayerKey);
+        }
+    }
+}
+
+%end
+
+// =============================================================================
+//  Hook: SBSystemApertureCaptureVisibilityShimViewController
+//  iOS 17 灵动岛窗口根控制器，比 SBSystemApertureViewController 更可靠
+// =============================================================================
+
+%hook SBSystemApertureCaptureVisibilityShimViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    LGDILog(@"ShimVC viewDidAppear");
+
+    LGPillManager *mgr = [LGPillManager sharedManager];
+    mgr.apertureViewController = self;
+    mgr.apertureContainerView = self.view;
+
+    // 启动周期检测回退：场景生命周期 hook 可能失败
+    // 周期检测会在发现 Pill 视图后自动安装玻璃并停止
+    [mgr startFallbackCheck];
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig;
+    LGDILog(@"ShimVC viewDidDisappear");
+
+    LGPillManager *mgr = [LGPillManager sharedManager];
+    [mgr stopFallbackCheck];
+    [mgr removePillGlass];
+    [mgr removeExpandedGlass];
+    mgr.apertureContainerView = nil;
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    UIView *view = self.view;
+    if (!view || !view.window) return;
+
+    LGPillManager *mgr = [LGPillManager sharedManager];
+    mgr.apertureContainerView = view;
+
+    // 如果玻璃尚未安装，尝试安装（viewDidLayoutSubviews 兜底）
+    if (!mgr.pillContentActive) {
+        UIView *pillView = [mgr findPillViewInAperture];
+        if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
+            LGDILog(@"viewDidLayoutSubviews: pill view found, installing glass");
+            [mgr pillDidAppear:@"layoutSubviews"];
+        }
+    }
+
+    // 已安装则刷新位置
     LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
     if (pillGlass) {
         UIView *pillView = [mgr findPillViewInAperture];
@@ -950,34 +1063,48 @@ static void LGDynamicIslandInit(void) {
                                     CFSTR("dylv.liquidglass/PrefsReloaded"),
                                     NULL, 0);
 
-    // 2. MSHookMessageEx: hook FBSceneLayerManager 场景生命周期
-    //    Mango 分析确认：_performActionsForUIScene:... 方法在 FBSceneLayerManager 上，
-    //    不在 SBMainWorkspace 上
+    // 2. MSHookMessageEx: hook 场景生命周期
+    //    尝试 FBSceneLayerManager（Mango 架构），回退到 SBMainWorkspace
+    //    多选择器尝试，兼容不同 iOS 版本
     Class hookTarget = objc_getClass("FBSceneLayerManager");
     if (!hookTarget) {
-        // 回退到 SBMainWorkspace
         hookTarget = objc_getClass("SBMainWorkspace");
-        LGDILog(@"FBSceneLayerManager not found, falling back to SBMainWorkspace");
+        LGDILog(@"FBSceneLayerManager not found, trying SBMainWorkspace");
     }
 
     if (hookTarget) {
         LGDILog(@"Hook target class: %@", NSStringFromClass(hookTarget));
 
-        SEL performSel = NSSelectorFromString(
-            @"_performActionsForUIScene:withUpdatedFBSScene:settingsDiff:fromSettings:transitionContext:lifecycleActionType:");
+        // 尝试多个选择器（不同 iOS 版本方法名不同）
+        NSArray *performSelectors = @[
+            @"_performActionsForUIScene:withUpdatedFBSScene:settingsDiff:fromSettings:transitionContext:lifecycleActionType:",
+            @"_performActionsForFBScene:settingsDiff:fromSettings:transitionContext:lifecycleActionType:",
+            @"_performActionsForFBScene:withSettingsDiff:fromSettings:transitionContext:lifecycleActionType:",
+            @"sceneLayersDidChange",
+            @"_sceneLayersDidChange:",
+            @"_setSceneLayers:previousSceneLayers:transitionContext:",
+            @"transition:toSceneLayers:withTransitionContext:completion:"
+        ];
 
-        Method m = class_getInstanceMethod(hookTarget, performSel);
-        if (m) {
-            sLGOrig_performActionsForUIScene = (void (*)(id, SEL, id, id, id, id, id, NSInteger))
-                method_getImplementation(m);
-            MSHookMessageEx(hookTarget, performSel,
-                            (IMP)LGHook_performActionsForUIScene,
-                            (IMP *)&sLGOrig_performActionsForUIScene);
-            LGDILog(@"Hooked %@ _performActionsForUIScene:...", NSStringFromClass(hookTarget));
-        } else {
-            LGDILog(@"WARN: _performActionsForUIScene: not found on %@",
+        BOOL hookedPerform = NO;
+        for (NSString *selName in performSelectors) {
+            SEL performSel = NSSelectorFromString(selName);
+            Method m = class_getInstanceMethod(hookTarget, performSel);
+            if (m) {
+                sLGOrig_performActionsForUIScene = (void (*)(id, SEL, id, id, id, id, id, NSInteger))
+                    method_getImplementation(m);
+                MSHookMessageEx(hookTarget, performSel,
+                                (IMP)LGHook_performActionsForUIScene,
+                                (IMP *)&sLGOrig_performActionsForUIScene);
+                LGDILog(@"Hooked %@ %@", NSStringFromClass(hookTarget), selName);
+                hookedPerform = YES;
+                break;
+            }
+        }
+        if (!hookedPerform) {
+            LGDILog(@"WARN: no scene lifecycle selector found on %@",
                     NSStringFromClass(hookTarget));
-            // 列出所有 Scene/perform 相关方法名，帮助诊断
+            // 列出所有 Scene/perform/Layer/scene 相关方法名，帮助诊断
             unsigned int methodCount = 0;
             Method *methods = class_copyMethodList(hookTarget, &methodCount);
             if (methods) {
@@ -993,18 +1120,25 @@ static void LGDynamicIslandInit(void) {
             }
         }
 
-        SEL destroySel = NSSelectorFromString(@"destroyScene:withTransitionContext:");
-        Method dm = class_getInstanceMethod(hookTarget, destroySel);
-        if (dm) {
-            sLGOrig_destroyScene = (void (*)(id, SEL, id, id))
-                method_getImplementation(dm);
-            MSHookMessageEx(hookTarget, destroySel,
-                            (IMP)LGHook_destroyScene,
-                            (IMP *)&sLGOrig_destroyScene);
-            LGDILog(@"Hooked %@ destroyScene:withTransitionContext:", NSStringFromClass(hookTarget));
-        } else {
-            LGDILog(@"WARN: destroyScene:withTransitionContext: not found on %@",
-                    NSStringFromClass(hookTarget));
+        // destroyScene 也尝试多选择器
+        NSArray *destroySelectors = @[
+            @"destroyScene:withTransitionContext:",
+            @"_destroyScene:withTransitionContext:",
+            @"removeSceneLayer:",
+            @"_removeSceneLayer:"
+        ];
+        for (NSString *selName in destroySelectors) {
+            SEL destroySel = NSSelectorFromString(selName);
+            Method dm = class_getInstanceMethod(hookTarget, destroySel);
+            if (dm) {
+                sLGOrig_destroyScene = (void (*)(id, SEL, id, id))
+                    method_getImplementation(dm);
+                MSHookMessageEx(hookTarget, destroySel,
+                                (IMP)LGHook_destroyScene,
+                                (IMP *)&sLGOrig_destroyScene);
+                LGDILog(@"Hooked %@ %@", NSStringFromClass(hookTarget), selName);
+                break;
+            }
         }
     } else {
         LGDILog(@"WARN: neither FBSceneLayerManager nor SBMainWorkspace found");
@@ -1019,5 +1153,5 @@ static void LGDynamicIslandInit(void) {
             shimVCClass ? @"YES" : @"NO",
             dispatcherClass ? @"YES" : @"NO");
 
-    LGDILog(@"Dynamic Island initialized (Mango architecture: FBSceneLayerManager+ShimVC+WindowDiscovery)");
+    LGDILog(@"Dynamic Island initialized (multi-path: FBSceneLayerManager+ShimVC+ApertureVC+FallbackCheck)");
 }
