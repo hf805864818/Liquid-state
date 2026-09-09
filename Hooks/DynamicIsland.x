@@ -275,6 +275,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 @interface LGPillManager : NSObject {
     CADisplayLink *_expandedDisplayLink;
     LGExpandedGlassLinkProxy *_expandedLinkProxy;
+    NSTimer *_fallbackTimer;  // 兜底定时器，覆盖系统级事件
 }
 
 // ===== Pill 玻璃属性（对应 Mango 的属性）=====
@@ -319,6 +320,11 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 // ===== CADisplayLink 控制（展开态）=====
 - (void)lgStartExpandedGlassLiveRefresh;         // ≈ mangoStartExpandedGlassLiveRefresh
 - (void)lgStopExpandedGlassLiveRefresh;          // ≈ mangoStopExpandedGlassLiveRefresh
+
+// ===== 兜底定时器（覆盖系统级事件：计时器/通话/充电等）=====
+- (void)startFallbackTimer;
+- (void)stopFallbackTimer;
+- (void)fallbackTimerTick;
 
 // ===== 辅助 =====
 - (UIView *)findPillViewInAperture;
@@ -394,6 +400,9 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 
     // 立即尝试安装玻璃
     [self installPillGlass];
+
+    // 启动兜底定时器，检测系统级事件（计时器/通话/充电等不走场景生命周期的内容）
+    [self startFallbackTimer];
 }
 
 // sceneContentDidExit — 灵动岛内容退出时调用
@@ -403,6 +412,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     self.pillContentActive = NO;
     self.pillGlassRetryCount = 0;
 
+    [self stopFallbackTimer];
     [self removePillGlass];
     [self removeExpandedGlass];
 }
@@ -430,6 +440,9 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
                 [strong pillDidAppear:bundleID];
             } else if (!hasContent && strong.pillContentActive) {
                 [strong sceneContentDidExit];
+            } else if (hasContent && strong.pillContentActive) {
+                // 内容已存在且玻璃已安装，刷新一下
+                [strong refreshPillGlassBackdrop];
             }
         }
     });
@@ -756,6 +769,85 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     }
 }
 
+#pragma mark - 兜底定时器（覆盖系统级事件）
+
+// 兜底定时器：每 5 秒检查一次 Pill 视图是否有活跃内容
+// 覆盖不走 SBMainWorkspace 场景生命周期的系统级事件：
+// - 系统计时器/秒表
+// - 来电/FaceTime
+// - 充电指示器
+// - AirDrop
+// - 专注模式切换
+// - MediaRemote 音乐进度更新（不触发场景变化的部分）
+//
+// 注意：5 秒间隔远大于 viewDidLayoutSubviews 的频率，
+// CPU 开销极低，不会导致温度升高
+- (void)startFallbackTimer {
+    if (_fallbackTimer) return; // 已在运行
+
+    _fallbackTimer = [NSTimer scheduledTimerWithTimeInterval:5.0
+                                                      target:self
+                                                    selector:@selector(fallbackTimerTick)
+                                                    userInfo:nil
+                                                     repeats:YES];
+    LGDILog(@"startFallbackTimer: started (5s interval)");
+}
+
+- (void)stopFallbackTimer {
+    if (_fallbackTimer) {
+        [_fallbackTimer invalidate];
+        _fallbackTimer = nil;
+        LGDILog(@"stopFallbackTimer: stopped");
+    }
+}
+
+- (void)fallbackTimerTick {
+    @autoreleasepool {
+        // 只在灵动岛视图存在时检查
+        UIView *container = self.apertureContainerView;
+        if (!container || !container.window) {
+            [self stopFallbackTimer];
+            return;
+        }
+
+        UIView *pillView = [self findPillViewInAperture];
+        if (!pillView || !LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
+            // Pill 视图不存在，可能内容已退出
+            if (self.pillContentActive) {
+                [self sceneContentDidExit];
+            }
+            return;
+        }
+
+        // 检查是否有活跃内容
+        BOOL hasContent = [self pillViewHasActiveContent:pillView];
+
+        if (hasContent && !self.pillContentActive) {
+            // 发现新内容（系统级事件，如计时器/通话）
+            // 场景生命周期 hook 没捕获到，由兜底定时器捕获
+            LGDILog(@"fallbackTimer: detected content (system-level event)");
+            [self pillDidAppear:@"fallback"];
+        } else if (!hasContent && self.pillContentActive) {
+            // 内容消失了
+            LGDILog(@"fallbackTimer: content disappeared");
+            [self sceneContentDidExit];
+        } else if (hasContent && self.pillContentActive) {
+            // 内容存在，检查是否需要安装展开态玻璃
+            UIView *expandedView = [self findExpandedViewInAperture];
+            if (expandedView && LGDIIsPlausibleIslandSize(expandedView.bounds.size)) {
+                if (!self.expandedContentActive) {
+                    LGDILog(@"fallbackTimer: detected expanded content");
+                    [self installExpandedGlass];
+                }
+            } else {
+                if (self.expandedContentActive) {
+                    [self removeExpandedGlass];
+                }
+            }
+        }
+    }
+}
+
 @end
 
 // =============================================================================
@@ -958,5 +1050,10 @@ static void LGDynamicIslandInit(void) {
         LGDILog(@"WARN: SBMainWorkspace class not found, scene lifecycle hooks not installed");
     }
 
-    LGDILog(@"Dynamic Island tweak initialized (Mango-style event-driven mode)");
+    // 3. 启动兜底定时器
+    //    覆盖不走场景生命周期的系统级事件（计时器/通话/充电等）
+    //    5 秒间隔，CPU 开销极低
+    [[LGPillManager sharedManager] startFallbackTimer];
+
+    LGDILog(@"Dynamic Island tweak initialized (Mango-style event-driven + fallback mode)");
 }
