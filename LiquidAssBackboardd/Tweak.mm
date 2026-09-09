@@ -1663,8 +1663,6 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
                 if (sDIDiagCount < 30) {
                     sDIDiagCount++;
                     float srcAspect = (w > 0 && h > 0) ? (float)w / (float)h : 0.0f;
-                    float maskAspect = (glyphMaskTexture.width > 0 && glyphMaskTexture.height > 0)
-                        ? (float)glyphMaskTexture.width / (float)glyphMaskTexture.height : 0.0f;
                     lglog("[DI DIAG] maskTex=%ux%u scale=%.2f pts=%.1fx%.1f | "
                           "src=%llux%llu aspect=%.4f | origin=%.1f,%.1f | "
                           "pps=(%.2f,%.2f) bezel=%.1f",
