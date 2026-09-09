@@ -260,14 +260,6 @@ static UIView *LGDFindPillViewMangoStyle(UIView *container) {
         }
     }
 
-    // 方法 3: 回退到原来的 "Pill" 搜索（兼容旧版本）
-    UIView *pillView = LGDFindViewWithClassContaining(container, @"Pill");
-    if (pillView) {
-        LGDILog(@"LGDFindPillViewMangoStyle: found %@ by keyword Pill",
-                NSStringFromClass(pillView.class));
-        return pillView;
-    }
-
     return nil;
 }
 
@@ -872,6 +864,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 //  iOS 17 灵动岛窗口根控制器，比 SBSystemApertureViewController 更可靠
 // =============================================================================
 
+%group MainHooks
 %hook SBSystemApertureCaptureVisibilityShimViewController
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -946,6 +939,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 }
 
 %end
+%end // %group MainHooks
 
 // =============================================================================
 //  Darwin 通知回调（偏好设置变更）
@@ -1023,6 +1017,7 @@ static void LGDynamicIslandInit(void) {
     //    Mango 二进制确认：hook 的方法名是 _setLayers:（不是 _performActionsForUIScene:）
     //    Logos %init 自动处理类加载，比 objc_getClass + MSHookMessageEx 更可靠
     %init(SceneLayerManager);
+    %init(MainHooks);
 
     // 3. 检查关键类是否存在
     Class apertureVCClass = objc_getClass("SBSystemApertureViewController");
