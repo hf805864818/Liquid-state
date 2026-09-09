@@ -95,8 +95,15 @@ static void *kLGDIPillMaskLayerKey = &kLGDIPillMaskLayerKey;
 static void *kLGDIExpandedMaskLayerKey = &kLGDIExpandedMaskLayerKey;
 static void *kLGDIDisplayLinkKey = &kLGDIDisplayLinkKey;
 static void *kLGDIOrigBgColorKey = &kLGDIOrigBgColorKey;
+static void *kLGDICachedPillViewKey = &kLGDICachedPillViewKey;
 
 static uint64_t sLGDIMaskNextGeneration = 0;
+
+// ===== 性能优化：节流 + 短路 =====
+// viewDidLayoutSubviews 可能每秒触发数十次，不能每次都递归遍历视图层级。
+// 限制内容检测最多每 2 秒执行一次。
+static NSTimeInterval sLGDILastContentCheckTime = 0.0;
+static const NSTimeInterval kLGDIContentCheckInterval = 2.0;
 
 #pragma mark - Utility: view hierarchy dump
 
@@ -553,29 +560,62 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     UIView *view = self.view;
     if (!view || !view.window) return;
 
+    // ===== 性能优化：节流 =====
+    // viewDidLayoutSubviews 可能每秒触发数十次（动画、滚动等）
+    // 但灵动岛内容变化（音乐开始/停止）不需要 60fps 级别的检测
+    // 限制内容检测最多每 2 秒一次，其余时间快速短路
+    NSTimeInterval now = CACurrentMediaTime();
+    BOOL shouldCheckContent = (now - sLGDILastContentCheckTime) >= kLGDIContentCheckInterval;
+
     // ===== 收缩态（Pill）玻璃 =====
-    UIView *pillView = LGDFindViewWithClassContaining(view, @"Pill");
+
+    // 快速路径：如果已经安装了玻璃，说明之前检测到过活跃内容
+    // 在非检测周期内跳过所有递归扫描
+    LGLiveBackdropView *existingPillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
+
+    if (existingPillGlass && !shouldCheckContent) {
+        // 已有玻璃，且本轮不需要重新检测 → 什么都不做
+        // CADisplayLink（展开态）或 mask 更新逻辑会自行处理帧渲染
+        return;
+    }
+
+    // 获取缓存的 Pill 视图（避免每次递归遍历）
+    UIView *pillView = objc_getAssociatedObject(view, kLGDICachedPillViewKey);
+    if (!pillView || !pillView.superview) {
+        // 缓存失效或被移除，重新搜索一次
+        pillView = LGDFindViewWithClassContaining(view, @"Pill");
+        if (pillView) {
+            objc_setAssociatedObject(view, kLGDICachedPillViewKey, pillView,
+                                     OBJC_ASSOCIATION_ASSIGN);
+        }
+    }
 
     if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
-        // 关键：只在灵动岛有活跃内容时才安装玻璃
-        // 静态状态下（没开音乐等），Pill 视图没有内容子视图，不安装玻璃
-        if (LGDIPillViewHasActiveContent(pillView)) {
-            LGDIInstallPillGlass(view, pillView);
-        } else {
-            // 没有活跃内容，移除已安装的玻璃
-            LGDIRemovePillGlass(view);
+        if (shouldCheckContent) {
+            sLGDILastContentCheckTime = now;
+
+            if (LGDIPillViewHasActiveContent(pillView)) {
+                LGDIInstallPillGlass(view, pillView);
+            } else {
+                LGDIRemovePillGlass(view);
+            }
         }
+        // 非检测周期 && 无玻璃 → 不安装，等下次检测
     } else {
-        // 没有找到 Pill 视图，移除已安装的玻璃
         LGDIRemovePillGlass(view);
+        objc_setAssociatedObject(view, kLGDICachedPillViewKey, nil,
+                                 OBJC_ASSOCIATION_ASSIGN);
     }
 
     // ===== 展开态玻璃 =====
-    UIView *expandedView = LGDFindExpandedContentView(view);
-    if (expandedView && LGDIIsPlausibleIslandSize(expandedView.bounds.size)) {
-        LGDIInstallExpandedGlass(view, expandedView);
-    } else {
-        LGDIRemoveExpandedGlass(view);
+    // 只在内容检测周期内才搜索展开视图（减少递归遍历次数）
+    if (shouldCheckContent) {
+        UIView *expandedView = LGDFindExpandedContentView(view);
+        if (expandedView && LGDIIsPlausibleIslandSize(expandedView.bounds.size)) {
+            LGDIInstallExpandedGlass(view, expandedView);
+        } else {
+            LGDIRemoveExpandedGlass(view);
+        }
     }
 }
 
