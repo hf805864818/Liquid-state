@@ -199,18 +199,6 @@ static BOOL LGDIIsPlausibleIslandSize(CGSize size) {
 //  View finding helpers
 // =============================================================================
 
-// 在兄弟视图中查找 _SBSystemApertureMagiciansCurtainView
-static UIView *LGDIFindCurtainViewInContainer(UIView *container) {
-    if (!container) return nil;
-    Class curtainClass = objc_getClass("_SBSystemApertureMagiciansCurtainView");
-    if (!curtainClass) return nil;
-
-    for (UIView *subview in container.subviews) {
-        if ([subview isKindOfClass:curtainClass]) return subview;
-    }
-    return nil;
-}
-
 // 递归查找 _SBGainMapView
 static UIView *LGDIFindGainMapViewInView(UIView *root) {
     if (!root) return nil;
