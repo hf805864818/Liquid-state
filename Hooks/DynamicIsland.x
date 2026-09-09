@@ -342,10 +342,12 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
     %orig;
 
     if (self.window) {
-        LGDILog(@"[_SBGainMapView didMoveToWindow] added to window");
+        LGDILog(@"[_SBGainMapView didMoveToWindow] ADDED ptr=%p bounds=%@",
+                (void *)self,
+                NSStringFromCGRect(self.bounds));
         LGDIInstallPillGlass(self);
     } else {
-        LGDILog(@"[_SBGainMapView didMoveToWindow] removed from window");
+        LGDILog(@"[_SBGainMapView didMoveToWindow] REMOVED ptr=%p", (void *)self);
         LGDIRemovePillGlass(self);
     }
 }
@@ -403,14 +405,39 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
 %group CurtainViewHook
 %hook _SBSystemApertureMagiciansCurtainView
 
-- (void)setHidden:(BOOL)hidden {
+- (void)didMoveToWindow {
     %orig;
-    // curtainView 显隐变化时，gainMapView 也会跟着变化，glass 由 gainMapView 管理
+    LGDILog(@"[CurtainView didMoveToWindow] hasWindow=%d bounds=%@",
+            self.window != nil,
+            NSStringFromCGRect(self.bounds));
 }
 
 - (void)layoutSubviews {
     %orig;
-    // curtainView layout 变化时，gainMapView 也会 layout，glass 更新由 gainMapView layoutSubviews 驱动
+    if (!CGRectIsEmpty(self.bounds)) {
+        LGDILog(@"[CurtainView layoutSubviews] bounds=%@", NSStringFromCGRect(self.bounds));
+    }
+}
+
+- (void)setFrame:(CGRect)frame {
+    %orig;
+    if (!CGRectIsEmpty(frame)) {
+        LGDILog(@"[CurtainView setFrame:] frame=%@ bounds=%@",
+                NSStringFromCGRect(frame),
+                NSStringFromCGRect(self.bounds));
+    }
+}
+
+- (void)setBounds:(CGRect)bounds {
+    %orig;
+    if (!CGRectIsEmpty(bounds)) {
+        LGDILog(@"[CurtainView setBounds:] bounds=%@", NSStringFromCGRect(bounds));
+    }
+}
+
+- (void)setHidden:(BOOL)hidden {
+    %orig;
+    LGDILog(@"[CurtainView setHidden:] hidden=%d", hidden);
 }
 
 %end
