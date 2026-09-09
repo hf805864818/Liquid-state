@@ -357,9 +357,43 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 
 #pragma mark - Aperture view access
 
+// 直接从 UIApplication 窗口列表查找灵动岛窗口的根视图
+// 不依赖 viewDidAppear: hook，防止 hook 失败导致整个功能不可用
+- (UIView *)findApertureContainerFromWindows {
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        NSString *winCls = NSStringFromClass(window.class);
+        if (![winCls containsString:@"Aperture"]) continue;
+        UIViewController *rootVC = window.rootViewController;
+        if (rootVC && rootVC.view) {
+            // 递归搜索子视图控制器，找到实际的内容容器
+            UIView *view = rootVC.view;
+            // 如果根 VC 的视图本身就是容器（有子视图），直接返回
+            if (view.subviews.count > 0) return view;
+            // 搜索子 VC
+            for (UIViewController *childVC in rootVC.childViewControllers) {
+                if (childVC.view && childVC.view.subviews.count > 0) {
+                    return childVC.view;
+                }
+            }
+        }
+    }
+    return nil;
+}
+
 - (UIView *)findPillViewInAperture {
     UIView *container = self.apertureContainerView;
-    if (!container || !container.window) return nil;
+    if (!container || !container.window) {
+        // apertureContainerView 未设置或已脱离窗口
+        // 直接从窗口列表查找
+        container = [self findApertureContainerFromWindows];
+        if (container) {
+            self.apertureContainerView = container;
+            LGDILog(@"findPillViewInAperture: found container from windows: %@",
+                    NSStringFromClass(container.class));
+        } else {
+            return nil;
+        }
+    }
 
     UIView *cached = objc_getAssociatedObject(container, kLGDICachedPillViewKey);
     if (cached && cached.superview) return cached;
@@ -368,6 +402,9 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     if (pillView) {
         objc_setAssociatedObject(container, kLGDICachedPillViewKey, pillView,
                                  OBJC_ASSOCIATION_ASSIGN);
+        LGDILog(@"findPillViewInAperture: found pill view: %@ frame=%.1fx%.1f",
+                NSStringFromClass(pillView.class),
+                pillView.bounds.size.width, pillView.bounds.size.height);
     }
     return pillView;
 }
@@ -711,6 +748,10 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 @interface SBSystemApertureViewController : UIViewController
 @end
 
+// iOS 17 灵动岛窗口的根控制器
+@interface SBSystemApertureCaptureVisibilityShimViewController : UIViewController
+@end
+
 @interface SBMainWorkspace : NSObject
 @end
 
@@ -719,15 +760,15 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 @end
 
 // =============================================================================
-//  Hook: SBSystemApertureViewController
-//  仅缓存视图引用 + 更新已安装玻璃的 frame
+//  Hook: SBSystemApertureCaptureVisibilityShimViewController
+//  iOS 17 灵动岛窗口根控制器，比 SBSystemApertureViewController 更可靠
 // =============================================================================
 
-%hook SBSystemApertureViewController
+%hook SBSystemApertureCaptureVisibilityShimViewController
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    LGDILog(@"SBSystemApertureViewController viewDidAppear");
+    LGDILog(@"ShimVC viewDidAppear");
 
     LGPillManager *mgr = [LGPillManager sharedManager];
     mgr.apertureViewController = self;
@@ -736,7 +777,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 
 - (void)viewDidDisappear:(BOOL)animated {
     %orig;
-    LGDILog(@"SBSystemApertureViewController viewDidDisappear");
+    LGDILog(@"ShimVC viewDidDisappear");
 
     LGPillManager *mgr = [LGPillManager sharedManager];
     [mgr removePillGlass];
@@ -752,7 +793,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGPillManager *mgr = [LGPillManager sharedManager];
     mgr.apertureContainerView = view;
 
-    // 仅更新已安装玻璃的 frame（不检测内容，不扫描视图）
     LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
     if (pillGlass) {
         UIView *pillView = [mgr findPillViewInAperture];
@@ -762,19 +802,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
                 pillGlass.frame = targetFrame;
             }
             LGDIScheduleMaskUpdate(pillView, pillGlass, kLGDIPillMaskLayerKey);
-        }
-    }
-
-    LGLiveBackdropView *expandedGlass = objc_getAssociatedObject(view, kLGDIExpandedGlassKey);
-    if (expandedGlass) {
-        UIView *expandedView = [mgr findExpandedViewInAperture];
-        if (expandedView && LGDIIsPlausibleIslandSize(expandedView.bounds.size)) {
-            CGRect targetFrame = expandedView.frame;
-            if (!CGRectEqualToRect(expandedGlass.frame, targetFrame)) {
-                expandedGlass.frame = targetFrame;
-            }
-        } else {
-            [mgr removeExpandedGlass];
         }
     }
 }
@@ -954,6 +981,8 @@ static void LGDynamicIslandInit(void) {
     // 3. MSHookMessageEx: hook SBMainWorkspace 场景生命周期
     Class sbMainWorkspace = objc_getClass("SBMainWorkspace");
     if (sbMainWorkspace) {
+        LGDILog(@"SBMainWorkspace class found");
+
         SEL performSel = NSSelectorFromString(
             @"_performActionsForUIScene:withUpdatedFBSScene:settingsDiff:fromSettings:transitionContext:lifecycleActionType:");
 
@@ -966,7 +995,20 @@ static void LGDynamicIslandInit(void) {
                             (IMP *)&sLGOrig_performActionsForUIScene);
             LGDILog(@"Hooked SBMainWorkspace _performActionsForUIScene:...");
         } else {
-            LGDILog(@"WARN: SBMainWorkspace _performActionsForUIScene: not found");
+            LGDILog(@"WARN: _performActionsForUIScene: method not found on SBMainWorkspace");
+            // 列出所有方法名，帮助诊断
+            unsigned int methodCount = 0;
+            Method *methods = class_copyMethodList(sbMainWorkspace, &methodCount);
+            if (methods) {
+                for (unsigned int i = 0; i < methodCount; i++) {
+                    SEL sel = method_getName(methods[i]);
+                    NSString *name = NSStringFromSelector(sel);
+                    if ([name containsString:@"Scene"] || [name containsString:@"perform"]) {
+                        LGDILog(@"  SBMainWorkspace method: %@", name);
+                    }
+                }
+                free(methods);
+            }
         }
 
         SEL destroySel = NSSelectorFromString(@"destroyScene:withTransitionContext:");
@@ -978,10 +1020,21 @@ static void LGDynamicIslandInit(void) {
                             (IMP)LGHook_destroyScene,
                             (IMP *)&sLGOrig_destroyScene);
             LGDILog(@"Hooked SBMainWorkspace destroyScene:withTransitionContext:");
+        } else {
+            LGDILog(@"WARN: destroyScene:withTransitionContext: method not found");
         }
     } else {
         LGDILog(@"WARN: SBMainWorkspace class not found");
     }
 
-    LGDILog(@"Dynamic Island initialized (Mango pure event-driven: Darwin+SceneLifecycle+NotificationDispatcher)");
+    // 4. 检查关键类是否存在
+    Class apertureVCClass = objc_getClass("SBSystemApertureViewController");
+    Class shimVCClass = objc_getClass("SBSystemApertureCaptureVisibilityShimViewController");
+    Class dispatcherClass = objc_getClass("SBNCNotificationDispatcher");
+    LGDILog(@"Class check: SBSystemApertureViewController=%@ SBSystemApertureCaptureVisibilityShimViewController=%@ SBNCNotificationDispatcher=%@",
+            apertureVCClass ? @"YES" : @"NO",
+            shimVCClass ? @"YES" : @"NO",
+            dispatcherClass ? @"YES" : @"NO");
+
+    LGDILog(@"Dynamic Island initialized (Mango pure event-driven: Darwin+SceneLifecycle+ShimVC+WindowDiscovery)");
 }
