@@ -268,6 +268,31 @@ static UIView *LGDIFindExistingGainMapView(void) {
 
 #pragma mark - Glass installation (inside element container, above curtainView)
 
+// 调试：打印视图层级和背景色
+__attribute__((unused))
+static void LGDIDumpViewHierarchy(UIView *startView) {
+    UIView *view = startView;
+    NSInteger level = 0;
+    while (view) {
+        UIColor *bg = view.backgroundColor;
+        CGFloat alpha = view.alpha;
+        BOOL hidden = view.hidden;
+        NSString *bgDesc = bg ? [bg description] : @"(nil)";
+        // 取背景色前60个字符
+        if (bgDesc.length > 60) bgDesc = [[bgDesc substringToIndex:60] stringByAppendingString:@"..."];
+        LGDILog(@"  hierarchy L%ld %@  bg=%@  alpha=%.2f  hidden=%d  frame=%@",
+                (long)level,
+                NSStringFromClass(view.class),
+                bgDesc,
+                alpha,
+                hidden,
+                NSStringFromCGRect(view.frame));
+        view = view.superview;
+        level++;
+        if (level > 10) break; // 最多打10层
+    }
+}
+
 static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!gainMapView || !gainMapView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
@@ -284,6 +309,10 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     // curtainView.superview = element container（内容容器）
     UIView *elementContainer = curtainView.superview;
     if (!elementContainer) return;
+
+    // 调试：打印视图层级
+    LGDILog(@"=== View hierarchy from gainMapView ===");
+    LGDIDumpViewHierarchy(gainMapView);
 
     // 把 gainMapView 的 bounds 转换到 elementContainer 坐标系
     CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:elementContainer];
@@ -317,10 +346,23 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     // 隐藏 curtainView（黑色背景），让液态玻璃直接看到桌面
     curtainView.hidden = YES;
 
-    LGDILog(@"glass installed above curtainView in %@, size=%@ CR=%.1f, curtainView hidden=YES",
+    // 尝试透明化 elementContainer 及其父视图的背景色
+    // 从 elementContainer 往上，把所有背景色设为 clear
+    UIView *v = elementContainer;
+    NSInteger clearCount = 0;
+    while (v && clearCount < 5) {
+        if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
+            v.backgroundColor = UIColor.clearColor;
+            clearCount++;
+        }
+        v = v.superview;
+    }
+
+    LGDILog(@"glass installed above curtainView in %@, size=%@ CR=%.1f, curtainView hidden=YES, cleared %ld bg layers",
             NSStringFromClass(elementContainer.class),
             NSStringFromCGSize(glassFrame.size),
-            glassView.layer.cornerRadius);
+            glassView.layer.cornerRadius,
+            (long)clearCount);
 
     // 关联到 gainMapView 上
     objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
