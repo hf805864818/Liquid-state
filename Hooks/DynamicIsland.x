@@ -50,7 +50,6 @@ static BOOL LGDIWriteMaskImage(UIImage *image, CGPoint screenOrigin, uint64_t ge
                                 kCGBitmapByteOrder32Big | kCGImageAlphaPremultipliedLast)
         : NULL;
     if (context) {
-
         CGContextDrawImage(context, CGRectMake(0, 0, width, height), cg);
         for (size_t i = 0; i < width * height; i++) alpha[i] = rgba[i * 4 + 3];
 
@@ -95,8 +94,11 @@ static void *kLGDIMaskLayerKey = &kLGDIMaskLayerKey;
 static void *kLGDIAttachedKey = &kLGDIAttachedKey;
 
 static uint64_t sLGDIMaskNextGeneration = 0;
+static NSTimer *sLGDIScanTimer = nil;
+static UIView *sLGDIIslandView = nil; // 找到的灵动岛视图
+static LGLiveBackdropView *sLGDIGlassView = nil;
 
-// 递归打印视图层级（调试用）
+// 递归打印视图层级
 static NSString *LGDIDumpViewHierarchy(UIView *view, NSInteger indent) {
     NSMutableString *result = [NSMutableString string];
     NSString *indentStr = [@"" stringByPaddingToLength:indent * 2 withString:@"  " startingAtIndex:0];
@@ -117,6 +119,32 @@ static NSString *LGDIDumpViewHierarchy(UIView *view, NSInteger indent) {
         [result appendString:LGDIDumpViewHierarchy(subview, indent + 1)];
     }
     return result;
+}
+
+// 递归查找灵动岛视图
+// 在 iOS 17+ 上，灵动岛相关的视图类名可能包含 "Island"
+// 也可能是不包含 "Island" 但有特定特征的视图
+static UIView *LGDIFindIslandViewRecursive(UIView *view, CGFloat screenWidth) {
+    if (!view) return nil;
+
+    NSString *clsName = NSStringFromClass(view.class);
+
+    // 检查类名是否包含 Island
+    if ([clsName containsString:@"Island"] || [clsName containsString:@"island"]) {
+        // 进一步检查：位置在屏幕顶部中间区域
+        CGRect f = view.frame;
+        // 灵动岛通常在屏幕顶部，y < 50，宽度小于屏幕宽度
+        if (f.origin.y < 60 && f.size.width < screenWidth && f.size.width > 50) {
+            return view;
+        }
+    }
+
+    // 递归查找子视图
+    for (UIView *subview in view.subviews) {
+        UIView *found = LGDIFindIslandViewRecursive(subview, screenWidth);
+        if (found) return found;
+    }
+    return nil;
 }
 
 // 渲染视图为 alpha mask 图片
@@ -184,8 +212,6 @@ static void LGDIUpdateMask(UIView *sourceView, UIView *glassView) {
 
 static NSTimeInterval sLGDILastMaskUpdateTime = 0.0;
 static BOOL sLGDIMaskUpdatePending = NO;
-static __weak UIView *sLGDIPendingSourceView = nil;
-static __weak UIView *sLGDIPendingGlassView = nil;
 
 static const NSTimeInterval kLGDIMaskUpdateThrottle = 1.0 / 30.0;
 
@@ -198,50 +224,23 @@ static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView) {
     if (timeSinceLast >= kLGDIMaskUpdateThrottle) {
         sLGDILastMaskUpdateTime = now;
         LGDIUpdateMask(sourceView, glassView);
-    } else {
-        sLGDIPendingSourceView = sourceView;
-        sLGDIPendingGlassView = glassView;
-        if (!sLGDIMaskUpdatePending) {
-            sLGDIMaskUpdatePending = YES;
-            NSTimeInterval delay = kLGDIMaskUpdateThrottle - timeSinceLast;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                sLGDIMaskUpdatePending = NO;
-                UIView *src = sLGDIPendingSourceView;
-                UIView *glass = sLGDIPendingGlassView;
-                if (src) {
-                    sLGDILastMaskUpdateTime = CACurrentMediaTime();
-                    LGDIUpdateMask(src, glass);
-                }
-                sLGDIPendingSourceView = nil;
-                sLGDIPendingGlassView = nil;
-            });
-        }
+    } else if (!sLGDIMaskUpdatePending) {
+        sLGDIMaskUpdatePending = YES;
+        NSTimeInterval delay = kLGDIMaskUpdateThrottle - timeSinceLast;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            sLGDIMaskUpdatePending = NO;
+            if (sourceView) {
+                sLGDILastMaskUpdateTime = CACurrentMediaTime();
+                LGDIUpdateMask(sourceView, glassView);
+            }
+        });
     }
-}
-
-#pragma mark - Find views
-
-static UIView *LGDIFindGainMapViewInView(UIView *root) {
-    if (!root) return nil;
-    for (UIView *subview in root.subviews) {
-        NSString *clsName = NSStringFromClass(subview.class);
-        if ([clsName containsString:@"GainMap"]) {
-            return subview;
-        }
-        UIView *found = LGDIFindGainMapViewInView(subview);
-        if (found) return found;
-    }
-    return nil;
 }
 
 #pragma mark - Install / Remove
 
-// 关键思路：
-// 灵动岛的黑色背景可能是 backboardd 直接渲染的，不是普通 UIView.backgroundColor
-// 所以我们不试图替换背景，而是把 glassView 放到灵动岛容器的父视图中
-// 然后用 mask 裁剪成灵动岛形状，让玻璃显示在灵动岛位置
-static void LGDIInstallGlassForIslandView(UIView *islandView) {
+static void LGDIInstallGlass(UIView *islandView) {
     if (!islandView || !islandView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
     if (!LGIsAtLeastiOS16()) return;
@@ -251,22 +250,24 @@ static void LGDIInstallGlassForIslandView(UIView *islandView) {
 
     LGLiveBackdropView *glassView = objc_getAssociatedObject(islandView, kLGDIGlassViewKey);
     if (!glassView) {
-        // 打印视图层级（调试用，只打一次）
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            LGDILog(@"=== Dynamic Island view hierarchy ===\n%@",
-                    LGDIDumpViewHierarchy(islandView, 0));
-        });
+        // 打印视图层级
+        LGDILog(@"=== Island view found! class=%@ frame=%@ ===",
+                NSStringFromClass(islandView.class), NSStringFromCGRect(islandView.frame));
+        LGDILog(@"=== View hierarchy ===\n%@",
+                LGDIDumpViewHierarchy(islandView, 0));
 
         glassView = LGCreateRegisteredGlass(islandView.bounds, nil, @"DynamicIsland");
-        if (!glassView) return;
+        if (!glassView) {
+            LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil");
+            return;
+        }
 
         glassView.userInteractionEnabled = NO;
         glassView.backgroundColor = UIColor.clearColor;
         glassView.layer.cornerRadius = 0.0;
         glassView.layer.masksToBounds = YES;
 
-        // 插入到灵动岛下方的兄弟层级
+        // 插入到灵动岛下方
         [parent insertSubview:glassView belowSubview:islandView];
 
         objc_setAssociatedObject(islandView, kLGDIGlassViewKey, glassView,
@@ -284,22 +285,19 @@ static void LGDIInstallGlassForIslandView(UIView *islandView) {
         }
 
         // 生成初始 mask
-        UIView *gainMapView = LGDIFindGainMapViewInView(islandView);
-        __weak UIView *weakSource = gainMapView ?: islandView;
+        __weak UIView *weakIsland = islandView;
         __weak LGLiveBackdropView *weakGlass2 = glassView;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-                           LGDIUpdateMask(weakSource, weakGlass2);
-                       });
+            LGDIUpdateMask(weakIsland, weakGlass2);
+        });
 
-        LGDILog(@"Installed DynamicIsland glass island=%@ gainMap=%@ parent=%@ size=%.1fx%.1f",
+        LGDILog(@"Installed glass for island view class=%@ size=%.1fx%.1f",
                 NSStringFromClass(islandView.class),
-                gainMapView ? NSStringFromClass(gainMapView.class) : @"(nil)",
-                NSStringFromClass(parent.class),
                 islandView.bounds.size.width, islandView.bounds.size.height);
     }
 
-    // 更新位置和大小（跟随灵动岛）
+    // 更新位置和大小
     CGRect targetFrame = islandView.frame;
     if (!CGRectEqualToRect(glassView.frame, targetFrame)) {
         glassView.frame = targetFrame;
@@ -309,11 +307,13 @@ static void LGDIInstallGlassForIslandView(UIView *islandView) {
         }
     }
 
-    // 确保 glassView 紧贴在灵动岛下方
-    [parent insertSubview:glassView belowSubview:islandView];
+    // 确保 glassView 在灵动岛下方
+    if (glassView.superview != parent) {
+        [parent insertSubview:glassView belowSubview:islandView];
+    }
 }
 
-static void LGDIRemoveGlassForIslandView(UIView *islandView) {
+static void LGDIRemoveGlass(UIView *islandView) {
     LGLiveBackdropView *glassView = objc_getAssociatedObject(islandView, kLGDIGlassViewKey);
     if (glassView) {
         [glassView removeFromSuperview];
@@ -323,71 +323,55 @@ static void LGDIRemoveGlassForIslandView(UIView *islandView) {
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(islandView, kLGDIMaskLayerKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-        LGDILog(@"Removed DynamicIsland glass");
+        LGDILog(@"Removed glass from island view");
     }
 }
 
-#pragma mark - Hook SBDynamicIslandView（主路径）
+#pragma mark - Dynamic scanning (不依赖固定类名)
 
-%hook SBDynamicIslandView
+static void LGDIScanAndInstall(void) {
+    if (!lgHostEnabled(@"DynamicIsland")) return;
 
-- (void)didMoveToWindow {
-    %orig;
-    UIView *selfView = (UIView *)self;
-    if (selfView.window) {
-        LGDIInstallGlassForIslandView(selfView);
-    } else {
-        LGDIRemoveGlassForIslandView(selfView);
+    UIWindow *keyWindow = nil;
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        if (window.isKeyWindow) {
+            keyWindow = window;
+            break;
+        }
     }
-}
+    if (!keyWindow) keyWindow = [UIApplication sharedApplication].windows.firstObject;
+    if (!keyWindow) return;
 
-- (void)layoutSubviews {
-    %orig;
-    UIView *selfView = (UIView *)self;
+    CGFloat screenWidth = keyWindow.bounds.size.width;
 
-    NSNumber *attached = objc_getAssociatedObject(selfView, kLGDIAttachedKey);
-    if (attached && attached.boolValue) {
-        LGDIInstallGlassForIslandView(selfView);
-
-        UIView *gainMapView = LGDIFindGainMapViewInView(selfView);
-        LGLiveBackdropView *glassView = objc_getAssociatedObject(selfView, kLGDIGlassViewKey);
-        LGDIScheduleMaskUpdate(gainMapView ?: selfView, glassView);
-    }
-}
-
-- (void)setHidden:(BOOL)hidden {
-    %orig;
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(self, kLGDIGlassViewKey);
-    if (glassView) glassView.hidden = hidden;
-}
-
-%end
-
-#pragma mark - Hook _SBGainMapView（形状源）
-
-%hook _SBGainMapView
-
-- (void)layoutSubviews {
-    %orig;
-    UIView *selfView = (UIView *)self;
-
-    // 向上找容器视图
-    UIView *container = selfView.superview;
-    while (container && ![NSStringFromClass(container.class) containsString:@"DynamicIsland"]) {
-        container = container.superview;
+    // 如果已经找到了灵动岛视图，检查它是否还在
+    if (sLGDIIslandView) {
+        if (sLGDIIslandView.window) {
+            // 还在，更新 glass
+            LGDIInstallGlass(sLGDIIslandView);
+            LGDIScheduleMaskUpdate(sLGDIIslandView,
+                                   objc_getAssociatedObject(sLGDIIslandView, kLGDIGlassViewKey));
+            return;
+        } else {
+            // 不在了，清理
+            LGDIRemoveGlass(sLGDIIslandView);
+            sLGDIIslandView = nil;
+        }
     }
 
-    if (container) {
-        NSNumber *attached = objc_getAssociatedObject(container, kLGDIAttachedKey);
-        if (attached && attached.boolValue) {
-            LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIGlassViewKey);
-            LGDIScheduleMaskUpdate(selfView, glassView);
+    // 搜索灵动岛视图
+    UIView *found = LGDIFindIslandViewRecursive(keyWindow, screenWidth);
+    if (found) {
+        sLGDIIslandView = found;
+        LGDIInstallGlass(found);
+
+        // 找到后停止扫描定时器
+        if (sLGDIScanTimer) {
+            [sLGDIScanTimer invalidate];
+            sLGDIScanTimer = nil;
         }
     }
 }
-
-%end
 
 #pragma mark - 偏好设置变更监听
 
@@ -395,6 +379,13 @@ static void LGDIPrefsChanged(CFNotificationCenterRef center, void *observer,
                              CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     @autoreleasepool {
         LGDILog(@"Prefs changed");
+        // 如果关闭了，移除 glass
+        if (!lgHostEnabled(@"DynamicIsland")) {
+            if (sLGDIIslandView) {
+                LGDIRemoveGlass(sLGDIIslandView);
+                sLGDIIslandView = nil;
+            }
+        }
     }
 }
 
@@ -408,5 +399,33 @@ static void LGDynamicIslandInit(void) {
                                     CFSTR("dylv.liquidglass/PrefsReloaded"),
                                     NULL, 0);
 
-    LGDILog(@"Dynamic Island tweak initialized");
+    LGDILog(@"Dynamic Island tweak initialized (dynamic scanning mode)");
+
+    // 延迟启动扫描，等 SpringBoard 完全加载
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        // 初始扫描
+        LGDIScanAndInstall();
+
+        // 如果没找到，定时重试
+        if (!sLGDIIslandView) {
+            // 每 2 秒扫描一次，最多扫描 30 次（60秒）
+            __block int scanCount = 0;
+            sLGDIScanTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
+                                                             repeats:YES
+                                                               block:^(NSTimer *timer) {
+                scanCount++;
+                LGDIScanAndInstall();
+
+                if (sLGDIIslandView || scanCount >= 30) {
+                    [timer invalidate];
+                    sLGDIScanTimer = nil;
+
+                    if (!sLGDIIslandView) {
+                        LGDILog(@"WARNING: Island view not found after %d scans", scanCount);
+                    }
+                }
+            }];
+        }
+    });
 }
