@@ -182,7 +182,6 @@ static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView, void *
 
 static void *kLGDIPillGlassKey = &kLGDIPillGlassKey;
 static void *kLGDIPillMaskLayerKey = &kLGDIPillMaskLayerKey;
-static void *kLGDILastBackdropRefreshKey = &kLGDILastBackdropRefreshKey;
 
 #pragma mark - Size validation
 
@@ -253,39 +252,6 @@ static void LGDIRemoveGlassFromGainMapView(UIView *gainMapView) {
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         LGDILog(@"glass removed from _SBGainMapView");
     }
-}
-
-// 刷新 gainMapView 上的玻璃 mask 和 backdrop
-static void LGDIRefreshGlassOnGainMapView(UIView *gainMapView) {
-    if (!gainMapView || !gainMapView.window) return;
-    if (!lgHostEnabled(@"DynamicIsland")) return;
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
-    if (!glassView) return;
-
-    // 同步 frame
-    if (!CGRectEqualToRect(glassView.frame, gainMapView.bounds)) {
-        glassView.frame = gainMapView.bounds;
-        CALayer *maskLayer = objc_getAssociatedObject(glassView, kLGDIPillMaskLayerKey);
-        if (maskLayer) maskLayer.frame = glassView.bounds;
-    }
-
-    LGDIScheduleMaskUpdate(gainMapView, glassView, kLGDIPillMaskLayerKey);
-}
-
-// backdrop 节流刷新（每秒最多一次）
-static void LGDIRefreshBackdropThrottled(UIView *gainMapView) {
-    if (!gainMapView) return;
-
-    NSTimeInterval now = CACurrentMediaTime();
-    NSNumber *lastTime = objc_getAssociatedObject(gainMapView, kLGDILastBackdropRefreshKey);
-    if (lastTime && now - lastTime.doubleValue < 1.0) return;
-    objc_setAssociatedObject(gainMapView, kLGDILastBackdropRefreshKey,
-                             @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    LGDIUpdateMask(gainMapView,
-                   objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey),
-                   kLGDIPillMaskLayerKey);
 }
 
 // =============================================================================
