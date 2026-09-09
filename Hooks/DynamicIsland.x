@@ -229,6 +229,27 @@ static UIView *LGDIFindExistingGainMapView(void) {
 //  mask 形状来自 curtainView（curtainView = gainMapView.superview）
 // =============================================================================
 
+// 打印视图层级（向上遍历）
+static void LGDIPrintViewHierarchy(UIView *view) {
+    UIView *v = view;
+    NSInteger level = 0;
+    while (v && level < 10) {
+        CGRect frameInWindow = [v convertRect:v.bounds toView:nil];
+        LGDILog(@"  level%ld: %@ frame=%@ windowFrame=%@ hidden=%d alpha=%.2f subviews=%lu masksToBounds=%d cornerRadius=%.1f mask=%@",
+                (long)level,
+                NSStringFromClass(v.class),
+                NSStringFromCGRect(v.frame),
+                NSStringFromCGRect(frameInWindow),
+                v.hidden, v.alpha,
+                (unsigned long)v.subviews.count,
+                v.layer.masksToBounds,
+                v.layer.cornerRadius,
+                v.layer.mask ? NSStringFromClass(v.layer.mask.class) : @"none");
+        v = v.superview;
+        level++;
+    }
+}
+
 static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!gainMapView || !gainMapView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
@@ -246,31 +267,37 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     LGLiveBackdropView *glassView = objc_getAssociatedObject(elementContainer, kLGDIPillGlassKey);
     if (glassView) return;
 
-    // 诊断日志
-    LGDILog(@"DIAG: gainMap=%@ frame=%@ bgColor=%@ alpha=%.2f hidden=%d subviews=%lu",
-            NSStringFromClass(gainMapView.class),
-            NSStringFromCGRect(gainMapView.frame),
-            gainMapView.backgroundColor, gainMapView.alpha, gainMapView.hidden,
-            (unsigned long)gainMapView.subviews.count);
-    LGDILog(@"DIAG: curtain=%@ frame=%@ bgColor=%@ alpha=%.2f hidden=%d subviews=%lu masksToBounds=%d",
-            NSStringFromClass(curtainView.class),
-            NSStringFromCGRect(curtainView.frame),
-            curtainView.backgroundColor, curtainView.alpha, curtainView.hidden,
-            (unsigned long)curtainView.subviews.count,
-            curtainView.layer.masksToBounds);
-    LGDILog(@"DIAG: elementContainer=%@ frame=%@ bgColor=%@ subviews=%lu",
-            NSStringFromClass(elementContainer.class),
-            NSStringFromCGRect(elementContainer.frame),
-            elementContainer.backgroundColor,
-            (unsigned long)elementContainer.subviews.count);
+    // 详细诊断：向上遍历完整层级
+    LGDILog(@"DIAG: === View hierarchy from gainMapView ===");
+    LGDIPrintViewHierarchy(gainMapView);
+
+    // 打印 elementContainer 的所有子视图
+    LGDILog(@"DIAG: === elementContainer subviews ===");
     for (UIView *sv in elementContainer.subviews) {
-        LGDILog(@"  sibling: %@ frame=%@ hidden=%d alpha=%.2f",
-                NSStringFromClass(sv.class), NSStringFromCGRect(sv.frame),
+        CGRect frameInWindow = [sv convertRect:sv.bounds toView:nil];
+        LGDILog(@"  %@ frame=%@ windowFrame=%@ hidden=%d alpha=%.2f",
+                NSStringFromClass(sv.class),
+                NSStringFromCGRect(sv.frame),
+                NSStringFromCGRect(frameInWindow),
                 sv.hidden, sv.alpha);
     }
 
-    // 用 curtainView 的尺寸创建玻璃
+    // 检查 curtainView 的 mask 信息
+    CALayer *curtainMask = curtainView.layer.mask;
+    if (curtainMask) {
+        LGDILog(@"DIAG: curtainView mask layer=%@ frame=%@",
+                NSStringFromClass(curtainMask.class),
+                NSStringFromCGRect(curtainMask.frame));
+    }
+
+    // 用 elementContainer 的 bounds 创建玻璃（更大的范围，用 mask 裁剪形状）
+    // 先试试比 curtainView 大一圈的尺寸
     CGRect glassFrame = curtainView.frame;
+    // 向外扩展一些，覆盖药丸的圆角部分
+    glassFrame.origin.x -= 20;
+    glassFrame.origin.y -= 5;
+    glassFrame.size.width += 40;
+    glassFrame.size.height += 10;
     glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
     if (!glassView) {
         LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil");
@@ -283,7 +310,7 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 插入到 curtainView 上面（先确认玻璃能被看到）
+    // 插入到 curtainView 上面
     [elementContainer insertSubview:glassView aboveSubview:curtainView];
 
     // 关联到 element 容器上
@@ -304,7 +331,7 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     // 用 curtainView 渲染 mask
     LGDIScheduleMaskUpdate(curtainView, glassView, kLGDIPillMaskLayerKey);
 
-    LGDILog(@"glass created on elementContainer=%@ curtain=%@ frame=%@",
+    LGDILog(@"glass created on elementContainer=%@ curtain=%@ glassFrame=%@",
             NSStringFromClass(elementContainer.class),
             NSStringFromClass(curtainView.class),
             NSStringFromCGRect(glassFrame));
@@ -384,6 +411,13 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
     %orig;
 
     if (!CGRectIsEmpty(self.bounds)) {
+        // 诊断：layoutSubviews 时的 size
+        static CGSize lastSize = {0, 0};
+        if (!CGSizeEqualToSize(self.bounds.size, lastSize)) {
+            lastSize = self.bounds.size;
+            LGDILog(@"[_SBGainMapView layoutSubviews] size changed to %@",
+                    NSStringFromCGSize(self.bounds.size));
+        }
         LGDIRefreshPillGlass(self);
     }
 }
@@ -433,6 +467,13 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
 
     UIView *container = self.superview;
     if (container && !CGRectIsEmpty(self.bounds)) {
+        // 诊断：size 变化
+        static CGSize lastCurtainSize = {0, 0};
+        if (!CGSizeEqualToSize(self.bounds.size, lastCurtainSize)) {
+            lastCurtainSize = self.bounds.size;
+            LGDILog(@"[_SBSystemApertureMagiciansCurtainView layoutSubviews] size changed to %@",
+                    NSStringFromCGSize(self.bounds.size));
+        }
         LGLiveBackdropView *glass = objc_getAssociatedObject(container, kLGDIPillGlassKey);
         if (glass) {
             if (!CGRectEqualToRect(glass.frame, self.frame)) {
