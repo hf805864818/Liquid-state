@@ -234,7 +234,11 @@ static UIView *LGDFindPillViewMangoStyle(UIView *container) {
     // SBSystemApertureViewController 有此方法，返回 SBSystemApertureSceneElement
     SEL elementSel = NSSelectorFromString(@"_elementForContainerView:");
     if ([container respondsToSelector:elementSel]) {
-        id element = [container performSelector:elementSel withObject:container];
+        UIView *element = nil;
+        IMP imp = [container methodForSelector:elementSel];
+        if (imp) {
+            element = ((UIView *(*)(id, SEL, id))imp)(container, elementSel, container);
+        }
         if (element && [element isKindOfClass:[UIView class]]) {
             LGDILog(@"LGDFindPillViewMangoStyle: _elementForContainerView: found %@", 
                     NSStringFromClass([element class]));
