@@ -1,17 +1,17 @@
 // =============================================================================
-//  DynamicIsland.x — Mango 架构精确复制
+//  DynamicIsland.x — 灵动岛液态玻璃
 //
-//  事件源（与 Mango 二进制完全一致）：
+//  事件源：
 //  1. _SBGainMapView didMoveToWindow  → pill 出现信号（触发安装）
 //  2. _SBGainMapView layoutSubviews   → 布局变化时更新玻璃
 //  3. _SBGainMapView setHidden:       → 显隐同步
-//  4. FBSceneLayerManager._setLayers: → 场景图层变化
+//  4. _SBSystemApertureMagiciansCurtainView setHidden: → 阻止 curtainView 重新显示
 //
-//  关键架构（与 Mango 一致）：
-//  - gainMapView 只是检测时机，不装玻璃
-//  - 玻璃装在 gainMapView 的 superview（element 容器）上
-//  - mask 形状来自 _SBSystemApertureMagiciansCurtainView（窗帘视图）
-//  - 玻璃作为 curtainView 的兄弟视图，插入在它下面
+//  架构：
+//  - 玻璃加在 window 上，插到灵动岛内容容器的下面
+//  - 隐藏 curtainView（黑色背景），让玻璃直接看到桌面
+//  - frame 跟随 gainMapView 用 window 坐标更新
+//  - touch passthrough：玻璃不拦截任何触控
 // =============================================================================
 
 #import <UIKit/UIKit.h>
@@ -266,37 +266,36 @@ static UIView *LGDIFindExistingGainMapView(void) {
 
 @end
 
-#pragma mark - Glass installation (inside element container, above curtainView)
+#pragma mark - Glass installation (on window, below content container)
 
-// 调试：打印视图层级和背景色（包含 layer 层信息）
+// 找到 gainMapView 所在的内容容器顶层（window 的直接子视图）
+static UIView *LGDIFindTopContainer(UIView *gainMapView) {
+    UIView *v = gainMapView;
+    UIView *topContainer = nil;
+    while (v) {
+        if ([v.superview isKindOfClass:[UIWindow class]]) {
+            topContainer = v;
+            break;
+        }
+        v = v.superview;
+    }
+    return topContainer;
+}
+
+// 调试：打印视图层级（简洁版）
 __attribute__((unused))
 static void LGDIDumpViewHierarchy(UIView *startView) {
     UIView *view = startView;
     NSInteger level = 0;
     while (view) {
-        UIColor *bg = view.backgroundColor;
-        CGColorRef layerBg = view.layer.backgroundColor;
-        CGFloat alpha = view.alpha;
-        BOOL hidden = view.hidden;
-        BOOL opaque = view.opaque;
-        BOOL clips = view.clipsToBounds;
-        NSString *bgDesc = bg ? [bg description] : @"(nil)";
-        NSString *layerBgDesc = layerBg ? [(__bridge UIColor *)layerBg description] : @"(nil)";
-        // 取背景色前40个字符
-        if (bgDesc.length > 40) bgDesc = [[bgDesc substringToIndex:40] stringByAppendingString:@"..."];
-        if (layerBgDesc.length > 40) layerBgDesc = [[layerBgDesc substringToIndex:40] stringByAppendingString:@"..."];
-        LGDILog(@"  L%ld %@  viewBg=%@  layerBg=%@  opaque=%d  clips=%d  alpha=%.2f  hidden=%d",
+        LGDILog(@"  L%ld %@  hidden=%d  frame=%@",
                 (long)level,
                 NSStringFromClass(view.class),
-                bgDesc,
-                layerBgDesc,
-                opaque,
-                clips,
-                alpha,
-                hidden);
+                view.hidden,
+                NSStringFromCGRect(view.frame));
         view = view.superview;
         level++;
-        if (level > 10) break; // 最多打10层
+        if (level > 8) break;
     }
 }
 
@@ -305,7 +304,7 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!lgHostEnabled(@"DynamicIsland")) return;
     if (!LGDIIsPlausibleIslandSize(gainMapView.bounds.size)) return;
 
-    // 已经装过了（glass 关联在 gainMapView 上，每个实例一个 glass）
+    // 已经装过了
     LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
     if (glassView) return;
 
@@ -313,23 +312,19 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     UIView *curtainView = gainMapView.superview;
     if (!curtainView) return;
 
-    // curtainView.superview = element container（内容容器）
-    UIView *elementContainer = curtainView.superview;
-    if (!elementContainer) return;
-
-    // 调试：打印视图层级（包含 layer 背景、opaque、clips）
-    LGDILog(@"=== View hierarchy from gainMapView ===");
-    LGDIDumpViewHierarchy(gainMapView);
-
     // 获取 window
     UIWindow *window = gainMapView.window;
-    LGDILog(@"window class=%@ opaque=%d bg=%@",
-            NSStringFromClass(window.class),
-            window.opaque,
-            window.backgroundColor ? [window.backgroundColor description] : @"(nil)");
 
-    // 把 gainMapView 的 bounds 转换到 elementContainer 坐标系
-    CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:elementContainer];
+    // 找到灵动岛内容的顶层容器（window 的直接子视图）
+    UIView *topContainer = LGDIFindTopContainer(gainMapView);
+    if (!topContainer) {
+        LGDILog(@"ERROR: cannot find top container for gainMapView");
+        LGDIDumpViewHierarchy(gainMapView);
+        return;
+    }
+
+    // 把 gainMapView 的 bounds 转换到 window 坐标系
+    CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:nil];
     glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
     if (!glassView) {
         LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil");
@@ -352,64 +347,20 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 关键：玻璃作为 curtainView 的兄弟视图，插在它上方
-    // 层级（从上到下）：内容 → glass → curtainView → 桌面
-    // 然后我们隐藏 curtainView，让玻璃直接看到桌面
-    [elementContainer insertSubview:glassView aboveSubview:curtainView];
+    // 关键：玻璃加在 window 上，插到顶层内容容器的下面
+    // 层级（从上到下）：
+    //   内容容器（topContainer）→ 所有灵动岛内容
+    //   glassView（我们的玻璃）
+    //   window → 桌面壁纸
+    [window insertSubview:glassView belowSubview:topContainer];
 
     // 隐藏 curtainView（黑色背景），让液态玻璃直接看到桌面
     curtainView.hidden = YES;
 
-    // =========================================================================
-    //  全面透明化处理（参考 MangoPillContainerBgTransparentV2）
-    // =========================================================================
-
-    NSInteger clearViewBgCount = 0;
-    NSInteger clearLayerBgCount = 0;
-    NSInteger clearOpaqueCount = 0;
-
-    // 从 elementContainer 往上遍历，清除所有背景色 + 不透明设置
-    UIView *v = elementContainer;
-    NSInteger maxLevels = 8;
-    NSInteger level = 0;
-    while (v && level < maxLevels) {
-        // 1. 清除 UIView.backgroundColor
-        if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
-            v.backgroundColor = UIColor.clearColor;
-            clearViewBgCount++;
-        }
-        // 2. 清除 CALayer.backgroundColor
-        if (v.layer.backgroundColor && v.layer.backgroundColor != [UIColor clearColor].CGColor) {
-            v.layer.backgroundColor = [UIColor clearColor].CGColor;
-            clearLayerBgCount++;
-        }
-        // 3. 把 opaque 设为 NO（如果是 YES 的话）
-        if (v.opaque) {
-            v.opaque = NO;
-            clearOpaqueCount++;
-        }
-        v = v.superview;
-        level++;
-    }
-
-    // 4. 特别处理 window 本身
-    if (window.opaque) {
-        window.opaque = NO;
-        LGDILog(@"window.opaque set to NO");
-    }
-    if (window.backgroundColor && window.backgroundColor != UIColor.clearColor) {
-        window.backgroundColor = UIColor.clearColor;
-        LGDILog(@"window.backgroundColor set to clear");
-    }
-
-    LGDILog(@"glass installed above curtainView in %@, size=%@ CR=%.1f, "
-            "curtainView hidden=YES, clearViewBg=%ld, clearLayerBg=%ld, clearOpaque=%ld",
-            NSStringFromClass(elementContainer.class),
+    LGDILog(@"glass installed on window below %@, size=%@ CR=%.1f, curtainView hidden=YES",
+            NSStringFromClass(topContainer.class),
             NSStringFromCGSize(glassFrame.size),
-            glassView.layer.cornerRadius,
-            (long)clearViewBgCount,
-            (long)clearLayerBgCount,
-            (long)clearOpaqueCount);
+            glassView.layer.cornerRadius);
 
     // 关联到 gainMapView 上
     objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
@@ -450,12 +401,8 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
     LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
     if (!glassView) return;
 
-    // 用 glass 的 superview 作为坐标系参考
-    UIView *superview = glassView.superview;
-    if (!superview) return;
-
-    // 同步 glass frame 到 gainMapView 在 superview 坐标系中的位置
-    CGRect targetFrame = [gainMapView convertRect:gainMapView.bounds toView:superview];
+    // 玻璃在 window 上，用 window 坐标系
+    CGRect targetFrame = [gainMapView convertRect:gainMapView.bounds toView:nil];
     CGFloat targetCR = gainMapView.layer.cornerRadius;
     BOOL frameChanged = !CGRectEqualToRect(glassView.frame, targetFrame);
     BOOL crChanged = ABS(glassView.layer.cornerRadius - targetCR) > 0.5;
@@ -467,11 +414,10 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
         } else {
             glassView.layer.cornerRadius = targetFrame.size.height / 2.0;
         }
-        LGDILog(@"glass updated: size=%@ cornerRadius=%.1f (gainMapCR=%.1f) superview=%@",
+        LGDILog(@"glass updated: size=%@ cornerRadius=%.1f (gainMapCR=%.1f) [window coords]",
                 NSStringFromCGSize(targetFrame.size),
                 glassView.layer.cornerRadius,
-                targetCR,
-                NSStringFromClass(superview.class));
+                targetCR);
     }
 }
 
@@ -628,6 +574,23 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
 }
 
 - (void)setHidden:(BOOL)hidden {
+    // 如果 glass 存在，强制保持 curtainView 隐藏
+    UIView *gainMapView = nil;
+    for (UIView *subview in self.subviews) {
+        if ([subview isKindOfClass:NSClassFromString(@"_SBGainMapView")]) {
+            gainMapView = subview;
+            break;
+        }
+    }
+    if (gainMapView) {
+        LGLiveBackdropView *glass = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
+        if (glass && hidden == NO) {
+            LGDILog(@"[CurtainView setHidden:NO] blocked (glass exists, keeping hidden)");
+            %orig; // 先调用原方法
+            self.hidden = YES; // 再强制隐藏
+            return;
+        }
+    }
     %orig;
     LGDILog(@"[CurtainView setHidden:] hidden=%d", hidden);
 }
