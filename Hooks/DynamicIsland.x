@@ -225,6 +225,23 @@ static UIView *LGDFindViewWithClassContaining(UIView *root, NSString *keyword) {
     return nil;
 }
 
+// 尺寸匹配回退：递归搜索容器内符合灵动岛 pill 尺寸的视图
+// pill 通常约 120x37 points（compact），_UISceneLayerHostView 也类似尺寸
+static UIView *LGDFindViewBySize(UIView *root) {
+    if (!root) return nil;
+    for (UIView *subview in root.subviews) {
+        if (!subview.hidden && subview.alpha > 0.5 &&
+            LGDIIsPlausibleIslandSize(subview.bounds.size)) {
+            return subview;
+        }
+        UIView *found = LGDFindViewBySize(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static BOOL sLGDidDumpHierarchy = NO;
+
 // Mango 架构：直接通过 _elementForContainerView: 获取 SBSystemApertureSceneElement
 // 不依赖类名包含 "Pill"（iOS 17 上 pill 视图类名是 SBSystemApertureSceneElement）
 static UIView *LGDFindPillViewMangoStyle(UIView *container) {
@@ -247,13 +264,14 @@ static UIView *LGDFindPillViewMangoStyle(UIView *container) {
     }
 
     // 方法 2: 搜索场景图层视图类（Mango 二进制确认这些类包含 pill 内容）
-    // _UISceneLayerHostContainerView → _UIExternalSceneLayerHostView → 内容
     NSArray *sceneLayerKeywords = @[
         @"SBSystemApertureSceneElement",
         @"_UIExternalSceneLayerHostView",
         @"_UISceneLayerHostContainerView",
         @"ApertureElement",
-        @"ApertureSceneElement"
+        @"ApertureSceneElement",
+        @"SceneLayerHost",
+        @"ApertureContent"
     ];
     for (NSString *keyword in sceneLayerKeywords) {
         UIView *found = LGDFindViewWithClassContaining(container, keyword);
@@ -264,6 +282,21 @@ static UIView *LGDFindPillViewMangoStyle(UIView *container) {
         }
     }
 
+    // 方法 3: 尺寸匹配回退 — 搜索符合灵动岛 pill 尺寸的视图
+    UIView *sizeMatch = LGDFindViewBySize(container);
+    if (sizeMatch) {
+        LGDILog(@"LGDFindPillViewMangoStyle: found by size match %@ frame=%.1fx%.1f",
+                NSStringFromClass(sizeMatch.class),
+                sizeMatch.bounds.size.width, sizeMatch.bounds.size.height);
+        return sizeMatch;
+    }
+
+    // 诊断日志：输出容器视图层级（仅一次，帮助定位实际类名）
+    if (!sLGDidDumpHierarchy) {
+        sLGDidDumpHierarchy = YES;
+        LGDILog(@"LGDFindPillViewMangoStyle: FAILED — container hierarchy:\n%@",
+                LGDIDumpViewHierarchy(container, 0));
+    }
     return nil;
 }
 
@@ -436,7 +469,49 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     UIView *cached = objc_getAssociatedObject(container, kLGDICachedPillViewKey);
     if (cached && cached.superview) return cached;
 
-    // Mango 架构：优先使用 _elementForContainerView: 和场景图层类名搜索
+    // 方法 1: 通过 SBSystemApertureViewController 的 _elementForContainerView: 获取
+    // （Mango 的精确方法 — 这是 VC 方法，不是 view 方法）
+    UIViewController *apertureVC = self.apertureViewController;
+    SEL elementSel = NSSelectorFromString(@"_elementForContainerView:");
+
+    // 1a: 当前 VC 直接响应
+    if (apertureVC && [apertureVC respondsToSelector:elementSel]) {
+        IMP imp = [apertureVC methodForSelector:elementSel];
+        if (imp) {
+            UIView *element = ((UIView *(*)(id, SEL, id))imp)(apertureVC, elementSel, apertureVC.view);
+            if (element && [element isKindOfClass:[UIView class]]) {
+                LGDILog(@"findPillViewInAperture: _elementForContainerView: on VC found %@ frame=%.1fx%.1f",
+                        NSStringFromClass(element.class),
+                        element.bounds.size.width, element.bounds.size.height);
+                objc_setAssociatedObject(container, kLGDICachedPillViewKey, element,
+                                         OBJC_ASSOCIATION_ASSIGN);
+                return element;
+            }
+        }
+    }
+
+    // 1b: 搜索子 VC 中的 SBSystemApertureViewController
+    if (apertureVC) {
+        for (UIViewController *childVC in apertureVC.childViewControllers) {
+            if ([childVC respondsToSelector:elementSel]) {
+                IMP imp = [childVC methodForSelector:elementSel];
+                if (imp) {
+                    UIView *element = ((UIView *(*)(id, SEL, id))imp)(childVC, elementSel, childVC.view);
+                    if (element && [element isKindOfClass:[UIView class]]) {
+                        LGDILog(@"findPillViewInAperture: _elementForContainerView: on child VC %@ found %@",
+                                NSStringFromClass(childVC.class), NSStringFromClass(element.class));
+                        // 更新 apertureViewController 为实际响应的 VC
+                        self.apertureViewController = childVC;
+                        objc_setAssociatedObject(container, kLGDICachedPillViewKey, element,
+                                                 OBJC_ASSOCIATION_ASSIGN);
+                        return element;
+                    }
+                }
+            }
+        }
+    }
+
+    // 方法 2: Mango style class name + size search fallback
     UIView *pillView = LGDFindPillViewMangoStyle(container);
     if (pillView) {
         objc_setAssociatedObject(container, kLGDICachedPillViewKey, pillView,
@@ -880,8 +955,23 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGDILog(@"ShimVC viewDidAppear");
 
     LGPillManager *mgr = [LGPillManager sharedManager];
-    mgr.apertureViewController = self;
     mgr.apertureContainerView = self.view;
+
+    // 在子 VC 中查找 SBSystemApertureViewController（_elementForContainerView: 的宿主）
+    for (UIViewController *childVC in self.childViewControllers) {
+        NSString *clsName = NSStringFromClass(childVC.class);
+        if ([clsName containsString:@"Aperture"] && ![clsName containsString:@"Shim"]) {
+            mgr.apertureViewController = childVC;
+            LGDILog(@"ShimVC: found child ApertureVC: %@", clsName);
+            break;
+        }
+    }
+
+    // 如果灵动岛内容已活跃，重置重试计数并重新安装
+    if (mgr.pillContentActive) {
+        mgr.pillGlassRetryCount = 0;
+        [mgr installPillGlass];
+    }
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -900,6 +990,52 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     if (!view || !view.window) return;
 
     LGPillManager *mgr = [LGPillManager sharedManager];
+    mgr.apertureContainerView = view;
+
+    LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
+    if (pillGlass) {
+        UIView *pillView = [mgr findPillViewInAperture];
+        if (pillView) {
+            CGRect targetFrame = pillView.frame;
+            if (!CGRectEqualToRect(pillGlass.frame, targetFrame)) {
+                pillGlass.frame = targetFrame;
+            }
+            LGDIScheduleMaskUpdate(pillView, pillGlass, kLGDIPillMaskLayerKey);
+        }
+    }
+}
+
+%end
+
+// =============================================================================
+//  Hook: SBSystemApertureViewController
+//  这是 _elementForContainerView: 方法的宿主类（Mango 的精确 pill 获取方式）
+//  ShimVC 是外层容器，ApertureVC 是实际的灵动岛内容控制器
+// =============================================================================
+
+%hook SBSystemApertureViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    LGDILog(@"ApertureVC viewDidAppear");
+
+    LGPillManager *mgr = [LGPillManager sharedManager];
+    mgr.apertureViewController = self;
+    mgr.apertureContainerView = self.view;
+
+    if (mgr.pillContentActive) {
+        mgr.pillGlassRetryCount = 0;
+        [mgr installPillGlass];
+    }
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    UIView *view = self.view;
+    if (!view || !view.window) return;
+
+    LGPillManager *mgr = [LGPillManager sharedManager];
+    mgr.apertureViewController = self;
     mgr.apertureContainerView = view;
 
     LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
@@ -994,5 +1130,5 @@ static void LGDynamicIslandInit(void) {
             shimVCClass ? @"YES" : @"NO",
             sceneLayerMgrClass ? @"YES" : @"NO");
 
-    LGDILog(@"Dynamic Island initialized (Mango architecture: FBSceneLayerManager._setLayers: + ShimVC)");
+    LGDILog(@"Dynamic Island initialized (Mango architecture: FBSceneLayerManager._setLayers: + ShimVC + ApertureVC)");
 }
