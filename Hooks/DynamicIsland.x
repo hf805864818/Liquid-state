@@ -270,9 +270,24 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 插入到 curtainView 下面（兄弟视图关系，都在 elementContainer 里）
-    // 与 Mango 一致：insertSubview:belowSubview:
-    [elementContainer insertSubview:glassView belowSubview:curtainView];
+    // 插入到 curtainView 上面（兄弟视图关系，都在 elementContainer 里）
+    // 注意：curtainView 可能不透明，玻璃在下面会被完全挡住
+    [elementContainer insertSubview:glassView aboveSubview:curtainView];
+
+    // 诊断：打印 elementContainer 层级和 curtainView 背景色/透明度
+    LGDILog(@"DIAG: elementContainer=%@ frame=%@ subviews=%lu clipsToBounds=%d",
+            NSStringFromClass(elementContainer.class),
+            NSStringFromCGRect(elementContainer.frame),
+            (unsigned long)elementContainer.subviews.count,
+            elementContainer.clipsToBounds);
+    LGDILog(@"DIAG: curtainView=%@ bgColor=%@ alpha=%.2f hidden=%d opaque=%d",
+            NSStringFromClass(curtainView.class),
+            curtainView.backgroundColor ? @"not nil" : @"nil/clear",
+            curtainView.alpha, curtainView.hidden, curtainView.layer.isOpaque);
+    LGDILog(@"DIAG: gainMapView=%@ bgColor=%@ alpha=%.2f hidden=%d opaque=%d",
+            NSStringFromClass(gainMapView.class),
+            gainMapView.backgroundColor ? @"not nil" : @"nil/clear",
+            gainMapView.alpha, gainMapView.hidden, gainMapView.layer.isOpaque);
 
     // 关联到 gainMapView 上（每个 gainMapView 实例对应一个 glass）
     objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
@@ -361,6 +376,7 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
     %orig;
 
     if (!CGRectIsEmpty(self.bounds)) {
+        LGDILog(@"[_SBGainMapView layoutSubviews] bounds=%@", NSStringFromCGRect(self.bounds));
         LGDIRefreshPillGlass(self);
     }
 }
