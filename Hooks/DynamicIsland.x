@@ -294,6 +294,10 @@ static void LGDIRefreshBackdropThrottled(UIView *gainMapView) {
 //  这是灵动岛 pill 的核心渲染视图，玻璃直接安装在这个 view 上
 // =============================================================================
 
+// 声明 _SBGainMapView 是 UIView 子类，让编译器识别 window / bounds 等属性
+@interface _SBGainMapView : UIView
+@end
+
 %group GainMapViewHook
 %hook _SBGainMapView
 
