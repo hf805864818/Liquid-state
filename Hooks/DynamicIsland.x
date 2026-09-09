@@ -471,6 +471,8 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 
     // 方法 1: 通过 SBSystemApertureViewController 的 _elementForContainerView: 获取
     // （Mango 的精确方法 — 这是 VC 方法，不是 view 方法）
+    // 注意：系统方法内部会调用 view 的 elementViewController，如果 view 层级未就绪会崩溃
+    // 所以必须用 @try/@catch 保护，并且延迟到 viewDidLayoutSubviews 之后调用
     UIViewController *apertureVC = self.apertureViewController;
     SEL elementSel = NSSelectorFromString(@"_elementForContainerView:");
 
@@ -478,7 +480,13 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     if (apertureVC && [apertureVC respondsToSelector:elementSel]) {
         IMP imp = [apertureVC methodForSelector:elementSel];
         if (imp) {
-            UIView *element = ((UIView *(*)(id, SEL, id))imp)(apertureVC, elementSel, apertureVC.view);
+            UIView *element = nil;
+            @try {
+                element = ((UIView *(*)(id, SEL, id))imp)(apertureVC, elementSel, apertureVC.view);
+            } @catch (NSException *e) {
+                LGDILog(@"findPillViewInAperture: _elementForContainerView: threw: %@", e.reason);
+                element = nil;
+            }
             if (element && [element isKindOfClass:[UIView class]]) {
                 LGDILog(@"findPillViewInAperture: _elementForContainerView: on VC found %@ frame=%.1fx%.1f",
                         NSStringFromClass(element.class),
@@ -496,7 +504,13 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
             if ([childVC respondsToSelector:elementSel]) {
                 IMP imp = [childVC methodForSelector:elementSel];
                 if (imp) {
-                    UIView *element = ((UIView *(*)(id, SEL, id))imp)(childVC, elementSel, childVC.view);
+                    UIView *element = nil;
+                    @try {
+                        element = ((UIView *(*)(id, SEL, id))imp)(childVC, elementSel, childVC.view);
+                    } @catch (NSException *e) {
+                        LGDILog(@"findPillViewInAperture: child VC _elementForContainerView: threw: %@", e.reason);
+                        element = nil;
+                    }
                     if (element && [element isKindOfClass:[UIView class]]) {
                         LGDILog(@"findPillViewInAperture: _elementForContainerView: on child VC %@ found %@",
                                 NSStringFromClass(childVC.class), NSStringFromClass(element.class));
@@ -967,10 +981,14 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
         }
     }
 
-    // 如果灵动岛内容已活跃，重置重试计数并重新安装
+    // 如果灵动岛内容已活跃，延迟重新安装（避免 view 层级未就绪时崩溃）
     if (mgr.pillContentActive) {
         mgr.pillGlassRetryCount = 0;
-        [mgr installPillGlass];
+        __weak LGPillManager *ws = mgr;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [ws installPillGlass];
+        });
     }
 }
 
@@ -1023,9 +1041,15 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     mgr.apertureViewController = self;
     mgr.apertureContainerView = self.view;
 
+    // 延迟安装：viewDidAppear 时 view 层级可能未就绪，
+    // 系统的 _elementForContainerView: 内部调用 elementViewController 会崩溃
     if (mgr.pillContentActive) {
         mgr.pillGlassRetryCount = 0;
-        [mgr installPillGlass];
+        __weak LGPillManager *ws = mgr;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [ws installPillGlass];
+        });
     }
 }
 
