@@ -237,7 +237,6 @@ static LGLiveBackdropView *LGDIEnsureGlassView(UIView *containerView, void *glas
     glassView.layer.masksToBounds = YES;
 
     // 插入到 anchorView 下方
-    UIView *parent = anchorView.superview ?: containerView;
     if (anchorView.superview) {
         [anchorView.superview insertSubview:glassView belowSubview:anchorView];
     } else {
@@ -452,6 +451,9 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 
 // iOS 17+ 上，灵动岛由 SBSystemApertureViewController 管理
 // 这是 Mango 使用的类名，在 iOS 17 上存在
+@interface SBSystemApertureViewController : UIViewController
+@end
+
 %hook SBSystemApertureViewController
 
 - (void)viewWillAppear:(BOOL)animated {
