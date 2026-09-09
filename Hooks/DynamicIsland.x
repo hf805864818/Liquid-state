@@ -122,7 +122,9 @@ static UIImage *LGDIRenderAlphaMaskFromView(UIView *view) {
     UIGraphicsBeginImageContextWithOptions(size, NO, scale);
     CGContextRef ctx = UIGraphicsGetCurrentContext();
     if (!ctx) { UIGraphicsEndImageContext(); return nil; }
-    [view.layer renderInContext:ctx];
+    // 用 drawViewHierarchyInRect 替代 renderInContext
+    // renderInContext 不会捕捉 layer.mask，而 drawViewHierarchyInRect 会
+    [view drawViewHierarchyInRect:view.bounds afterScreenUpdates:NO];
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     return image;
@@ -244,6 +246,29 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     LGLiveBackdropView *glassView = objc_getAssociatedObject(elementContainer, kLGDIPillGlassKey);
     if (glassView) return;
 
+    // 诊断日志
+    LGDILog(@"DIAG: gainMap=%@ frame=%@ bgColor=%@ alpha=%.2f hidden=%d subviews=%lu",
+            NSStringFromClass(gainMapView.class),
+            NSStringFromCGRect(gainMapView.frame),
+            gainMapView.backgroundColor, gainMapView.alpha, gainMapView.hidden,
+            (unsigned long)gainMapView.subviews.count);
+    LGDILog(@"DIAG: curtain=%@ frame=%@ bgColor=%@ alpha=%.2f hidden=%d subviews=%lu masksToBounds=%d",
+            NSStringFromClass(curtainView.class),
+            NSStringFromCGRect(curtainView.frame),
+            curtainView.backgroundColor, curtainView.alpha, curtainView.hidden,
+            (unsigned long)curtainView.subviews.count,
+            curtainView.layer.masksToBounds);
+    LGDILog(@"DIAG: elementContainer=%@ frame=%@ bgColor=%@ subviews=%lu",
+            NSStringFromClass(elementContainer.class),
+            NSStringFromCGRect(elementContainer.frame),
+            elementContainer.backgroundColor,
+            (unsigned long)elementContainer.subviews.count);
+    for (UIView *sv in elementContainer.subviews) {
+        LGDILog(@"  sibling: %@ frame=%@ hidden=%d alpha=%.2f",
+                NSStringFromClass(sv.class), NSStringFromCGRect(sv.frame),
+                sv.hidden, sv.alpha);
+    }
+
     // 用 curtainView 的尺寸创建玻璃
     CGRect glassFrame = curtainView.frame;
     glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
@@ -253,13 +278,13 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     }
 
     glassView.userInteractionEnabled = NO;
-    glassView.backgroundColor = UIColor.clearColor;
+    glassView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.3]; // 临时加底色验证可见性
     glassView.layer.cornerRadius = 0.0;
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 插入到 curtainView 下面（兄弟视图关系，都在 element 容器里）
-    [elementContainer insertSubview:glassView belowSubview:curtainView];
+    // 插入到 curtainView 上面（先确认玻璃能被看到）
+    [elementContainer insertSubview:glassView aboveSubview:curtainView];
 
     // 关联到 element 容器上
     objc_setAssociatedObject(elementContainer, kLGDIPillGlassKey, glassView,
