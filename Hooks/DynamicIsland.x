@@ -514,42 +514,65 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 }
 
 // sceneLayersDidChange: — Mango 架构：从 _setLayers: 的 layers 参数提取容器
-// Mango debug log 确认: sceneLayersDidChange bundle=%@ container=%@ subviews=%ld
+// Mango 流程: refreshSceneContainer (检查 containerSubviews.count) → sceneLayersDidChange → pillDidAppear
+// 不递归搜索，直接用容器子视图数量判断（与 Mango 完全一致）
 - (void)sceneLayersDidChange:(id)layers {
-    LGDILog(@"sceneLayersDidChange: layers=%@", layers);
-
     if (!lgHostEnabled(@"DynamicIsland")) return;
 
-    // 从 layers 数组中提取容器视图
-    // Mango: layers 包含 _UISceneLayerHostContainerView 实例
+    // 1. 从 layers 数组提取容器视图（Mango: _UISceneLayerHostContainerView）
     UIView *extractedContainer = nil;
-    NSString *extractedBundleID = nil;
+    NSUInteger containerSubviewCount = 0;
 
     if ([layers isKindOfClass:[NSArray class]]) {
         for (id layer in (NSArray *)layers) {
             if ([layer isKindOfClass:[UIView class]]) {
                 UIView *layerView = (UIView *)layer;
-                // 寻找 _UISceneLayerHostContainerView 或包含场景内容的视图
                 NSString *clsName = NSStringFromClass(layerView.class);
                 if ([clsName containsString:@"SceneLayer"] ||
                     [clsName containsString:@"LayerHost"] ||
                     [clsName containsString:@"Aperture"]) {
                     extractedContainer = layerView;
-                    LGDILog(@"sceneLayersDidChange: found container %@ subviews=%lu",
-                            clsName, (unsigned long)layerView.subviews.count);
+                    containerSubviewCount = layerView.subviews.count;
+                    LGDILog(@"sceneLayersDidChange: container=%@ subviews=%lu",
+                            clsName, (unsigned long)containerSubviewCount);
                     break;
                 }
             }
         }
+    } else if ([layers isKindOfClass:[UIView class]]) {
+        // 单个视图而非数组
+        extractedContainer = (UIView *)layers;
+        containerSubviewCount = ((UIView *)layers).subviews.count;
+        LGDILog(@"sceneLayersDidChange: single container=%@ subviews=%lu",
+                NSStringFromClass([layers class]), (unsigned long)containerSubviewCount);
     }
 
-    // 如果提取到容器，设置它
+    // 2. 设置容器
     if (extractedContainer) {
         self.apertureContainerView = extractedContainer;
     }
 
-    // 调用统一的生命周期处理
-    [self sceneLifecycleChangedWithActionType:0 bundleID:extractedBundleID];
+    // 3. Mango 方式：直接用容器子视图数量判断
+    //    子视图 > 0 = 有场景内容（灵动岛 pill）
+    //    子视图 = 0 = 场景内容已退出
+    //    不需要递归搜索 findPillViewInAperture
+    if (containerSubviewCount > 0) {
+        // 有内容
+        if (!self.pillContentActive) {
+            LGDILog(@"sceneLayersDidChange → pillDidAppear (subviews=%lu)",
+                    (unsigned long)containerSubviewCount);
+            [self pillDidAppear:@"sceneLayers"];
+        } else {
+            // 已安装，刷新
+            [self refreshPillGlassBackdrop];
+        }
+    } else {
+        // 无内容
+        if (self.pillContentActive) {
+            LGDILog(@"sceneLayersDidChange → sceneContentDidExit (subviews=0)");
+            [self sceneContentDidExit];
+        }
+    }
 }
 
 #pragma mark - Glass installation (含重试机制)
