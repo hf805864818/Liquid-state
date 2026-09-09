@@ -7,8 +7,9 @@
 //  3. _SBGainMapView setHidden:       → 显隐同步
 //  4. _SBSystemApertureMagiciansCurtainView setHidden: → 阻止 curtainView 重新显示
 //
-//  架构：
-//  - 玻璃加在 SpringBoard 主桌面窗口上（这样 backdrop 能看到桌面壁纸）
+// 架构：
+//  - 玻璃加在壁纸窗口上（这样 backdrop 直接看到桌面壁纸，液态效果正确）
+//  - 参考 Mango 的 repWin/pillWin 双窗口架构
 //  - 灵动岛窗口（SBSystemApertureWindow）设为透明，让玻璃透上来
 //  - 隐藏 curtainView（黑色背景）
 //  - frame 跟随 gainMapView 用屏幕坐标更新
@@ -276,28 +277,49 @@ static UIView *LGDIFindExistingGainMapView(void) {
 
 @end
 
-#pragma mark - Glass installation (on main SpringBoard window)
+#pragma mark - Glass installation (on wallpaper window)
 
-// 找到 SpringBoard 主窗口（桌面所在的窗口，不是灵动岛窗口）
-static UIWindow *LGDIFindMainSpringBoardWindow(void) {
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
-        // 跳过灵动岛窗口
-        if ([NSStringFromClass(window.class) containsString:@"Aperture"]) continue;
-        // 跳过其他特殊窗口
-        if ([NSStringFromClass(window.class) containsString:@"Banner"]) continue;
-        if (window.windowLevel > UIWindowLevelNormal) continue;
-        // 主窗口应该是 keyWindow 或者有 rootViewController
-        if (window.rootViewController && !window.hidden) {
+// 找到壁纸窗口（最底层的窗口，桌面壁纸在这上面）
+// 参考 Mango 的 repWin 概念：玻璃装在渲染/壁纸窗口上，backdrop 直接看桌面
+static UIWindow *LGDIFindWallpaperWindow(void) {
+    // SpringBoard 的窗口层级（从下到上）：
+    // 1. _SBWallpaperWindow (壁纸窗口，最底层)
+    // 2. SBHomeScreenWindow (主屏窗口，图标在这)
+    // 3. ... 其他中间窗口 ...
+    // 4. SBSystemApertureWindow (灵动岛窗口，最上层之一)
+    //
+    // 我们要找最底层的那个窗口（壁纸窗口），这样玻璃的 backdrop 能直接看到壁纸
+
+    NSArray *windows = UIApplication.sharedApplication.windows;
+    if (windows.count == 0) return nil;
+
+    // 优先找类名包含 Wallpaper 的窗口
+    for (UIWindow *window in windows) {
+        NSString *className = NSStringFromClass(window.class);
+        if ([className containsString:@"Wallpaper"]) {
             return window;
         }
     }
-    // fallback: 返回第一个普通窗口
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
-        if (window.windowLevel == UIWindowLevelNormal && !window.hidden) {
-            return window;
+
+    // 没找到的话，找 windowLevel 最低的可见窗口
+    UIWindow *lowestWindow = nil;
+    CGFloat lowestLevel = CGFLOAT_MAX;
+    for (UIWindow *window in windows) {
+        if (window.hidden) continue;
+        // 跳过明显的上层窗口
+        NSString *className = NSStringFromClass(window.class);
+        if ([className containsString:@"Aperture"]) continue;
+        if ([className containsString:@"Banner"]) continue;
+        if ([className containsString:@"Alert"]) continue;
+        if ([className containsString:@"Keyboard"]) continue;
+
+        if (window.windowLevel < lowestLevel) {
+            lowestLevel = window.windowLevel;
+            lowestWindow = window;
         }
     }
-    return nil;
+
+    return lowestWindow;
 }
 
 // 调试：打印视图层级（简洁版）
@@ -336,14 +358,15 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     // 灵动岛所在的窗口（SBSystemApertureWindow）
     UIWindow *islandWindow = gainMapView.window;
 
-    // 找到主桌面窗口（玻璃装在这里才能看到桌面壁纸）
-    UIWindow *mainWindow = LGDIFindMainSpringBoardWindow();
-    if (!mainWindow) {
-        LGDILog(@"ERROR: cannot find main SpringBoard window");
+    // 找到壁纸窗口（玻璃装在这里，backdrop 直接看桌面壁纸）
+    // 参考 Mango 的 repWin/pillWin 架构
+    UIWindow *wallpaperWindow = LGDIFindWallpaperWindow();
+    if (!wallpaperWindow) {
+        LGDILog(@"ERROR: cannot find wallpaper window");
         return;
     }
 
-    // 把 gainMapView 的 bounds 转换到屏幕（主窗口）坐标系
+    // 把 gainMapView 的 bounds 转换到屏幕坐标系
     // 注意：gainMapView 在灵动岛窗口上，toView:nil 返回的是屏幕坐标
     CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:nil];
     glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
@@ -368,9 +391,10 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 关键1：玻璃加在主桌面窗口的最上层（在桌面图标上面，但在灵动岛窗口下面）
-    // 因为灵动岛窗口 windowLevel 更高，所以玻璃自然在灵动岛内容下面
-    [mainWindow addSubview:glassView];
+    // 关键1：玻璃加在壁纸窗口的最上层
+    // 壁纸窗口在最底层，玻璃在它上面，但在主屏/灵动岛窗口下面
+    // 这样 backdrop 直接看到壁纸，液态效果正确
+    [wallpaperWindow addSubview:glassView];
 
     // 关键2：灵动岛窗口变透明，这样能看到下面的玻璃
     islandWindow.opaque = NO;
@@ -379,9 +403,10 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     // 隐藏 curtainView（黑色背景）
     curtainView.hidden = YES;
 
-    LGDILog(@"glass installed on mainWindow (%@), size=%@ CR=%.1f, "
+    LGDILog(@"glass installed on wallpaperWindow (%@, level=%.0f), size=%@ CR=%.1f, "
             "islandWindow=%@ opaque=NO, curtainView hidden=YES",
-            NSStringFromClass(mainWindow.class),
+            NSStringFromClass(wallpaperWindow.class),
+            wallpaperWindow.windowLevel,
             NSStringFromCGSize(glassFrame.size),
             glassView.layer.cornerRadius,
             NSStringFromClass(islandWindow.class));
