@@ -225,6 +225,52 @@ static UIView *LGDFindViewWithClassContaining(UIView *root, NSString *keyword) {
     return nil;
 }
 
+// Mango 架构：直接通过 _elementForContainerView: 获取 SBSystemApertureSceneElement
+// 不依赖类名包含 "Pill"（iOS 17 上 pill 视图类名是 SBSystemApertureSceneElement）
+static UIView *LGDFindPillViewMangoStyle(UIView *container) {
+    if (!container) return nil;
+
+    // 方法 1: _elementForContainerView:（Mango 的精确方法）
+    // SBSystemApertureViewController 有此方法，返回 SBSystemApertureSceneElement
+    SEL elementSel = NSSelectorFromString(@"_elementForContainerView:");
+    if ([container respondsToSelector:elementSel]) {
+        id element = [container performSelector:elementSel withObject:container];
+        if (element && [element isKindOfClass:[UIView class]]) {
+            LGDILog(@"LGDFindPillViewMangoStyle: _elementForContainerView: found %@", 
+                    NSStringFromClass([element class]));
+            return element;
+        }
+    }
+
+    // 方法 2: 搜索场景图层视图类（Mango 二进制确认这些类包含 pill 内容）
+    // _UISceneLayerHostContainerView → _UIExternalSceneLayerHostView → 内容
+    NSArray *sceneLayerKeywords = @[
+        @"SBSystemApertureSceneElement",
+        @"_UIExternalSceneLayerHostView",
+        @"_UISceneLayerHostContainerView",
+        @"ApertureElement",
+        @"ApertureSceneElement"
+    ];
+    for (NSString *keyword in sceneLayerKeywords) {
+        UIView *found = LGDFindViewWithClassContaining(container, keyword);
+        if (found) {
+            LGDILog(@"LGDFindPillViewMangoStyle: found %@ by keyword %@",
+                    NSStringFromClass(found.class), keyword);
+            return found;
+        }
+    }
+
+    // 方法 3: 回退到原来的 "Pill" 搜索（兼容旧版本）
+    UIView *pillView = LGDFindViewWithClassContaining(container, @"Pill");
+    if (pillView) {
+        LGDILog(@"LGDFindPillViewMangoStyle: found %@ by keyword Pill",
+                NSStringFromClass(pillView.class));
+        return pillView;
+    }
+
+    return nil;
+}
+
 static UIView *LGDFindExpandedContentView(UIView *containerView) {
     if (!containerView) return nil;
     UIView *expanded = LGDFindViewWithClassContaining(containerView, @"Expanded");
@@ -300,6 +346,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 - (void)pillDidAppear:(id)sceneInfo;
 - (void)sceneContentDidExit;
 - (void)sceneLifecycleChangedWithActionType:(NSInteger)actionType bundleID:(NSString *)bundleID;
+- (void)sceneLayersDidChange:(id)layers;
 
 // 玻璃管理
 - (void)refreshPillGlassBackdrop;
@@ -393,7 +440,8 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     UIView *cached = objc_getAssociatedObject(container, kLGDICachedPillViewKey);
     if (cached && cached.superview) return cached;
 
-    UIView *pillView = LGDFindViewWithClassContaining(container, @"Pill");
+    // Mango 架构：优先使用 _elementForContainerView: 和场景图层类名搜索
+    UIView *pillView = LGDFindPillViewMangoStyle(container);
     if (pillView) {
         objc_setAssociatedObject(container, kLGDICachedPillViewKey, pillView,
                                  OBJC_ASSOCIATION_ASSIGN);
@@ -454,13 +502,58 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
         if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
             // 场景事件触发 = 灵动岛有内容，直接安装
             if (!strong.pillContentActive) {
-                [strong pillDidAppear:bundleID];
+                [strong pillDidAppear:bundleID ?: @"sceneLifecycle"];
             } else {
                 // 已安装，刷新
                 [strong refreshPillGlassBackdrop];
             }
+        } else {
+            // Pill 视图不存在 = 灵动岛内容已退出
+            if (strong.pillContentActive) {
+                LGDILog(@"sceneLifecycleChanged → sceneContentDidExit (no pill view)");
+                [strong sceneContentDidExit];
+            }
         }
     });
+}
+
+// sceneLayersDidChange: — Mango 架构：从 _setLayers: 的 layers 参数提取容器
+// Mango debug log 确认: sceneLayersDidChange bundle=%@ container=%@ subviews=%ld
+- (void)sceneLayersDidChange:(id)layers {
+    LGDILog(@"sceneLayersDidChange: layers=%@", layers);
+
+    if (!lgHostEnabled(@"DynamicIsland")) return;
+
+    // 从 layers 数组中提取容器视图
+    // Mango: layers 包含 _UISceneLayerHostContainerView 实例
+    UIView *extractedContainer = nil;
+    NSString *extractedBundleID = nil;
+
+    if ([layers isKindOfClass:[NSArray class]]) {
+        for (id layer in (NSArray *)layers) {
+            if ([layer isKindOfClass:[UIView class]]) {
+                UIView *layerView = (UIView *)layer;
+                // 寻找 _UISceneLayerHostContainerView 或包含场景内容的视图
+                NSString *clsName = NSStringFromClass(layerView.class);
+                if ([clsName containsString:@"SceneLayer"] ||
+                    [clsName containsString:@"LayerHost"] ||
+                    [clsName containsString:@"Aperture"]) {
+                    extractedContainer = layerView;
+                    LGDILog(@"sceneLayersDidChange: found container %@ subviews=%lu",
+                            clsName, (unsigned long)layerView.subviews.count);
+                    break;
+                }
+            }
+        }
+    }
+
+    // 如果提取到容器，设置它
+    if (extractedContainer) {
+        self.apertureContainerView = extractedContainer;
+    }
+
+    // 调用统一的生命周期处理
+    [self sceneLifecycleChangedWithActionType:0 bundleID:extractedBundleID];
 }
 
 #pragma mark - Glass installation (含重试机制)
@@ -768,7 +861,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 - (void)_setLayers:(id)layers {
     %orig;
     LGDILog(@"FBSceneLayerManager _setLayers: %@", layers);
-    [[LGPillManager sharedManager] sceneLifecycleChangedWithActionType:0 bundleID:nil];
+    [[LGPillManager sharedManager] sceneLayersDidChange:layers];
 }
 
 %end
