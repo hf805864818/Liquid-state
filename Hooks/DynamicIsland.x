@@ -244,6 +244,30 @@ static UIView *LGDIFindExistingGainMapView(void) {
 //    - layoutSubviews 时同步更新位置和大小
 // =============================================================================
 
+#pragma mark - Touch passthrough category
+// 确保 LGLiveBackdropView 完全不拦截触控事件
+
+@interface LGLiveBackdropView (LGDITouchPassthrough)
+@end
+
+@implementation LGLiveBackdropView (LGDITouchPassthrough)
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *result = [super hitTest:point withEvent:event];
+    if (result == self) {
+        return nil; // 完全透传，不拦截任何触控
+    }
+    return result;
+}
+
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    return NO; // 永远不响应点击
+}
+
+@end
+
+#pragma mark - Glass installation (window-layer)
+
 static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!gainMapView || !gainMapView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
@@ -265,15 +289,30 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     }
 
     glassView.userInteractionEnabled = NO;
-    glassView.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.4]; // 蓝色半透明，更明显
+    glassView.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.4]; // 蓝色半透明验证
     glassView.layer.borderColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.8].CGColor;
     glassView.layer.borderWidth = 2.0;
-    glassView.layer.cornerRadius = glassFrame.size.height / 2.0; // 胶囊形
+
+    // 直接使用 gainMapView 的 cornerRadius，确保形状完全一致
+    CGFloat sourceCornerRadius = gainMapView.layer.cornerRadius;
+    glassView.layer.cornerRadius = sourceCornerRadius > 0 ? sourceCornerRadius : glassFrame.size.height / 2.0;
+
+    // 匹配系统连续圆角风格
+    if (@available(iOS 13.0, *)) {
+        glassView.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
     // 直接加到 window 上（确保可见，不会被下层容器裁剪）
     [window addSubview:glassView];
+
+    LGDILog(@"glass created on window size=%@ cornerRadius=%.1f frame=%@ gainMapCR=%.1f",
+            NSStringFromCGSize(glassFrame.size),
+            glassView.layer.cornerRadius,
+            NSStringFromCGRect(glassFrame),
+            gainMapView.layer.cornerRadius);
 
     // 关联到 gainMapView 上
     objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
@@ -317,12 +356,21 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
 
     // 同步 glass frame 到 gainMapView 在 window 中的位置
     CGRect targetFrame = [gainMapView convertRect:gainMapView.bounds toView:window];
-    if (!CGRectEqualToRect(glassView.frame, targetFrame)) {
+    CGFloat targetCR = gainMapView.layer.cornerRadius;
+    BOOL frameChanged = !CGRectEqualToRect(glassView.frame, targetFrame);
+    BOOL crChanged = ABS(glassView.layer.cornerRadius - targetCR) > 0.5;
+
+    if (frameChanged || crChanged) {
         glassView.frame = targetFrame;
-        glassView.layer.cornerRadius = targetFrame.size.height / 2.0;
-        LGDILog(@"glass updated: size=%@ cornerRadius=%.1f",
+        if (targetCR > 0) {
+            glassView.layer.cornerRadius = targetCR;
+        } else {
+            glassView.layer.cornerRadius = targetFrame.size.height / 2.0;
+        }
+        LGDILog(@"glass updated: size=%@ cornerRadius=%.1f (gainMapCR=%.1f)",
                 NSStringFromCGSize(targetFrame.size),
-                targetFrame.size.height / 2.0);
+                glassView.layer.cornerRadius,
+                targetCR);
     }
 }
 
