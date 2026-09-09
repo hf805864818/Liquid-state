@@ -192,8 +192,22 @@ static float                       g_clockMaskBezelWidthPoints = 24.0f;
 static uint64_t                    g_clockMaskGeneration = 0;
 static uint64_t                    g_clockMaskUploadedGeneration = 0;
 
+// Dynamic Island glyph mask
+static id<MTLTexture>              g_dynamicIslandMaskTexture = nil;
+static NSData                     *g_dynamicIslandMaskData = nil;
+static uint32_t                    g_dynamicIslandMaskWidth = 0;
+static uint32_t                    g_dynamicIslandMaskHeight = 0;
+static float                       g_dynamicIslandMaskImageScale = 1.0f;
+static float                       g_dynamicIslandMaskBezelWidthPoints = 18.0f;
+static float                       g_dynamicIslandMaskOriginX = 0.0f;
+static float                       g_dynamicIslandMaskOriginY = 0.0f;
+static uint64_t                    g_dynamicIslandMaskGeneration = 0;
+static uint64_t                    g_dynamicIslandMaskUploadedGeneration = 0;
+static bool                        g_dynamicIslandMaskDebug = false;
+
 static os_unfair_lock g_pipelineLock = OS_UNFAIR_LOCK_INIT;
 static os_unfair_lock g_clockMaskLock = OS_UNFAIR_LOCK_INIT;
+static os_unfair_lock g_dynamicIslandMaskLock = OS_UNFAIR_LOCK_INIT;
 static bool           g_pipelineInit = false;
 
 // 充电/热状态降级: 从偏好文件读取 (SpringBoard 写入)
@@ -205,6 +219,11 @@ static NSString * const kClockMaskPath =
 static CFStringRef const kClockMaskReloadNotification =
 CFSTR("dylv.liquidglass/ClockMaskReload");
 
+static NSString * const kDynamicIslandMaskPath =
+    @"/var/mobile/Library/Accessibility/liquidglass-dynamicisland-mask.bin";
+static CFStringRef const kDynamicIslandMaskReloadNotification =
+CFSTR("dylv.liquidglass/DynamicIslandMaskReload");
+
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint32_t width;
@@ -214,6 +233,17 @@ typedef struct __attribute__((packed)) {
     uint64_t generation;
 } LGClockMaskHeader;
 
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t width;
+    uint32_t height;
+    float    imageScale;
+    float    bezelWidthPoints;
+    float    originX;
+    float    originY;
+    uint64_t generation;
+} LGDynamicIslandMaskHeader;
+
 // clear arc globals before cxa finalization
 __attribute__((destructor))
 static void liquidGlassShutdown(void) {
@@ -221,6 +251,8 @@ static void liquidGlassShutdown(void) {
     g_uniformsBuf  = nil;
     g_clockMaskTexture = nil;
     g_clockMaskData = nil;
+    g_dynamicIslandMaskTexture = nil;
+    g_dynamicIslandMaskData = nil;
 }
 
 static const char *kShaderSrc = R"MSL(
@@ -770,6 +802,83 @@ lgClockMaskTexture(__unsafe_unretained id<MTLDevice> device) {
     return texture;
 }
 
+// Dynamic Island mask
+static void lgReloadDynamicIslandMask(void) {
+    NSData *data = [NSData dataWithContentsOfFile:kDynamicIslandMaskPath
+                                          options:NSDataReadingMappedIfSafe
+                                            error:nil];
+    if (data.length < sizeof(LGDynamicIslandMaskHeader)) return;
+    LGDynamicIslandMaskHeader header;
+    [data getBytes:&header length:sizeof(header)];
+    uint64_t pixelCount = (uint64_t)header.width * (uint64_t)header.height;
+    if (header.magic != 0x4c474449 || !header.width || !header.height ||
+        !isfinite(header.imageScale) || header.imageScale < 0.5f || header.imageScale > 4.0f ||
+        !isfinite(header.bezelWidthPoints) ||
+        header.bezelWidthPoints < 0.0f || header.bezelWidthPoints > 100.0f ||
+        pixelCount > SIZE_MAX ||
+        data.length != sizeof(header) + (NSUInteger)pixelCount) {
+        lglog("dynamic island mask rejected bytes=%lu magic=0x%x dims=%ux%u",
+              (unsigned long)data.length, header.magic, header.width, header.height);
+        return;
+    }
+
+    os_unfair_lock_lock(&g_dynamicIslandMaskLock);
+    g_dynamicIslandMaskData = data;
+    g_dynamicIslandMaskWidth = header.width;
+    g_dynamicIslandMaskHeight = header.height;
+    g_dynamicIslandMaskImageScale = header.imageScale;
+    g_dynamicIslandMaskBezelWidthPoints = header.bezelWidthPoints;
+    g_dynamicIslandMaskOriginX = header.originX;
+    g_dynamicIslandMaskOriginY = header.originY;
+    g_dynamicIslandMaskGeneration++;
+    os_unfair_lock_unlock(&g_dynamicIslandMaskLock);
+
+    lglog("dynamic island mask loaded dims=%ux%u origin=%.1f,%.1f scale=%.2f bezel=%.1f",
+          header.width, header.height, header.originX, header.originY,
+          header.imageScale, header.bezelWidthPoints);
+}
+
+static void lgDynamicIslandMaskDidChange(CFNotificationCenterRef center, void *observer,
+                                         CFStringRef name, const void *object,
+                                         CFDictionaryRef userInfo) {
+    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+    @autoreleasepool { lgReloadDynamicIslandMask(); }
+}
+
+static id<MTLTexture>
+lgDynamicIslandMaskTexture(__unsafe_unretained id<MTLDevice> device) {
+    os_unfair_lock_lock(&g_dynamicIslandMaskLock);
+    if (!g_dynamicIslandMaskData || !g_dynamicIslandMaskWidth || !g_dynamicIslandMaskHeight) {
+        os_unfair_lock_unlock(&g_dynamicIslandMaskLock);
+        return nil;
+    }
+    NSUInteger width = g_dynamicIslandMaskWidth, height = g_dynamicIslandMaskHeight;
+    if (!g_dynamicIslandMaskTexture ||
+        g_dynamicIslandMaskUploadedGeneration != g_dynamicIslandMaskGeneration ||
+        g_dynamicIslandMaskTexture.device != device) {
+        MTLTextureDescriptor *descriptor =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+                                                              width:width
+                                                             height:height
+                                                          mipmapped:NO];
+        descriptor.usage = MTLTextureUsageShaderRead;
+        id<MTLTexture> texture = [device newTextureWithDescriptor:descriptor];
+        if (texture) {
+            const uint8_t *bytes =
+                (const uint8_t *)g_dynamicIslandMaskData.bytes + sizeof(LGDynamicIslandMaskHeader);
+            [texture replaceRegion:MTLRegionMake2D(0, 0, width, height)
+                       mipmapLevel:0
+                         withBytes:bytes
+                       bytesPerRow:width];
+            g_dynamicIslandMaskTexture = texture;
+            g_dynamicIslandMaskUploadedGeneration = g_dynamicIslandMaskGeneration;
+        }
+    }
+    id<MTLTexture> texture = g_dynamicIslandMaskTexture;
+    os_unfair_lock_unlock(&g_dynamicIslandMaskLock);
+    return texture;
+}
+
 // radius and bezel scale from the shortest surface side
 
 static const float kCornerRadiusRatio = 28.0f / 220.0f;
@@ -974,6 +1083,11 @@ static void lgReloadHostPrefs(void) {
     NSNumber *maskDebugNum = prefs[@"Clock.MaskDebug"];
     g_clockMaskDebug = (maskDebugNum && [maskDebugNum isKindOfClass:[NSNumber class]] && maskDebugNum.boolValue);
     if (g_clockMaskDebug) lglog("Clock mask debug mode: ON (rendering grayscale mask)");
+
+    // Dynamic Island mask 调试模式：DynamicIsland.MaskDebug=1
+    NSNumber *diMaskDebugNum = prefs[@"DynamicIsland.MaskDebug"];
+    g_dynamicIslandMaskDebug = (diMaskDebugNum && [diMaskDebugNum isKindOfClass:[NSNumber class]] && diMaskDebugNum.boolValue);
+    if (g_dynamicIslandMaskDebug) lglog("Dynamic Island mask debug mode: ON (rendering grayscale mask)");
     {
         static int sPrefsPathDiagCount = 0;
         if (sPrefsPathDiagCount < 5) {
@@ -1484,17 +1598,17 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
 
     lu.backdropZoom    = !strcmp(hp->prefPrefix, "PrefsSwitch") ? 0.75f : 1.0f;
 
-    id<MTLTexture> clockMask = nil;
+    id<MTLTexture> glyphMaskTexture = nil;
     if (!strcmp(hp->prefPrefix, "Clock")) {
-        clockMask = lgClockMaskTexture(device);
-        if (clockMask) {
+        glyphMaskTexture = lgClockMaskTexture(device);
+        if (glyphMaskTexture) {
             // 调试模式：Clock.MaskDebug=1 时渲染 mask 灰度图，用于验证 mask 形状
             lu.useGlyphMask = g_clockMaskDebug ? 2.f : 1.f;
             lu.maskResolution = simd_make_float2(
-                (float)clockMask.width, (float)clockMask.height);
+                (float)glyphMaskTexture.width, (float)glyphMaskTexture.height);
 
-            float maskPointWidth = (float)clockMask.width / g_clockMaskImageScale;
-            float maskPointHeight = (float)clockMask.height / g_clockMaskImageScale;
+            float maskPointWidth = (float)glyphMaskTexture.width / g_clockMaskImageScale;
+            float maskPointHeight = (float)glyphMaskTexture.height / g_clockMaskImageScale;
             float pixelsPerPointX = maskPointWidth > 0.0f ? (float)w / maskPointWidth : 1.0f;
             float pixelsPerPointY = maskPointHeight > 0.0f ? (float)h / maskPointHeight : 1.0f;
             float pixelsPerPoint = fminf(pixelsPerPointX, pixelsPerPointY);
@@ -1509,21 +1623,57 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
                 if (sClockDiagCount < 30) {
                     sClockDiagCount++;
                     float srcAspect = (w > 0 && h > 0) ? (float)w / (float)h : 0.0f;
-                    float maskAspect = (clockMask.width > 0 && clockMask.height > 0)
-                        ? (float)clockMask.width / (float)clockMask.height : 0.0f;
+                    float maskAspect = (glyphMaskTexture.width > 0 && glyphMaskTexture.height > 0)
+                        ? (float)glyphMaskTexture.width / (float)glyphMaskTexture.height : 0.0f;
                     float aspectDiff = fabsf(srcAspect - maskAspect);
                     bool aspectMismatch = aspectDiff > 0.01f;
                     lglog("[CLOCK DIAG] maskTex=%ux%u scale=%.2f pts=%.1fx%.1f | "
                           "src=%llux%llu aspect=%.4f | dest=? | "
                           "pps=(%.2f,%.2f) bezel=%.1f | "
                           "aspectMismatch=%d diff=%.4f frosted=%d",
-                          (unsigned)clockMask.width, (unsigned)clockMask.height,
+                          (unsigned)glyphMaskTexture.width, (unsigned)glyphMaskTexture.height,
                           g_clockMaskImageScale, maskPointWidth, maskPointHeight,
                           w, h, srcAspect,
                           pixelsPerPointX, pixelsPerPointY,
                           lu.bezelWidth,
                           aspectMismatch ? 1 : 0, aspectDiff,
                           g_clockFrostedMode ? 1 : 0);
+                }
+            }
+        }
+    } else if (!strcmp(hp->prefPrefix, "DynamicIsland")) {
+        glyphMaskTexture = lgDynamicIslandMaskTexture(device);
+        if (glyphMaskTexture) {
+            // 调试模式：DynamicIsland.MaskDebug=1 时渲染 mask 灰度图
+            lu.useGlyphMask = g_dynamicIslandMaskDebug ? 2.f : 1.f;
+            lu.maskResolution = simd_make_float2(
+                (float)glyphMaskTexture.width, (float)glyphMaskTexture.height);
+
+            float maskPointWidth = (float)glyphMaskTexture.width / g_dynamicIslandMaskImageScale;
+            float maskPointHeight = (float)glyphMaskTexture.height / g_dynamicIslandMaskImageScale;
+            float pixelsPerPointX = maskPointWidth > 0.0f ? (float)w / maskPointWidth : 1.0f;
+            float pixelsPerPointY = maskPointHeight > 0.0f ? (float)h / maskPointHeight : 1.0f;
+            float pixelsPerPoint = fminf(pixelsPerPointX, pixelsPerPointY);
+            float maskBezelPx = g_dynamicIslandMaskBezelWidthPoints * pixelsPerPoint;
+            lu.bezelWidth = fmaxf(lu.bezelWidth, fmaxf(1.0f, maskBezelPx));
+
+            // [DIAG] 诊断日志
+            {
+                static int sDIDiagCount = 0;
+                if (sDIDiagCount < 30) {
+                    sDIDiagCount++;
+                    float srcAspect = (w > 0 && h > 0) ? (float)w / (float)h : 0.0f;
+                    float maskAspect = (glyphMaskTexture.width > 0 && glyphMaskTexture.height > 0)
+                        ? (float)glyphMaskTexture.width / (float)glyphMaskTexture.height : 0.0f;
+                    lglog("[DI DIAG] maskTex=%ux%u scale=%.2f pts=%.1fx%.1f | "
+                          "src=%llux%llu aspect=%.4f | origin=%.1f,%.1f | "
+                          "pps=(%.2f,%.2f) bezel=%.1f",
+                          (unsigned)glyphMaskTexture.width, (unsigned)glyphMaskTexture.height,
+                          g_dynamicIslandMaskImageScale, maskPointWidth, maskPointHeight,
+                          w, h, srcAspect,
+                          g_dynamicIslandMaskOriginX, g_dynamicIslandMaskOriginY,
+                          pixelsPerPointX, pixelsPerPointY,
+                          lu.bezelWidth);
                 }
             }
         }
@@ -1702,7 +1852,7 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     if (!enc) { lglog("ourCustomRender13: nil render encoder"); return; }
     [enc setRenderPipelineState:renderPipeline];
     [enc setFragmentTexture:origTex atIndex:0];
-    [enc setFragmentTexture:clockMask atIndex:1];
+    [enc setFragmentTexture:glyphMaskTexture atIndex:1];
     [enc setFragmentBytes:&lu length:sizeof(lu) atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [enc endEncoding];
@@ -2285,6 +2435,12 @@ static void tweakInit(void) {
                                     kClockMaskReloadNotification, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
     lgReloadClockMask();
+
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    NULL, lgDynamicIslandMaskDidChange,
+                                    kDynamicIslandMaskReloadNotification, NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    lgReloadDynamicIslandMask();
 
     registerCustomFilter();
 
