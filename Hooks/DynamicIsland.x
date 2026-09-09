@@ -266,7 +266,26 @@ static UIView *LGDIFindExistingGainMapView(void) {
 
 @end
 
-#pragma mark - Glass installation (window-layer)
+#pragma mark - Glass installation (window-layer, below content)
+
+// 从 gainMapView 向上找到灵动岛的顶层容器视图（直接在 window 上的那层）
+static UIView *LGDIFindIslandRootView(UIView *gainMapView) {
+    UIView *current = gainMapView;
+    UIView *lastValid = nil;
+    NSInteger maxLevels = 15;
+
+    while (current.superview && maxLevels-- > 0) {
+        // 如果 superview 是 window，说明 current 就是顶层容器
+        if ([current.superview isKindOfClass:[UIWindow class]]) {
+            return current;
+        }
+        lastValid = current;
+        current = current.superview;
+    }
+
+    // 找不到就返回第 5 层（经验值）
+    return lastValid;
+}
 
 static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!gainMapView || !gainMapView.window) return;
@@ -280,8 +299,18 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     UIWindow *window = gainMapView.window;
     if (!window) return;
 
-    // 把 gainMapView 的 bounds 转换到 window 坐标系
-    CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:window];
+    // 找到灵动岛顶层容器，确定 glass 的 superview
+    UIView *islandRootView = LGDIFindIslandRootView(gainMapView);
+    UIView *glassSuperview = nil;
+    if (islandRootView && islandRootView.superview) {
+        glassSuperview = islandRootView.superview;
+    } else {
+        glassSuperview = window;
+        LGDILog(@"WARNING: could not find island root view, fallback to window");
+    }
+
+    // 把 gainMapView 的 bounds 转换到 glass superview 坐标系
+    CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:glassSuperview];
     glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
     if (!glassView) {
         LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil");
@@ -289,9 +318,8 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     }
 
     glassView.userInteractionEnabled = NO;
-    glassView.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.4]; // 蓝色半透明验证
-    glassView.layer.borderColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.8].CGColor;
-    glassView.layer.borderWidth = 2.0;
+    glassView.backgroundColor = UIColor.clearColor;
+    glassView.layer.borderWidth = 0;
 
     // 直接使用 gainMapView 的 cornerRadius，确保形状完全一致
     CGFloat sourceCornerRadius = gainMapView.layer.cornerRadius;
@@ -305,10 +333,18 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 直接加到 window 上（确保可见，不会被下层容器裁剪）
-    [window addSubview:glassView];
+    // 插到灵动岛顶层容器的下方（内容在上面，玻璃在下面当背景）
+    if (glassSuperview == window) {
+        [window addSubview:glassView];
+        LGDILog(@"glass added to window (fallback)");
+    } else {
+        [glassSuperview insertSubview:glassView belowSubview:islandRootView];
+        LGDILog(@"glass inserted below islandRootView: %@ (superview: %@)",
+                NSStringFromClass(islandRootView.class),
+                NSStringFromClass(glassSuperview.class));
+    }
 
-    LGDILog(@"glass created on window size=%@ cornerRadius=%.1f frame=%@ gainMapCR=%.1f",
+    LGDILog(@"glass created size=%@ cornerRadius=%.1f frame=%@ gainMapCR=%.1f",
             NSStringFromCGSize(glassFrame.size),
             glassView.layer.cornerRadius,
             NSStringFromCGRect(glassFrame),
@@ -320,17 +356,12 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
 
     // 延迟应用滤镜
     __weak LGLiveBackdropView *weakGlass = glassView;
-    for (NSNumber *delay in @[ @1.0, @2.5, @5.0, @8.0 ]) {
+    for (NSNumber *delay in @[ @0.5, @1.5, @3.0, @6.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [weakGlass applyFilters];
         });
     }
-
-    LGDILog(@"glass created on window size=%@ cornerRadius=%.1f frame=%@",
-            NSStringFromCGSize(glassFrame.size),
-            glassFrame.size.height / 2.0,
-            NSStringFromCGRect(glassFrame));
 }
 
 static void LGDIRemovePillGlass(UIView *gainMapView) {
@@ -351,11 +382,12 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
     LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
     if (!glassView) return;
 
-    UIWindow *window = gainMapView.window;
-    if (!window) return;
+    // 用 glass 的 superview 作为坐标系参考
+    UIView *superview = glassView.superview;
+    if (!superview) return;
 
-    // 同步 glass frame 到 gainMapView 在 window 中的位置
-    CGRect targetFrame = [gainMapView convertRect:gainMapView.bounds toView:window];
+    // 同步 glass frame 到 gainMapView 在 superview 坐标系中的位置
+    CGRect targetFrame = [gainMapView convertRect:gainMapView.bounds toView:superview];
     CGFloat targetCR = gainMapView.layer.cornerRadius;
     BOOL frameChanged = !CGRectEqualToRect(glassView.frame, targetFrame);
     BOOL crChanged = ABS(glassView.layer.cornerRadius - targetCR) > 0.5;
@@ -367,10 +399,11 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
         } else {
             glassView.layer.cornerRadius = targetFrame.size.height / 2.0;
         }
-        LGDILog(@"glass updated: size=%@ cornerRadius=%.1f (gainMapCR=%.1f)",
+        LGDILog(@"glass updated: size=%@ cornerRadius=%.1f (gainMapCR=%.1f) superview=%@",
                 NSStringFromCGSize(targetFrame.size),
                 glassView.layer.cornerRadius,
-                targetCR);
+                targetCR,
+                NSStringFromClass(superview.class));
     }
 }
 
