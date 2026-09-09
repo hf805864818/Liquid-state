@@ -225,81 +225,6 @@ static UIView *LGDFindViewWithClassContaining(UIView *root, NSString *keyword) {
     return nil;
 }
 
-// 尺寸匹配回退：递归搜索容器内符合灵动岛 pill 尺寸的视图
-// pill 通常约 120x37 points（compact），_UISceneLayerHostView 也类似尺寸
-static UIView *LGDFindViewBySize(UIView *root) {
-    if (!root) return nil;
-    for (UIView *subview in root.subviews) {
-        if (!subview.hidden && subview.alpha > 0.5 &&
-            LGDIIsPlausibleIslandSize(subview.bounds.size)) {
-            return subview;
-        }
-        UIView *found = LGDFindViewBySize(subview);
-        if (found) return found;
-    }
-    return nil;
-}
-
-static BOOL sLGDidDumpHierarchy = NO;
-
-// Mango 架构：直接通过 _elementForContainerView: 获取 SBSystemApertureSceneElement
-// 不依赖类名包含 "Pill"（iOS 17 上 pill 视图类名是 SBSystemApertureSceneElement）
-static UIView *LGDFindPillViewMangoStyle(UIView *container) {
-    if (!container) return nil;
-
-    // 方法 1: _elementForContainerView:（Mango 的精确方法）
-    // SBSystemApertureViewController 有此方法，返回 SBSystemApertureSceneElement
-    SEL elementSel = NSSelectorFromString(@"_elementForContainerView:");
-    if ([container respondsToSelector:elementSel]) {
-        UIView *element = nil;
-        IMP imp = [container methodForSelector:elementSel];
-        if (imp) {
-            element = ((UIView *(*)(id, SEL, id))imp)(container, elementSel, container);
-        }
-        if (element && [element isKindOfClass:[UIView class]]) {
-            LGDILog(@"LGDFindPillViewMangoStyle: _elementForContainerView: found %@", 
-                    NSStringFromClass([element class]));
-            return element;
-        }
-    }
-
-    // 方法 2: 搜索场景图层视图类（Mango 二进制确认这些类包含 pill 内容）
-    NSArray *sceneLayerKeywords = @[
-        @"SBSystemApertureSceneElement",
-        @"_UIExternalSceneLayerHostView",
-        @"_UISceneLayerHostContainerView",
-        @"ApertureElement",
-        @"ApertureSceneElement",
-        @"SceneLayerHost",
-        @"ApertureContent"
-    ];
-    for (NSString *keyword in sceneLayerKeywords) {
-        UIView *found = LGDFindViewWithClassContaining(container, keyword);
-        if (found) {
-            LGDILog(@"LGDFindPillViewMangoStyle: found %@ by keyword %@",
-                    NSStringFromClass(found.class), keyword);
-            return found;
-        }
-    }
-
-    // 方法 3: 尺寸匹配回退 — 搜索符合灵动岛 pill 尺寸的视图
-    UIView *sizeMatch = LGDFindViewBySize(container);
-    if (sizeMatch) {
-        LGDILog(@"LGDFindPillViewMangoStyle: found by size match %@ frame=%.1fx%.1f",
-                NSStringFromClass(sizeMatch.class),
-                sizeMatch.bounds.size.width, sizeMatch.bounds.size.height);
-        return sizeMatch;
-    }
-
-    // 诊断日志：输出容器视图层级（仅一次，帮助定位实际类名）
-    if (!sLGDidDumpHierarchy) {
-        sLGDidDumpHierarchy = YES;
-        LGDILog(@"LGDFindPillViewMangoStyle: FAILED — container hierarchy:\n%@",
-                LGDIDumpViewHierarchy(container, 0));
-    }
-    return nil;
-}
-
 static UIView *LGDFindExpandedContentView(UIView *containerView) {
     if (!containerView) return nil;
     UIView *expanded = LGDFindViewWithClassContaining(containerView, @"Expanded");
@@ -353,9 +278,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 
 @property (nonatomic, strong) UIView *pillLiquidGlassView;
 @property (nonatomic, strong) UIView *pillGlassTintView;
-@property (nonatomic, assign) NSInteger pillGlassRetryCount;
-@property (nonatomic, assign) NSTimeInterval lastPillGlassRefreshTime;
-@property (nonatomic, assign) BOOL pillPendingLiquidSwitch;
 
 @property (nonatomic, strong) UIView *expandedLiquidGlassView;
 @property (nonatomic, strong) UIView *expandedGlassHostView;
@@ -415,68 +337,28 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _pillGlassRetryCount = 0;
         _expandedGlassRetryCount = 0;
-        _lastPillGlassRefreshTime = 0.0;
         _lastExpandedGlassCaptureTime = 0.0;
         _pillContentActive = NO;
         _expandedContentActive = NO;
-        _pillPendingLiquidSwitch = NO;
     }
     return self;
 }
 
 #pragma mark - Aperture view access
 
-// 直接从 UIApplication 窗口列表查找灵动岛窗口的根视图
-// 不依赖 viewDidAppear: hook，防止 hook 失败导致整个功能不可用
-- (UIView *)findApertureContainerFromWindows {
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        NSString *winCls = NSStringFromClass(window.class);
-        if (![winCls containsString:@"Aperture"]) continue;
-        UIViewController *rootVC = window.rootViewController;
-        if (rootVC && rootVC.view) {
-            // 递归搜索子视图控制器，找到实际的内容容器
-            UIView *view = rootVC.view;
-            // 如果根 VC 的视图本身就是容器（有子视图），直接返回
-            if (view.subviews.count > 0) return view;
-            // 搜索子 VC
-            for (UIViewController *childVC in rootVC.childViewControllers) {
-                if (childVC.view && childVC.view.subviews.count > 0) {
-                    return childVC.view;
-                }
-            }
-        }
-    }
-    return nil;
-}
-
 - (UIView *)findPillViewInAperture {
     UIView *container = self.apertureContainerView;
-    if (!container || !container.window) {
-        // apertureContainerView 未设置或已脱离窗口
-        // 直接从窗口列表查找
-        container = [self findApertureContainerFromWindows];
-        if (container) {
-            self.apertureContainerView = container;
-            LGDILog(@"findPillViewInAperture: found container from windows: %@",
-                    NSStringFromClass(container.class));
-        } else {
-            return nil;
-        }
-    }
+    if (!container || !container.window) return nil;
 
     UIView *cached = objc_getAssociatedObject(container, kLGDICachedPillViewKey);
     if (cached && cached.superview) return cached;
 
-    // 方法 1: 通过 SBSystemApertureViewController 的 _elementForContainerView: 获取
-    // （Mango 的精确方法 — 这是 VC 方法，不是 view 方法）
-    // 注意：系统方法内部会调用 view 的 elementViewController，如果 view 层级未就绪会崩溃
-    // 所以必须用 @try/@catch 保护，并且延迟到 viewDidLayoutSubviews 之后调用
+    // Mango 唯一方法：通过 SBSystemApertureViewController 的 _elementForContainerView: 获取
+    // 这是 VC 方法，必须在 viewDidLayoutSubviews 后调用（view 层级就绪后）
     UIViewController *apertureVC = self.apertureViewController;
     SEL elementSel = NSSelectorFromString(@"_elementForContainerView:");
 
-    // 1a: 当前 VC 直接响应
     if (apertureVC && [apertureVC respondsToSelector:elementSel]) {
         IMP imp = [apertureVC methodForSelector:elementSel];
         if (imp) {
@@ -485,10 +367,10 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
                 element = ((UIView *(*)(id, SEL, id))imp)(apertureVC, elementSel, apertureVC.view);
             } @catch (NSException *e) {
                 LGDILog(@"findPillViewInAperture: _elementForContainerView: threw: %@", e.reason);
-                element = nil;
+                return nil;
             }
             if (element && [element isKindOfClass:[UIView class]]) {
-                LGDILog(@"findPillViewInAperture: _elementForContainerView: on VC found %@ frame=%.1fx%.1f",
+                LGDILog(@"findPillViewInAperture: found %@ frame=%.1fx%.1f",
                         NSStringFromClass(element.class),
                         element.bounds.size.width, element.bounds.size.height);
                 objc_setAssociatedObject(container, kLGDICachedPillViewKey, element,
@@ -498,43 +380,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
         }
     }
 
-    // 1b: 搜索子 VC 中的 SBSystemApertureViewController
-    if (apertureVC) {
-        for (UIViewController *childVC in apertureVC.childViewControllers) {
-            if ([childVC respondsToSelector:elementSel]) {
-                IMP imp = [childVC methodForSelector:elementSel];
-                if (imp) {
-                    UIView *element = nil;
-                    @try {
-                        element = ((UIView *(*)(id, SEL, id))imp)(childVC, elementSel, childVC.view);
-                    } @catch (NSException *e) {
-                        LGDILog(@"findPillViewInAperture: child VC _elementForContainerView: threw: %@", e.reason);
-                        element = nil;
-                    }
-                    if (element && [element isKindOfClass:[UIView class]]) {
-                        LGDILog(@"findPillViewInAperture: _elementForContainerView: on child VC %@ found %@",
-                                NSStringFromClass(childVC.class), NSStringFromClass(element.class));
-                        // 更新 apertureViewController 为实际响应的 VC
-                        self.apertureViewController = childVC;
-                        objc_setAssociatedObject(container, kLGDICachedPillViewKey, element,
-                                                 OBJC_ASSOCIATION_ASSIGN);
-                        return element;
-                    }
-                }
-            }
-        }
-    }
-
-    // 方法 2: Mango style class name + size search fallback
-    UIView *pillView = LGDFindPillViewMangoStyle(container);
-    if (pillView) {
-        objc_setAssociatedObject(container, kLGDICachedPillViewKey, pillView,
-                                 OBJC_ASSOCIATION_ASSIGN);
-        LGDILog(@"findPillViewInAperture: found pill view: %@ frame=%.1fx%.1f",
-                NSStringFromClass(pillView.class),
-                pillView.bounds.size.width, pillView.bounds.size.height);
-    }
-    return pillView;
+    return nil;
 }
 
 - (UIView *)findExpandedViewInAperture {
@@ -562,7 +408,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGDILog(@"sceneContentDidExit");
 
     self.pillContentActive = NO;
-    self.pillGlassRetryCount = 0;
 
     [self removePillGlass];
     [self removeExpandedGlass];
@@ -609,23 +454,26 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 - (void)sceneLayersDidChange:(id)layers {
     if (!lgHostEnabled(@"DynamicIsland")) return;
 
-    // 1. 统计 layers 中的元素数量
-    //    _setLayers: 传入 NSSet<_FBSCapturedSceneLayer>（日志确认）
-    //    Mango: layers.count > 0 = 有场景内容
+    // 统计 layers 中的元素数量
+    // _setLayers: 传入 NSSet<_FBSCapturedSceneLayer>（日志确认）
+    // 日志显示空集合 "{(\n)}" 也被误判为 count=1，因为私有子类可能不响应 isKindOfClass:
+    // 直接用 count 方法（所有集合类型都响应）
     NSUInteger layerCount = 0;
-    if ([layers isKindOfClass:[NSArray class]]) {
-        layerCount = [(NSArray *)layers count];
-    } else if ([layers isKindOfClass:[NSSet class]]) {
-        layerCount = [(NSSet *)layers count];
-    } else if (layers) {
-        layerCount = 1; // 非空单个对象
+    if (layers) {
+        SEL countSel = @selector(count);
+        if ([layers respondsToSelector:countSel]) {
+            IMP imp = [layers methodForSelector:countSel];
+            if (imp) {
+                layerCount = ((NSUInteger (*)(id, SEL))imp)(layers, countSel);
+            }
+        }
     }
 
     LGDILog(@"sceneLayersDidChange: layerCount=%lu", (unsigned long)layerCount);
 
-    // 2. Mango 方式：layers.count 判断有无场景内容
-    //    > 0 = 有场景图层（灵动岛内容存在）
-    //    = 0 = 场景图层清空（灵动岛内容退出）
+    // Mango 方式：layers.count 判断有无场景内容
+    // > 0 = 有场景图层（灵动岛内容存在）
+    // = 0 = 场景图层清空（灵动岛内容退出）
     if (layerCount > 0) {
         // 有内容
         if (!self.pillContentActive) {
@@ -699,43 +547,10 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     if (!lgHostEnabled(@"DynamicIsland")) return;
 
     UIView *container = self.apertureContainerView;
-    if (!container || !container.window) {
-        if (self.pillGlassRetryCount < 5) {
-            self.pillGlassRetryCount++;
-            LGDILog(@"installPillGlass: container not ready, retry %ld",
-                    (long)self.pillGlassRetryCount);
-            __weak LGPillManager *ws = self;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [ws installPillGlass];
-            });
-        }
-        return;
-    }
+    if (!container || !container.window) return;
 
     UIView *pillView = [self findPillViewInAperture];
-    if (!pillView || !LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
-        if (self.pillGlassRetryCount < 5) {
-            self.pillGlassRetryCount++;
-            LGDILog(@"installPillGlass: pillView not found, retry %ld",
-                    (long)self.pillGlassRetryCount);
-            __weak LGPillManager *ws = self;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [ws installPillGlass];
-            });
-        }
-        return;
-    }
-
-    self.pillGlassRetryCount = 0;
-
-    NSTimeInterval now = CACurrentMediaTime();
-    if (now - self.lastPillGlassRefreshTime < 1.0) {
-        LGDILog(@"installPillGlass: throttled");
-        return;
-    }
-    self.lastPillGlassRefreshTime = now;
+    if (!pillView || !LGDIIsPlausibleIslandSize(pillView.bounds.size)) return;
 
     LGLiveBackdropView *glassView = [self ensureGlassViewInContainer:container
                                                                  key:kLGDIPillGlassKey
@@ -868,10 +683,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 - (void)refreshPillGlassBackdrop {
     if (!self.pillContentActive) return;
 
-    NSTimeInterval now = CACurrentMediaTime();
-    if (now - self.lastPillGlassRefreshTime < 1.0) return;
-    self.lastPillGlassRefreshTime = now;
-
     UIView *container = self.apertureContainerView;
     if (!container) return;
 
@@ -980,16 +791,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
             break;
         }
     }
-
-    // 如果灵动岛内容已活跃，延迟重新安装（避免 view 层级未就绪时崩溃）
-    if (mgr.pillContentActive) {
-        mgr.pillGlassRetryCount = 0;
-        __weak LGPillManager *ws = mgr;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [ws installPillGlass];
-        });
-    }
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -1040,17 +841,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGPillManager *mgr = [LGPillManager sharedManager];
     mgr.apertureViewController = self;
     mgr.apertureContainerView = self.view;
-
-    // 延迟安装：viewDidAppear 时 view 层级可能未就绪，
-    // 系统的 _elementForContainerView: 内部调用 elementViewController 会崩溃
-    if (mgr.pillContentActive) {
-        mgr.pillGlassRetryCount = 0;
-        __weak LGPillManager *ws = mgr;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [ws installPillGlass];
-        });
-    }
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1061,6 +851,11 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGPillManager *mgr = [LGPillManager sharedManager];
     mgr.apertureViewController = self;
     mgr.apertureContainerView = view;
+
+    // viewDidLayoutSubviews 时 view 层级已就绪，_elementForContainerView: 可以正常调用
+    if (mgr.pillContentActive) {
+        [mgr installPillGlass];
+    }
 
     LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
     if (pillGlass) {
