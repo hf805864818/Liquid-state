@@ -367,7 +367,16 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
 
     if (!CGRectIsEmpty(self.bounds)) {
         LGDILog(@"[_SBGainMapView layoutSubviews] bounds=%@", NSStringFromCGRect(self.bounds));
-        LGDIRefreshPillGlass(self);
+
+        // 如果还没有 glass，且 size 合理，就创建
+        LGLiveBackdropView *existingGlass = objc_getAssociatedObject(self, kLGDIPillGlassKey);
+        if (!existingGlass && self.window && LGDIIsPlausibleIslandSize(self.bounds.size)) {
+            LGDILog(@"[_SBGainMapView layoutSubviews] creating glass for new instance size=%@",
+                    NSStringFromCGSize(self.bounds.size));
+            LGDIInstallPillGlass(self);
+        } else {
+            LGDIRefreshPillGlass(self);
+        }
     }
 }
 
@@ -378,7 +387,13 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
         LGDILog(@"[_SBGainMapView setFrame:] newFrame=%@ bounds=%@",
                 NSStringFromCGRect(frame),
                 NSStringFromCGRect(self.bounds));
-        LGDIRefreshPillGlass(self);
+
+        LGLiveBackdropView *existingGlass = objc_getAssociatedObject(self, kLGDIPillGlassKey);
+        if (!existingGlass && self.window && LGDIIsPlausibleIslandSize(self.bounds.size)) {
+            LGDIInstallPillGlass(self);
+        } else {
+            LGDIRefreshPillGlass(self);
+        }
     }
 }
 
