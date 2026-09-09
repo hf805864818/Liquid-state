@@ -45,11 +45,13 @@ static inline BOOL LGIsAtLeastiOS16(void) {
     return NO;
 }
 
-#pragma mark - Cross-process glyph mask
+#pragma mark - Cross-process glyph mask (暂时未使用，保留供后续恢复)
 
+__attribute__((unused))
 static NSString *LGDIMaskPath(void) {
     return @"/var/mobile/Library/Accessibility/liquidglass-dynamicisland-mask.bin";
 }
+__attribute__((unused))
 static CFStringRef const LGDIMaskReloadNotification =
     CFSTR("dylv.liquidglass/DynamicIslandMaskReload");
 
@@ -66,6 +68,7 @@ typedef struct __attribute__((packed)) {
 
 #define LG_DI_MASK_MAGIC 0x4c474449 // "LGDI"
 
+__attribute__((unused))
 static BOOL LGDIWriteMaskImage(UIImage *image, CGPoint screenOrigin, uint64_t generation) {
     CGImageRef cg = image.CGImage;
     if (!cg) return NO;
@@ -111,10 +114,11 @@ static BOOL LGDIWriteMaskImage(UIImage *image, CGPoint screenOrigin, uint64_t ge
     return wrote;
 }
 
-static uint64_t sLGDIMaskNextGeneration = 0;
+static uint64_t sLGDIMaskNextGeneration __attribute__((unused)) = 0;
 
-#pragma mark - Mask rendering
+#pragma mark - Mask rendering (暂时未使用，保留供后续恢复)
 
+__attribute__((unused))
 static UIImage *LGDIRenderAlphaMaskFromView(UIView *view) {
     if (!view || CGRectIsEmpty(view.bounds)) return nil;
     CGSize size = view.bounds.size;
@@ -130,6 +134,7 @@ static UIImage *LGDIRenderAlphaMaskFromView(UIView *view) {
     return image;
 }
 
+__attribute__((unused))
 static void LGDIUpdateGlassMask(UIView *glassView, UIImage *maskImage, void *maskLayerKey) {
     if (!glassView || !maskImage) return;
     CALayer *maskLayer = objc_getAssociatedObject(glassView, maskLayerKey);
@@ -144,6 +149,7 @@ static void LGDIUpdateGlassMask(UIView *glassView, UIImage *maskImage, void *mas
     maskLayer.contents = (__bridge id _Nullable)(maskImage.CGImage);
 }
 
+__attribute__((unused))
 static void LGDIUpdateMask(UIView *sourceView, UIView *glassView, void *maskLayerKey) {
     if (!sourceView || !sourceView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
@@ -157,10 +163,11 @@ static void LGDIUpdateMask(UIView *sourceView, UIView *glassView, void *maskLaye
     }
 }
 
-static NSTimeInterval sLGDILastMaskUpdateTime = 0.0;
-static BOOL sLGDIMaskUpdatePending = NO;
-static const NSTimeInterval kLGDIMaskUpdateThrottle = 1.0 / 30.0;
+static NSTimeInterval sLGDILastMaskUpdateTime __attribute__((unused)) = 0.0;
+static BOOL sLGDIMaskUpdatePending __attribute__((unused)) = NO;
+static const NSTimeInterval kLGDIMaskUpdateThrottle __attribute__((unused)) = 1.0 / 30.0;
 
+__attribute__((unused))
 static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView, void *maskLayerKey) {
     if (!sourceView) return;
     NSTimeInterval now = CACurrentMediaTime();
@@ -185,7 +192,7 @@ static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView, void *
 #pragma mark - Association keys
 
 static void *kLGDIPillGlassKey = &kLGDIPillGlassKey;
-static void *kLGDIPillMaskLayerKey = &kLGDIPillMaskLayerKey;
+static void *kLGDIPillMaskLayerKey __attribute__((unused)) = &kLGDIPillMaskLayerKey;
 
 #pragma mark - Size validation
 
