@@ -8,9 +8,10 @@
 //  4. _SBSystemApertureMagiciansCurtainView setHidden: → 阻止 curtainView 重新显示
 //
 //  架构：
-//  - 玻璃加在 window 上，插到灵动岛内容容器的下面
-//  - 隐藏 curtainView（黑色背景），让玻璃直接看到桌面
-//  - frame 跟随 gainMapView 用 window 坐标更新
+//  - 玻璃加在 SpringBoard 主桌面窗口上（这样 backdrop 能看到桌面壁纸）
+//  - 灵动岛窗口（SBSystemApertureWindow）设为透明，让玻璃透上来
+//  - 隐藏 curtainView（黑色背景）
+//  - frame 跟随 gainMapView 用屏幕坐标更新
 //  - touch passthrough：玻璃不拦截任何触控
 // =============================================================================
 
@@ -266,20 +267,28 @@ static UIView *LGDIFindExistingGainMapView(void) {
 
 @end
 
-#pragma mark - Glass installation (on window, below content container)
+#pragma mark - Glass installation (on main SpringBoard window)
 
-// 找到 gainMapView 所在的内容容器顶层（window 的直接子视图）
-static UIView *LGDIFindTopContainer(UIView *gainMapView) {
-    UIView *v = gainMapView;
-    UIView *topContainer = nil;
-    while (v) {
-        if ([v.superview isKindOfClass:[UIWindow class]]) {
-            topContainer = v;
-            break;
+// 找到 SpringBoard 主窗口（桌面所在的窗口，不是灵动岛窗口）
+static UIWindow *LGDIFindMainSpringBoardWindow(void) {
+    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        // 跳过灵动岛窗口
+        if ([NSStringFromClass(window.class) containsString:@"Aperture"]) continue;
+        // 跳过其他特殊窗口
+        if ([NSStringFromClass(window.class) containsString:@"Banner"]) continue;
+        if (window.windowLevel > UIWindowLevelNormal) continue;
+        // 主窗口应该是 keyWindow 或者有 rootViewController
+        if (window.rootViewController && !window.hidden) {
+            return window;
         }
-        v = v.superview;
     }
-    return topContainer;
+    // fallback: 返回第一个普通窗口
+    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        if (window.windowLevel == UIWindowLevelNormal && !window.hidden) {
+            return window;
+        }
+    }
+    return nil;
 }
 
 // 调试：打印视图层级（简洁版）
@@ -312,18 +321,18 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     UIView *curtainView = gainMapView.superview;
     if (!curtainView) return;
 
-    // 获取 window
-    UIWindow *window = gainMapView.window;
+    // 灵动岛所在的窗口（SBSystemApertureWindow）
+    UIWindow *islandWindow = gainMapView.window;
 
-    // 找到灵动岛内容的顶层容器（window 的直接子视图）
-    UIView *topContainer = LGDIFindTopContainer(gainMapView);
-    if (!topContainer) {
-        LGDILog(@"ERROR: cannot find top container for gainMapView");
-        LGDIDumpViewHierarchy(gainMapView);
+    // 找到主桌面窗口（玻璃装在这里才能看到桌面壁纸）
+    UIWindow *mainWindow = LGDIFindMainSpringBoardWindow();
+    if (!mainWindow) {
+        LGDILog(@"ERROR: cannot find main SpringBoard window");
         return;
     }
 
-    // 把 gainMapView 的 bounds 转换到 window 坐标系
+    // 把 gainMapView 的 bounds 转换到屏幕（主窗口）坐标系
+    // 注意：gainMapView 在灵动岛窗口上，toView:nil 返回的是屏幕坐标
     CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:nil];
     glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
     if (!glassView) {
@@ -347,20 +356,23 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 关键：玻璃加在 window 上，插到顶层内容容器的下面
-    // 层级（从上到下）：
-    //   内容容器（topContainer）→ 所有灵动岛内容
-    //   glassView（我们的玻璃）
-    //   window → 桌面壁纸
-    [window insertSubview:glassView belowSubview:topContainer];
+    // 关键1：玻璃加在主桌面窗口的最上层（在桌面图标上面，但在灵动岛窗口下面）
+    // 因为灵动岛窗口 windowLevel 更高，所以玻璃自然在灵动岛内容下面
+    [mainWindow addSubview:glassView];
 
-    // 隐藏 curtainView（黑色背景），让液态玻璃直接看到桌面
+    // 关键2：灵动岛窗口变透明，这样能看到下面的玻璃
+    islandWindow.opaque = NO;
+    islandWindow.backgroundColor = UIColor.clearColor;
+
+    // 隐藏 curtainView（黑色背景）
     curtainView.hidden = YES;
 
-    LGDILog(@"glass installed on window below %@, size=%@ CR=%.1f, curtainView hidden=YES",
-            NSStringFromClass(topContainer.class),
+    LGDILog(@"glass installed on mainWindow (%@), size=%@ CR=%.1f, "
+            "islandWindow=%@ opaque=NO, curtainView hidden=YES",
+            NSStringFromClass(mainWindow.class),
             NSStringFromCGSize(glassFrame.size),
-            glassView.layer.cornerRadius);
+            glassView.layer.cornerRadius,
+            NSStringFromClass(islandWindow.class));
 
     // 关联到 gainMapView 上
     objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
@@ -385,7 +397,7 @@ static void LGDIRemovePillGlass(UIView *gainMapView) {
         objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        // 恢复 curtainView（移除玻璃时把黑色背景加回来）
+        // 恢复 curtainView
         UIView *curtainView = gainMapView.superview;
         if (curtainView) {
             curtainView.hidden = NO;
