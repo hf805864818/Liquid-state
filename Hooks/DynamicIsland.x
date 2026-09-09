@@ -513,54 +513,35 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     });
 }
 
-// sceneLayersDidChange: — Mango 架构：从 _setLayers: 的 layers 参数提取容器
-// Mango 流程: refreshSceneContainer (检查 containerSubviews.count) → sceneLayersDidChange → pillDidAppear
-// 不递归搜索，直接用容器子视图数量判断（与 Mango 完全一致）
+// sceneLayersDidChange: — Mango 架构：从 _setLayers: 的 layers 参数判断
+// Mango 流程: refreshSceneContainer (检查 layers.count / containerSubviews) → sceneLayersDidChange → pillDidAppear
+// 日志确认: _setLayers: 传入 NSSet<_FBSCapturedSceneLayer>，不是 UIView 数组
+// 直接用 layers.count 判断有无场景内容（与 Mango 一致）
 - (void)sceneLayersDidChange:(id)layers {
     if (!lgHostEnabled(@"DynamicIsland")) return;
 
-    // 1. 从 layers 数组提取容器视图（Mango: _UISceneLayerHostContainerView）
-    UIView *extractedContainer = nil;
-    NSUInteger containerSubviewCount = 0;
-
+    // 1. 统计 layers 中的元素数量
+    //    _setLayers: 传入 NSSet<_FBSCapturedSceneLayer>（日志确认）
+    //    Mango: layers.count > 0 = 有场景内容
+    NSUInteger layerCount = 0;
     if ([layers isKindOfClass:[NSArray class]]) {
-        for (id layer in (NSArray *)layers) {
-            if ([layer isKindOfClass:[UIView class]]) {
-                UIView *layerView = (UIView *)layer;
-                NSString *clsName = NSStringFromClass(layerView.class);
-                if ([clsName containsString:@"SceneLayer"] ||
-                    [clsName containsString:@"LayerHost"] ||
-                    [clsName containsString:@"Aperture"]) {
-                    extractedContainer = layerView;
-                    containerSubviewCount = layerView.subviews.count;
-                    LGDILog(@"sceneLayersDidChange: container=%@ subviews=%lu",
-                            clsName, (unsigned long)containerSubviewCount);
-                    break;
-                }
-            }
-        }
-    } else if ([layers isKindOfClass:[UIView class]]) {
-        // 单个视图而非数组
-        extractedContainer = (UIView *)layers;
-        containerSubviewCount = ((UIView *)layers).subviews.count;
-        LGDILog(@"sceneLayersDidChange: single container=%@ subviews=%lu",
-                NSStringFromClass([layers class]), (unsigned long)containerSubviewCount);
+        layerCount = [(NSArray *)layers count];
+    } else if ([layers isKindOfClass:[NSSet class]]) {
+        layerCount = [(NSSet *)layers count];
+    } else if (layers) {
+        layerCount = 1; // 非空单个对象
     }
 
-    // 2. 设置容器
-    if (extractedContainer) {
-        self.apertureContainerView = extractedContainer;
-    }
+    LGDILog(@"sceneLayersDidChange: layerCount=%lu", (unsigned long)layerCount);
 
-    // 3. Mango 方式：直接用容器子视图数量判断
-    //    子视图 > 0 = 有场景内容（灵动岛 pill）
-    //    子视图 = 0 = 场景内容已退出
-    //    不需要递归搜索 findPillViewInAperture
-    if (containerSubviewCount > 0) {
+    // 2. Mango 方式：layers.count 判断有无场景内容
+    //    > 0 = 有场景图层（灵动岛内容存在）
+    //    = 0 = 场景图层清空（灵动岛内容退出）
+    if (layerCount > 0) {
         // 有内容
         if (!self.pillContentActive) {
-            LGDILog(@"sceneLayersDidChange → pillDidAppear (subviews=%lu)",
-                    (unsigned long)containerSubviewCount);
+            LGDILog(@"sceneLayersDidChange → pillDidAppear (layerCount=%lu)",
+                    (unsigned long)layerCount);
             [self pillDidAppear:@"sceneLayers"];
         } else {
             // 已安装，刷新
@@ -569,7 +550,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     } else {
         // 无内容
         if (self.pillContentActive) {
-            LGDILog(@"sceneLayersDidChange → sceneContentDidExit (subviews=0)");
+            LGDILog(@"sceneLayersDidChange → sceneContentDidExit (layerCount=0)");
             [self sceneContentDidExit];
         }
     }
