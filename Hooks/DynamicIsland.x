@@ -1,15 +1,18 @@
 // =============================================================================
-//  DynamicIsland.x — Mango 架构事件驱动 + 布局回退
+//  DynamicIsland.x — Mango 架构精确复制（纯事件驱动，零轮询，零 KVO，零递归扫描）
 //
-//  事件源（多路径冗余，任一触发即可）：
-//  1. FBSceneLayerManager 场景生命周期（主路径，多选择器尝试）
+//  事件源（与 Mango 二进制完全一致）：
+//  1. FBSceneLayerManager._setLayers: → 场景图层变化（前后台、Live Activity）
+//     Mango 二进制确认：hook 的方法名是 _setLayers:（mango__setLayers:）
+//     不是 _performActionsForUIScene:（该方法在 SBMainWorkspace 上，不在 FBSceneLayerManager）
 //  2. SBSystemApertureCaptureVisibilityShimViewController viewDidAppear/viewDidLayoutSubviews
-//     → 视图出现时启动周期检测，发现 Pill 视图即安装玻璃
+//     → 灵动岛窗口出现时安装玻璃
 //  3. SBNCNotificationDispatcher hook
 //     → 通知系统驱动的灵动岛内容（来电、充电指示器等）
 //
-//  设计原则：场景生命周期 hook 失败不影响功能
-//  viewDidAppear + viewDidLayoutSubviews + 周期检测 = 兜底保障
+//  零 CPU 开销：没有内容时所有事件源都不触发
+//  零递归扫描：事件本身就是信号，不需要扫描视图层级
+//  零误触发：每个事件源只在对应类型的事件发生时触发
 // =============================================================================
 
 #import <UIKit/UIKit.h>
@@ -271,8 +274,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 @interface LGPillManager : NSObject {
     CADisplayLink *_expandedDisplayLink;
     LGExpandedGlassLinkProxy *_expandedLinkProxy;
-    NSTimer *_fallbackCheckTimer;
-    NSInteger _fallbackCheckCount;
 }
 
 @property (nonatomic, strong) UIView *pillLiquidGlassView;
@@ -313,11 +314,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 // CADisplayLink
 - (void)lgStartExpandedGlassLiveRefresh;
 - (void)lgStopExpandedGlassLiveRefresh;
-
-// 周期检测回退（场景 hook 失败时的兜底）
-- (void)startFallbackCheck;
-- (void)stopFallbackCheck;
-- (void)fallbackCheckTick:(NSTimer *)timer;
 
 // 辅助
 - (UIView *)findPillViewInAperture;
@@ -440,7 +436,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 }
 
 // sceneLifecycleChangedWithActionType:bundleID:
-// 由 SBMainWorkspace 的场景生命周期 hook 触发
+// 由 FBSceneLayerManager._setLayers: hook 触发
 // 不再递归扫描，直接安装玻璃（事件本身就是信号）
 - (void)sceneLifecycleChangedWithActionType:(NSInteger)actionType bundleID:(NSString *)bundleID {
     LGDILog(@"sceneLifecycleChanged actionType=%ld bundleID=%@", (long)actionType, bundleID);
@@ -738,47 +734,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     }
 }
 
-#pragma mark - Fallback periodic check
-
-- (void)startFallbackCheck {
-    if (_fallbackCheckTimer) return;
-    _fallbackCheckCount = 0;
-    _fallbackCheckTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
-                                                          target:self
-                                                        selector:@selector(fallbackCheckTick:)
-                                                        userInfo:nil
-                                                         repeats:YES];
-    LGDILog(@"startFallbackCheck: timer started (2s interval, 30 retries)");
-}
-
-- (void)stopFallbackCheck {
-    if (_fallbackCheckTimer) {
-        [_fallbackCheckTimer invalidate];
-        _fallbackCheckTimer = nil;
-        LGDILog(@"stopFallbackCheck: timer stopped");
-    }
-    _fallbackCheckCount = 0;
-}
-
-- (void)fallbackCheckTick:(NSTimer *)timer {
-    _fallbackCheckCount++;
-    if (_fallbackCheckCount > 30) {
-        [self stopFallbackCheck];
-        return;
-    }
-    if (self.pillContentActive) {
-        [self stopFallbackCheck];
-        return;
-    }
-    UIView *pillView = [self findPillViewInAperture];
-    if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
-        LGDILog(@"fallbackCheck: pill view found (retry %ld), installing glass",
-                (long)_fallbackCheckCount);
-        [self pillDidAppear:@"fallback-check"];
-        [self stopFallbackCheck];
-    }
-}
-
 @end
 
 // =============================================================================
@@ -792,7 +747,8 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 @interface SBSystemApertureCaptureVisibilityShimViewController : UIViewController
 @end
 
-@interface SBMainWorkspace : NSObject
+// 场景图层管理器（Mango hook 的目标类）
+@interface FBSceneLayerManager : NSObject
 @end
 
 // 通知系统类（Mango 也引用了这些类）
@@ -800,61 +756,22 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 @end
 
 // =============================================================================
-//  Hook: SBSystemApertureViewController (回退)
-//  iOS 17.0 可能没有 ShimVC，用 SBSystemApertureViewController 兜底
+//  Hook: FBSceneLayerManager._setLayers:
+//  Mango 二进制确认：hook 的是 _setLayers: 方法（不是 _performActionsForUIScene:）
+//  _setLayers: 在场景图层变化时被系统调用（前后台切换、Live Activity 等）
+//  使用 Logos %group + %init 确保 FBSceneLayerManager 类已加载
 // =============================================================================
 
-%hook SBSystemApertureViewController
+%group SceneLayerManager
+%hook FBSceneLayerManager
 
-- (void)viewDidAppear:(BOOL)animated {
+- (void)_setLayers:(id)layers {
     %orig;
-    LGDILog(@"ApertureVC viewDidAppear");
-
-    LGPillManager *mgr = [LGPillManager sharedManager];
-    mgr.apertureViewController = self;
-    mgr.apertureContainerView = self.view;
-    [mgr startFallbackCheck];
+    LGDILog(@"FBSceneLayerManager _setLayers: %@", layers);
+    [[LGPillManager sharedManager] sceneLifecycleChangedWithActionType:0 bundleID:nil];
 }
 
-- (void)viewDidDisappear:(BOOL)animated {
-    %orig;
-    LGDILog(@"ApertureVC viewDidDisappear");
-    LGPillManager *mgr = [LGPillManager sharedManager];
-    [mgr stopFallbackCheck];
-    [mgr removePillGlass];
-    [mgr removeExpandedGlass];
-    mgr.apertureContainerView = nil;
-}
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    UIView *view = self.view;
-    if (!view || !view.window) return;
-
-    LGPillManager *mgr = [LGPillManager sharedManager];
-    mgr.apertureContainerView = view;
-
-    if (!mgr.pillContentActive) {
-        UIView *pillView = [mgr findPillViewInAperture];
-        if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
-            LGDILog(@"ApertureVC layoutSubviews: pill view found, installing");
-            [mgr pillDidAppear:@"layoutSubviews"];
-        }
-    }
-
-    LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
-    if (pillGlass) {
-        UIView *pillView = [mgr findPillViewInAperture];
-        if (pillView) {
-            CGRect targetFrame = pillView.frame;
-            if (!CGRectEqualToRect(pillGlass.frame, targetFrame)) {
-                pillGlass.frame = targetFrame;
-            }
-            LGDIScheduleMaskUpdate(pillView, pillGlass, kLGDIPillMaskLayerKey);
-        }
-    }
-}
-
+%end
 %end
 
 // =============================================================================
@@ -871,10 +788,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGPillManager *mgr = [LGPillManager sharedManager];
     mgr.apertureViewController = self;
     mgr.apertureContainerView = self.view;
-
-    // 启动周期检测回退：场景生命周期 hook 可能失败
-    // 周期检测会在发现 Pill 视图后自动安装玻璃并停止
-    [mgr startFallbackCheck];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -882,7 +795,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGDILog(@"ShimVC viewDidDisappear");
 
     LGPillManager *mgr = [LGPillManager sharedManager];
-    [mgr stopFallbackCheck];
     [mgr removePillGlass];
     [mgr removeExpandedGlass];
     mgr.apertureContainerView = nil;
@@ -896,16 +808,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGPillManager *mgr = [LGPillManager sharedManager];
     mgr.apertureContainerView = view;
 
-    // 如果玻璃尚未安装，尝试安装（viewDidLayoutSubviews 兜底）
-    if (!mgr.pillContentActive) {
-        UIView *pillView = [mgr findPillViewInAperture];
-        if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
-            LGDILog(@"viewDidLayoutSubviews: pill view found, installing glass");
-            [mgr pillDidAppear:@"layoutSubviews"];
-        }
-    }
-
-    // 已安装则刷新位置
     LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
     if (pillGlass) {
         UIView *pillView = [mgr findPillViewInAperture];
@@ -953,46 +855,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 %end
 
 // =============================================================================
-//  SBMainWorkspace hooks (场景生命周期，用 MSHookMessageEx 与 Mango 一致)
-// =============================================================================
-
-static void (*sLGOrig_performActionsForUIScene)(id, SEL, id, id, id, id, id, NSInteger) = NULL;
-
-static void LGHook_performActionsForUIScene(id self, SEL _cmd,
-                                            id uiscene, id fbsscene,
-                                            id settingsDiff, id fromSettings,
-                                            id transitionContext,
-                                            NSInteger lifecycleActionType) {
-    if (sLGOrig_performActionsForUIScene) {
-        sLGOrig_performActionsForUIScene(self, _cmd, uiscene, fbsscene,
-                                        settingsDiff, fromSettings,
-                                        transitionContext, lifecycleActionType);
-    }
-
-    NSString *bundleID = nil;
-    if ([fbsscene respondsToSelector:@selector(bundleIdentifier)]) {
-        bundleID = [fbsscene performSelector:@selector(bundleIdentifier)];
-    }
-
-    [[LGPillManager sharedManager] sceneLifecycleChangedWithActionType:lifecycleActionType
-                                                             bundleID:bundleID];
-}
-
-static void (*sLGOrig_destroyScene)(id, SEL, id, id) = NULL;
-
-static void LGHook_destroyScene(id self, SEL _cmd, id scene, id transitionContext) {
-    if (sLGOrig_destroyScene) {
-        sLGOrig_destroyScene(self, _cmd, scene, transitionContext);
-    }
-
-    LGDILog(@"destroyScene: scene=%@", scene);
-    [[LGPillManager sharedManager] sceneContentDidExit];
-}
-
-// =============================================================================
-//  Darwin 通知回调（偏好设置变更，不再监听 com.apple.mobiletimer 等）
-//  Mango 分析确认：com.apple.mobiletimer / com.apple.MediaRemoteUI 是 bundle ID，
-//  不是 Darwin 通知名。事件来源是 FBSceneLayerManager 的场景生命周期回调。
+//  Darwin 通知回调（偏好设置变更）
 // =============================================================================
 
 static void LGDIDarwinEventCallback(CFNotificationCenterRef center, void *observer,
@@ -1063,95 +926,19 @@ static void LGDynamicIslandInit(void) {
                                     CFSTR("dylv.liquidglass/PrefsReloaded"),
                                     NULL, 0);
 
-    // 2. MSHookMessageEx: hook 场景生命周期
-    //    尝试 FBSceneLayerManager（Mango 架构），回退到 SBMainWorkspace
-    //    多选择器尝试，兼容不同 iOS 版本
-    Class hookTarget = objc_getClass("FBSceneLayerManager");
-    if (!hookTarget) {
-        hookTarget = objc_getClass("SBMainWorkspace");
-        LGDILog(@"FBSceneLayerManager not found, trying SBMainWorkspace");
-    }
-
-    if (hookTarget) {
-        LGDILog(@"Hook target class: %@", NSStringFromClass(hookTarget));
-
-        // 尝试多个选择器（不同 iOS 版本方法名不同）
-        NSArray *performSelectors = @[
-            @"_performActionsForUIScene:withUpdatedFBSScene:settingsDiff:fromSettings:transitionContext:lifecycleActionType:",
-            @"_performActionsForFBScene:settingsDiff:fromSettings:transitionContext:lifecycleActionType:",
-            @"_performActionsForFBScene:withSettingsDiff:fromSettings:transitionContext:lifecycleActionType:",
-            @"sceneLayersDidChange",
-            @"_sceneLayersDidChange:",
-            @"_setSceneLayers:previousSceneLayers:transitionContext:",
-            @"transition:toSceneLayers:withTransitionContext:completion:"
-        ];
-
-        BOOL hookedPerform = NO;
-        for (NSString *selName in performSelectors) {
-            SEL performSel = NSSelectorFromString(selName);
-            Method m = class_getInstanceMethod(hookTarget, performSel);
-            if (m) {
-                sLGOrig_performActionsForUIScene = (void (*)(id, SEL, id, id, id, id, id, NSInteger))
-                    method_getImplementation(m);
-                MSHookMessageEx(hookTarget, performSel,
-                                (IMP)LGHook_performActionsForUIScene,
-                                (IMP *)&sLGOrig_performActionsForUIScene);
-                LGDILog(@"Hooked %@ %@", NSStringFromClass(hookTarget), selName);
-                hookedPerform = YES;
-                break;
-            }
-        }
-        if (!hookedPerform) {
-            LGDILog(@"WARN: no scene lifecycle selector found on %@",
-                    NSStringFromClass(hookTarget));
-            // 列出所有 Scene/perform/Layer/scene 相关方法名，帮助诊断
-            unsigned int methodCount = 0;
-            Method *methods = class_copyMethodList(hookTarget, &methodCount);
-            if (methods) {
-                for (unsigned int i = 0; i < methodCount; i++) {
-                    SEL sel = method_getName(methods[i]);
-                    NSString *name = NSStringFromSelector(sel);
-                    if ([name containsString:@"Scene"] || [name containsString:@"perform"] ||
-                        [name containsString:@"Layer"] || [name containsString:@"scene"]) {
-                        LGDILog(@"  %@ method: %@", NSStringFromClass(hookTarget), name);
-                    }
-                }
-                free(methods);
-            }
-        }
-
-        // destroyScene 也尝试多选择器
-        NSArray *destroySelectors = @[
-            @"destroyScene:withTransitionContext:",
-            @"_destroyScene:withTransitionContext:",
-            @"removeSceneLayer:",
-            @"_removeSceneLayer:"
-        ];
-        for (NSString *selName in destroySelectors) {
-            SEL destroySel = NSSelectorFromString(selName);
-            Method dm = class_getInstanceMethod(hookTarget, destroySel);
-            if (dm) {
-                sLGOrig_destroyScene = (void (*)(id, SEL, id, id))
-                    method_getImplementation(dm);
-                MSHookMessageEx(hookTarget, destroySel,
-                                (IMP)LGHook_destroyScene,
-                                (IMP *)&sLGOrig_destroyScene);
-                LGDILog(@"Hooked %@ %@", NSStringFromClass(hookTarget), selName);
-                break;
-            }
-        }
-    } else {
-        LGDILog(@"WARN: neither FBSceneLayerManager nor SBMainWorkspace found");
-    }
+    // 2. Logos %init: FBSceneLayerManager._setLayers:
+    //    Mango 二进制确认：hook 的方法名是 _setLayers:（不是 _performActionsForUIScene:）
+    //    Logos %init 自动处理类加载，比 objc_getClass + MSHookMessageEx 更可靠
+    %init(SceneLayerManager);
 
     // 3. 检查关键类是否存在
     Class apertureVCClass = objc_getClass("SBSystemApertureViewController");
     Class shimVCClass = objc_getClass("SBSystemApertureCaptureVisibilityShimViewController");
-    Class dispatcherClass = objc_getClass("SBNCNotificationDispatcher");
-    LGDILog(@"Class check: SBSystemApertureViewController=%@ ShimVC=%@ SBNCNotificationDispatcher=%@",
+    Class sceneLayerMgrClass = objc_getClass("FBSceneLayerManager");
+    LGDILog(@"Class check: SBSystemApertureViewController=%@ ShimVC=%@ FBSceneLayerManager=%@",
             apertureVCClass ? @"YES" : @"NO",
             shimVCClass ? @"YES" : @"NO",
-            dispatcherClass ? @"YES" : @"NO");
+            sceneLayerMgrClass ? @"YES" : @"NO");
 
-    LGDILog(@"Dynamic Island initialized (multi-path: FBSceneLayerManager+ShimVC+ApertureVC+FallbackCheck)");
+    LGDILog(@"Dynamic Island initialized (Mango architecture: FBSceneLayerManager._setLayers: + ShimVC)");
 }
