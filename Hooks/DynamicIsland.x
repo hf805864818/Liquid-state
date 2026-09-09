@@ -379,6 +379,26 @@ static void LGDIPrefsChanged(CFNotificationCenterRef center, void *observer,
     }
 }
 
+// 递归查找 _SBGainMapView 实例
+static UIView *LGDIFindGainMapViewInView(UIView *root) {
+    if (!root) return nil;
+    if ([root isKindOfClass:objc_getClass("_SBGainMapView")]) return root;
+    for (UIView *subview in root.subviews) {
+        UIView *found = LGDIFindGainMapViewInView(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
+// 查找当前窗口中的 _SBGainMapView（处理 constructor 执行时已存在的实例）
+static UIView *LGDIFindExistingGainMapView(void) {
+    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        UIView *found = LGDIFindGainMapViewInView(window);
+        if (found) return found;
+    }
+    return nil;
+}
+
 // =============================================================================
 //  Constructor — 安装所有 hooks
 // =============================================================================
@@ -408,4 +428,19 @@ static void LGDynamicIslandInit(void) {
             sceneLayerMgrClass ? @"YES" : @"NO");
 
     LGDILog(@"Dynamic Island initialized (Mango architecture: _SBGainMapView direct hook)");
+
+    // 5. 主动查找已存在的 _SBGainMapView 并安装玻璃
+    //    SpringBoard 启动时灵动岛已经在窗口上，didMoveToWindow 早调用过了
+    //    hook 安装后需要主动扫描一次
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *existingGainMap = LGDIFindExistingGainMapView();
+        if (existingGainMap) {
+            LGDILog(@"constructor: found existing _SBGainMapView %@",
+                    NSStringFromCGRect(existingGainMap.frame));
+            LGDIInstallGlassOnGainMapView(existingGainMap);
+        } else {
+            LGDILog(@"constructor: no existing _SBGainMapView found");
+        }
+    });
 }
