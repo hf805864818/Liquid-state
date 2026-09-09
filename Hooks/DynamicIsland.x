@@ -264,7 +264,9 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     }
 
     glassView.userInteractionEnabled = NO;
-    glassView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.3]; // 灰色半透明验证
+    glassView.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.4]; // 蓝色半透明，更明显
+    glassView.layer.borderColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.8].CGColor;
+    glassView.layer.borderWidth = 2.0;
     glassView.layer.cornerRadius = glassFrame.size.height / 2.0; // 胶囊形
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
@@ -353,6 +355,26 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
 
     if (!CGRectIsEmpty(self.bounds)) {
         LGDILog(@"[_SBGainMapView layoutSubviews] bounds=%@", NSStringFromCGRect(self.bounds));
+        LGDIRefreshPillGlass(self);
+    }
+}
+
+- (void)setFrame:(CGRect)frame {
+    %orig;
+
+    if (!CGRectIsEmpty(self.bounds)) {
+        LGDILog(@"[_SBGainMapView setFrame:] newFrame=%@ bounds=%@",
+                NSStringFromCGRect(frame),
+                NSStringFromCGRect(self.bounds));
+        LGDIRefreshPillGlass(self);
+    }
+}
+
+- (void)setBounds:(CGRect)bounds {
+    %orig;
+
+    if (!CGRectIsEmpty(bounds)) {
+        LGDILog(@"[_SBGainMapView setBounds:] newBounds=%@", NSStringFromCGRect(bounds));
         LGDIRefreshPillGlass(self);
     }
 }
