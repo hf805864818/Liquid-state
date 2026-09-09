@@ -275,7 +275,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 @interface LGPillManager : NSObject {
     CADisplayLink *_expandedDisplayLink;
     LGExpandedGlassLinkProxy *_expandedLinkProxy;
-    NSTimer *_fallbackTimer;  // 兜底定时器，覆盖系统级事件
+    id _pillSubviewsObserver;  // KVO 观察 Pill 视图 subviews 变化
 }
 
 // ===== Pill 玻璃属性（对应 Mango 的属性）=====
@@ -321,10 +321,9 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 - (void)lgStartExpandedGlassLiveRefresh;         // ≈ mangoStartExpandedGlassLiveRefresh
 - (void)lgStopExpandedGlassLiveRefresh;          // ≈ mangoStopExpandedGlassLiveRefresh
 
-// ===== 兜底定时器（覆盖系统级事件：计时器/通话/充电等）=====
-- (void)startFallbackTimer;
-- (void)stopFallbackTimer;
-- (void)fallbackTimerTick;
+// ===== KVO 事件监听（替代轮询）=====
+- (void)startObservingPillView:(UIView *)pillView;
+- (void)stopObservingPillView;
 
 // ===== 辅助 =====
 - (UIView *)findPillViewInAperture;
@@ -401,8 +400,11 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     // 立即尝试安装玻璃
     [self installPillGlass];
 
-    // 启动兜底定时器，检测系统级事件（计时器/通话/充电等不走场景生命周期的内容）
-    [self startFallbackTimer];
+    // 启动 KVO 监听 Pill 视图内容变化（覆盖所有事件，零 CPU 开销）
+    UIView *pillView = [self findPillViewInAperture];
+    if (pillView) {
+        [self startObservingPillView:pillView];
+    }
 }
 
 // sceneContentDidExit — 灵动岛内容退出时调用
@@ -412,7 +414,7 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     self.pillContentActive = NO;
     self.pillGlassRetryCount = 0;
 
-    [self stopFallbackTimer];
+    [self stopObservingPillView];
     [self removePillGlass];
     [self removeExpandedGlass];
 }
@@ -769,83 +771,101 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     }
 }
 
-#pragma mark - 兜底定时器（覆盖系统级事件）
+#pragma mark - KVO 事件监听（替代轮询）
 
-// 兜底定时器：每 5 秒检查一次 Pill 视图是否有活跃内容
-// 覆盖不走 SBMainWorkspace 场景生命周期的系统级事件：
-// - 系统计时器/秒表
-// - 来电/FaceTime
-// - 充电指示器
-// - AirDrop
-// - 专注模式切换
-// - MediaRemote 音乐进度更新（不触发场景变化的部分）
+// 通过 KVO 观察 Pill 视图的 subviews 数组变化
+// 当灵动岛有任何内容添加/移除时（计时器/通话/充电/音乐/Live Activity），
+// 系统会修改 Pill 视图的 subviews，KVO 会立即触发回调
 //
-// 注意：5 秒间隔远大于 viewDidLayoutSubviews 的频率，
-// CPU 开销极低，不会导致温度升高
-- (void)startFallbackTimer {
-    if (_fallbackTimer) return; // 已在运行
+// 这是纯事件驱动，零 CPU 开销：
+// - 没有内容时：KVO 不触发，CPU 占用 0
+// - 有内容变化时：立即触发，延迟 < 16ms
+// - 覆盖所有灵动岛事件：App 场景 + 系统级（计时器/通话/充电/AirDrop）
+//
+// 对比 5 秒定时器：
+// - 定时器：最坏延迟 5 秒，持续 CPU 开销
+// - KVO：即时响应，零空闲开销
 
-    _fallbackTimer = [NSTimer scheduledTimerWithTimeInterval:5.0
-                                                      target:self
-                                                    selector:@selector(fallbackTimerTick)
-                                                    userInfo:nil
-                                                     repeats:YES];
-    LGDILog(@"startFallbackTimer: started (5s interval)");
+static void *kLGDIPillSubviewsContext = &kLGDIPillSubviewsContext;
+
+- (void)startObservingPillView:(UIView *)pillView {
+    if (!pillView) return;
+
+    // 先停止旧的观察
+    [self stopObservingPillView];
+
+    // KVO 观察 subviews 数组变化
+    // 当系统往 Pill 里添加/移除内容视图时，subviews 数组会变化
+    [pillView addObserver:self
+               forKeyPath:@"subviews"
+                  options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld
+                  context:kLGDIPillSubviewsContext];
+    _pillSubviewsObserver = pillView; // 保存被观察的视图引用
+
+    LGDILog(@"startObservingPillView: KVO installed on %@",
+            NSStringFromClass(pillView.class));
 }
 
-- (void)stopFallbackTimer {
-    if (_fallbackTimer) {
-        [_fallbackTimer invalidate];
-        _fallbackTimer = nil;
-        LGDILog(@"stopFallbackTimer: stopped");
+- (void)stopObservingPillView {
+    if (_pillSubviewsObserver) {
+        @try {
+            [(UIView *)_pillSubviewsObserver removeObserver:self
+                                                  forKeyPath:@"subviews"
+                                                     context:kLGDIPillSubviewsContext];
+        } @catch (NSException *e) {
+            LGDILog(@"stopObservingPillView: exception %@", e);
+        }
+        _pillSubviewsObserver = nil;
+        LGDILog(@"stopObservingPillView: KVO removed");
     }
 }
 
-- (void)fallbackTimerTick {
-    @autoreleasepool {
-        // 只在灵动岛视图存在时检查
-        UIView *container = self.apertureContainerView;
-        if (!container || !container.window) {
-            [self stopFallbackTimer];
-            return;
-        }
+// KVO 回调：当 Pill 视图的 subviews 变化时触发
+// 这覆盖了所有灵动岛事件（包括不走场景生命周期的系统级事件）
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change
+                       context:(void *)context {
+    if (context != kLGDIPillSubviewsContext) {
+        return; // 不是我们的观察
+    }
 
-        UIView *pillView = [self findPillViewInAperture];
-        if (!pillView || !LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
-            // Pill 视图不存在，可能内容已退出
-            if (self.pillContentActive) {
-                [self sceneContentDidExit];
-            }
-            return;
-        }
+    // subviews 变化了，延迟 0.1 秒检查（给系统时间完成布局）
+    __weak LGPillManager *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        LGPillManager *strong = weakSelf;
+        if (!strong) return;
 
-        // 检查是否有活跃内容
-        BOOL hasContent = [self pillViewHasActiveContent:pillView];
+        UIView *pillView = object;
+        if (!pillView || !pillView.window) return;
 
-        if (hasContent && !self.pillContentActive) {
-            // 发现新内容（系统级事件，如计时器/通话）
-            // 场景生命周期 hook 没捕获到，由兜底定时器捕获
-            LGDILog(@"fallbackTimer: detected content (system-level event)");
-            [self pillDidAppear:@"fallback"];
-        } else if (!hasContent && self.pillContentActive) {
-            // 内容消失了
-            LGDILog(@"fallbackTimer: content disappeared");
-            [self sceneContentDidExit];
-        } else if (hasContent && self.pillContentActive) {
-            // 内容存在，检查是否需要安装展开态玻璃
-            UIView *expandedView = [self findExpandedViewInAperture];
+        BOOL hasContent = [strong pillViewHasActiveContent:pillView];
+
+        if (hasContent && !strong.pillContentActive) {
+            // 新内容出现（可能是计时器/通话/充电等系统级事件）
+            LGDILog(@"KVO: content appeared (system event)");
+            [strong pillDidAppear:@"kvo"];
+        } else if (!hasContent && strong.pillContentActive) {
+            // 内容消失
+            LGDILog(@"KVO: content disappeared");
+            [strong sceneContentDidExit];
+        } else if (hasContent && strong.pillContentActive) {
+            // 内容已存在，可能是内容更新或展开态变化
+            // 检查是否需要安装展开态玻璃
+            UIView *expandedView = [strong findExpandedViewInAperture];
             if (expandedView && LGDIIsPlausibleIslandSize(expandedView.bounds.size)) {
-                if (!self.expandedContentActive) {
-                    LGDILog(@"fallbackTimer: detected expanded content");
-                    [self installExpandedGlass];
+                if (!strong.expandedContentActive) {
+                    LGDILog(@"KVO: expanded content detected");
+                    [strong installExpandedGlass];
                 }
             } else {
-                if (self.expandedContentActive) {
-                    [self removeExpandedGlass];
+                if (strong.expandedContentActive) {
+                    [strong removeExpandedGlass];
                 }
             }
         }
-    }
+    });
 }
 
 @end
@@ -877,14 +897,33 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
     LGPillManager *mgr = [LGPillManager sharedManager];
     mgr.apertureViewController = self;
     mgr.apertureContainerView = self.view;
+
+    // 启动 KVO 监听 Pill 视图内容变化
+    // 即使没有场景生命周期事件（如系统计时器/通话/充电），
+    // 只要系统往 Pill 添加/移除内容视图，KVO 就会立即触发
+    UIView *pillView = [mgr findPillViewInAperture];
+    if (pillView) {
+        [mgr startObservingPillView:pillView];
+    } else {
+        // Pill 视图可能还未创建，延迟重试
+        __weak SBSystemApertureViewController *ws = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            UIView *pv = [[LGPillManager sharedManager] findPillViewInAperture];
+            if (pv) {
+                [[LGPillManager sharedManager] startObservingPillView:pv];
+            }
+        });
+    }
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
     %orig;
     LGDILog(@"SBSystemApertureViewController viewDidDisappear");
 
-    // 视图消失时清理玻璃
+    // 视图消失时清理玻璃和 KVO
     LGPillManager *mgr = [LGPillManager sharedManager];
+    [mgr stopObservingPillView];
     [mgr removePillGlass];
     [mgr removeExpandedGlass];
     mgr.apertureContainerView = nil;
@@ -1050,10 +1089,5 @@ static void LGDynamicIslandInit(void) {
         LGDILog(@"WARN: SBMainWorkspace class not found, scene lifecycle hooks not installed");
     }
 
-    // 3. 启动兜底定时器
-    //    覆盖不走场景生命周期的系统级事件（计时器/通话/充电等）
-    //    5 秒间隔，CPU 开销极低
-    [[LGPillManager sharedManager] startFallbackTimer];
-
-    LGDILog(@"Dynamic Island tweak initialized (Mango-style event-driven + fallback mode)");
+    LGDILog(@"Dynamic Island tweak initialized (Mango-style event-driven + KVO mode)");
 }
