@@ -234,8 +234,9 @@ static UIView *LGDIFindExistingGainMapView(void) {
 
 // =============================================================================
 //  Glass installation
-//  玻璃装在 gainMapView.superview 上（element 容器）
-//  mask 形状来自 curtainView（窗帘视图）
+//  实际层级：SBSystemApertureSceneElement → curtainView → gainMapView
+//  玻璃装在 element 容器上（curtainView.superview）
+//  mask 形状来自 curtainView（curtainView = gainMapView.superview）
 // =============================================================================
 
 static void LGDIInstallPillGlass(UIView *gainMapView) {
@@ -243,20 +244,17 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!lgHostEnabled(@"DynamicIsland")) return;
     if (!LGDIIsPlausibleIslandSize(gainMapView.bounds.size)) return;
 
-    UIView *container = gainMapView.superview;
-    if (!container) return;
+    // gainMapView.superview = curtainView
+    UIView *curtainView = gainMapView.superview;
+    if (!curtainView) return;
 
-    // 已经装过了（glass 关联在 container 上）
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIPillGlassKey);
+    // curtainView.superview = element 容器
+    UIView *elementContainer = curtainView.superview;
+    if (!elementContainer) return;
+
+    // 已经装过了（glass 关联在 element 容器上）
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(elementContainer, kLGDIPillGlassKey);
     if (glassView) return;
-
-    // 找到 curtainView（mask 形状来源）
-    UIView *curtainView = LGDIFindCurtainViewInContainer(container);
-    if (!curtainView) {
-        LGDILog(@"installPillGlass: curtainView not found in container %@",
-                NSStringFromClass(container.class));
-        return;
-    }
 
     // 用 curtainView 的尺寸创建玻璃
     CGRect glassFrame = curtainView.frame;
@@ -272,13 +270,13 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 插入到 curtainView 下面（兄弟视图关系）
-    [container insertSubview:glassView belowSubview:curtainView];
+    // 插入到 curtainView 下面（兄弟视图关系，都在 element 容器里）
+    [elementContainer insertSubview:glassView belowSubview:curtainView];
 
-    // 关联到 container 上
-    objc_setAssociatedObject(container, kLGDIPillGlassKey, glassView,
+    // 关联到 element 容器上
+    objc_setAssociatedObject(elementContainer, kLGDIPillGlassKey, glassView,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(container, kLGDICurtainViewKey, curtainView,
+    objc_setAssociatedObject(elementContainer, kLGDICurtainViewKey, curtainView,
                              OBJC_ASSOCIATION_ASSIGN);
 
     // 延迟应用滤镜
@@ -293,48 +291,45 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     // 用 curtainView 渲染 mask
     LGDIScheduleMaskUpdate(curtainView, glassView, kLGDIPillMaskLayerKey);
 
-    LGDILog(@"glass created on container=%@ curtain=%@ frame=%@",
-            NSStringFromClass(container.class),
+    LGDILog(@"glass created on elementContainer=%@ curtain=%@ frame=%@",
+            NSStringFromClass(elementContainer.class),
             NSStringFromClass(curtainView.class),
             NSStringFromCGRect(glassFrame));
 }
 
 static void LGDIRemovePillGlass(UIView *gainMapView) {
     if (!gainMapView) return;
-    UIView *container = gainMapView.superview;
-    if (!container) return;
+    // gainMapView.superview = curtainView
+    UIView *curtainView = gainMapView.superview;
+    if (!curtainView) return;
+    // curtainView.superview = elementContainer（glass 关联在这里）
+    UIView *elementContainer = curtainView.superview;
+    if (!elementContainer) return;
 
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIPillGlassKey);
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(elementContainer, kLGDIPillGlassKey);
     if (glassView) {
         [glassView removeFromSuperview];
-        objc_setAssociatedObject(container, kLGDIPillGlassKey, nil,
+        objc_setAssociatedObject(elementContainer, kLGDIPillGlassKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(container, kLGDIPillMaskLayerKey, nil,
+        objc_setAssociatedObject(elementContainer, kLGDIPillMaskLayerKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(container, kLGDICurtainViewKey, nil,
+        objc_setAssociatedObject(elementContainer, kLGDICurtainViewKey, nil,
                                  OBJC_ASSOCIATION_ASSIGN);
-        LGDILog(@"glass removed from container=%@", NSStringFromClass(container.class));
+        LGDILog(@"glass removed from elementContainer=%@", NSStringFromClass(elementContainer.class));
     }
 }
 
 static void LGDIRefreshPillGlass(UIView *gainMapView) {
     if (!gainMapView || !gainMapView.window) return;
-    UIView *container = gainMapView.superview;
-    if (!container) return;
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIPillGlassKey);
-    if (!glassView) return;
-
-    UIView *curtainView = objc_getAssociatedObject(container, kLGDICurtainViewKey);
-    if (!curtainView || !curtainView.window) {
-        // curtainView 可能变了，重新找
-        curtainView = LGDIFindCurtainViewInContainer(container);
-        if (curtainView) {
-            objc_setAssociatedObject(container, kLGDICurtainViewKey, curtainView,
-                                     OBJC_ASSOCIATION_ASSIGN);
-        }
-    }
+    // gainMapView.superview = curtainView
+    UIView *curtainView = gainMapView.superview;
     if (!curtainView) return;
+    // curtainView.superview = elementContainer（glass 关联在这里）
+    UIView *elementContainer = curtainView.superview;
+    if (!elementContainer) return;
+
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(elementContainer, kLGDIPillGlassKey);
+    if (!glassView) return;
 
     // 同步 frame
     CGRect targetFrame = curtainView.frame;
@@ -383,10 +378,15 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
 - (void)setHidden:(BOOL)hidden {
     %orig;
 
-    UIView *container = self.superview;
-    if (container) {
-        LGLiveBackdropView *glass = objc_getAssociatedObject(container, kLGDIPillGlassKey);
-        if (glass) glass.hidden = hidden;
+    // self.superview = curtainView
+    UIView *curtainView = self.superview;
+    if (curtainView) {
+        // curtainView.superview = elementContainer（glass 关联在这里）
+        UIView *elementContainer = curtainView.superview;
+        if (elementContainer) {
+            LGLiveBackdropView *glass = objc_getAssociatedObject(elementContainer, kLGDIPillGlassKey);
+            if (glass) glass.hidden = hidden;
+        }
     }
 }
 
