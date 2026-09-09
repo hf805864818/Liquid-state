@@ -877,10 +877,9 @@ static void LGHook_destroyScene(id self, SEL _cmd, id scene, id transitionContex
 }
 
 // =============================================================================
-//  Darwin 通知回调（系统级事件，与 Mango 完全一致）
-//  com.apple.mobiletimer     → 计时器/秒表
-//  com.apple.MediaRemoteUI    → 音乐播放/暂停/切换
-//  com.apple.springboard.charging → 充电状态变化
+//  Darwin 通知回调（偏好设置变更，不再监听 com.apple.mobiletimer 等）
+//  Mango 分析确认：com.apple.mobiletimer / com.apple.MediaRemoteUI 是 bundle ID，
+//  不是 Darwin 通知名。事件来源是 FBSceneLayerManager 的场景生命周期回调。
 // =============================================================================
 
 static void LGDIDarwinEventCallback(CFNotificationCenterRef center, void *observer,
@@ -951,60 +950,43 @@ static void LGDynamicIslandInit(void) {
                                     CFSTR("dylv.liquidglass/PrefsReloaded"),
                                     NULL, 0);
 
-    // 2. Darwin 通知监听 — 系统级灵动岛事件（与 Mango 一致）
-    //    每个通知只在对应类型的事件发生时触发，零误触发
+    // 2. MSHookMessageEx: hook FBSceneLayerManager 场景生命周期
+    //    Mango 分析确认：_performActionsForUIScene:... 方法在 FBSceneLayerManager 上，
+    //    不在 SBMainWorkspace 上
+    Class hookTarget = objc_getClass("FBSceneLayerManager");
+    if (!hookTarget) {
+        // 回退到 SBMainWorkspace
+        hookTarget = objc_getClass("SBMainWorkspace");
+        LGDILog(@"FBSceneLayerManager not found, falling back to SBMainWorkspace");
+    }
 
-    // 计时器/秒表
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                    NULL, LGDIDarwinEventCallback,
-                                    CFSTR("com.apple.mobiletimer"),
-                                    NULL, 0);
-
-    // 音乐播放/暂停/切换
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                    NULL, LGDIDarwinEventCallback,
-                                    CFSTR("com.apple.MediaRemoteUI"),
-                                    NULL, 0);
-
-    // 充电状态变化
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                    NULL, LGDIDarwinEventCallback,
-                                    CFSTR("com.apple.springboard.charging"),
-                                    NULL, 0);
-
-    // 电池低电量
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                    NULL, LGDIDarwinEventCallback,
-                                    CFSTR("com.apple.springboard.lowbattery"),
-                                    NULL, 0);
-
-    // 3. MSHookMessageEx: hook SBMainWorkspace 场景生命周期
-    Class sbMainWorkspace = objc_getClass("SBMainWorkspace");
-    if (sbMainWorkspace) {
-        LGDILog(@"SBMainWorkspace class found");
+    if (hookTarget) {
+        LGDILog(@"Hook target class: %@", NSStringFromClass(hookTarget));
 
         SEL performSel = NSSelectorFromString(
             @"_performActionsForUIScene:withUpdatedFBSScene:settingsDiff:fromSettings:transitionContext:lifecycleActionType:");
 
-        Method m = class_getInstanceMethod(sbMainWorkspace, performSel);
+        Method m = class_getInstanceMethod(hookTarget, performSel);
         if (m) {
             sLGOrig_performActionsForUIScene = (void (*)(id, SEL, id, id, id, id, id, NSInteger))
                 method_getImplementation(m);
-            MSHookMessageEx(sbMainWorkspace, performSel,
+            MSHookMessageEx(hookTarget, performSel,
                             (IMP)LGHook_performActionsForUIScene,
                             (IMP *)&sLGOrig_performActionsForUIScene);
-            LGDILog(@"Hooked SBMainWorkspace _performActionsForUIScene:...");
+            LGDILog(@"Hooked %@ _performActionsForUIScene:...", NSStringFromClass(hookTarget));
         } else {
-            LGDILog(@"WARN: _performActionsForUIScene: method not found on SBMainWorkspace");
-            // 列出所有方法名，帮助诊断
+            LGDILog(@"WARN: _performActionsForUIScene: not found on %@",
+                    NSStringFromClass(hookTarget));
+            // 列出所有 Scene/perform 相关方法名，帮助诊断
             unsigned int methodCount = 0;
-            Method *methods = class_copyMethodList(sbMainWorkspace, &methodCount);
+            Method *methods = class_copyMethodList(hookTarget, &methodCount);
             if (methods) {
                 for (unsigned int i = 0; i < methodCount; i++) {
                     SEL sel = method_getName(methods[i]);
                     NSString *name = NSStringFromSelector(sel);
-                    if ([name containsString:@"Scene"] || [name containsString:@"perform"]) {
-                        LGDILog(@"  SBMainWorkspace method: %@", name);
+                    if ([name containsString:@"Scene"] || [name containsString:@"perform"] ||
+                        [name containsString:@"Layer"] || [name containsString:@"scene"]) {
+                        LGDILog(@"  %@ method: %@", NSStringFromClass(hookTarget), name);
                     }
                 }
                 free(methods);
@@ -1012,29 +994,30 @@ static void LGDynamicIslandInit(void) {
         }
 
         SEL destroySel = NSSelectorFromString(@"destroyScene:withTransitionContext:");
-        Method dm = class_getInstanceMethod(sbMainWorkspace, destroySel);
+        Method dm = class_getInstanceMethod(hookTarget, destroySel);
         if (dm) {
             sLGOrig_destroyScene = (void (*)(id, SEL, id, id))
                 method_getImplementation(dm);
-            MSHookMessageEx(sbMainWorkspace, destroySel,
+            MSHookMessageEx(hookTarget, destroySel,
                             (IMP)LGHook_destroyScene,
                             (IMP *)&sLGOrig_destroyScene);
-            LGDILog(@"Hooked SBMainWorkspace destroyScene:withTransitionContext:");
+            LGDILog(@"Hooked %@ destroyScene:withTransitionContext:", NSStringFromClass(hookTarget));
         } else {
-            LGDILog(@"WARN: destroyScene:withTransitionContext: method not found");
+            LGDILog(@"WARN: destroyScene:withTransitionContext: not found on %@",
+                    NSStringFromClass(hookTarget));
         }
     } else {
-        LGDILog(@"WARN: SBMainWorkspace class not found");
+        LGDILog(@"WARN: neither FBSceneLayerManager nor SBMainWorkspace found");
     }
 
-    // 4. 检查关键类是否存在
+    // 3. 检查关键类是否存在
     Class apertureVCClass = objc_getClass("SBSystemApertureViewController");
     Class shimVCClass = objc_getClass("SBSystemApertureCaptureVisibilityShimViewController");
     Class dispatcherClass = objc_getClass("SBNCNotificationDispatcher");
-    LGDILog(@"Class check: SBSystemApertureViewController=%@ SBSystemApertureCaptureVisibilityShimViewController=%@ SBNCNotificationDispatcher=%@",
+    LGDILog(@"Class check: SBSystemApertureViewController=%@ ShimVC=%@ SBNCNotificationDispatcher=%@",
             apertureVCClass ? @"YES" : @"NO",
             shimVCClass ? @"YES" : @"NO",
             dispatcherClass ? @"YES" : @"NO");
 
-    LGDILog(@"Dynamic Island initialized (Mango pure event-driven: Darwin+SceneLifecycle+ShimVC+WindowDiscovery)");
+    LGDILog(@"Dynamic Island initialized (Mango architecture: FBSceneLayerManager+ShimVC+WindowDiscovery)");
 }
