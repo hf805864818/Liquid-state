@@ -239,6 +239,118 @@ static UIView *LGDIFindExistingGainMapView(void) {
 //    - mask 从 gainMapView 渲染（获取胶囊形状的 alpha）
 // =============================================================================
 
+// =============================================================================
+//  诊断：逐层探测 — 在每个候选层都加彩色标记视图
+//  颜色对应：
+//    红色 = gainMapView 内部（addSubview）
+//    绿色 = curtainView 内部（addSubview）
+//    蓝色 = elementContainer, curtainView 下面（belowSubview）
+//    黄色 = elementContainer, curtainView 上面（aboveSubview）
+//    紫色 = elementContainer 的 superview 里
+//
+//  哪个颜色能正确显示出药丸形状，哪层就是对的
+// =============================================================================
+
+static void LGDIInstallDiagnosticMarkers(UIView *gainMapView) {
+    if (!gainMapView || !gainMapView.window) return;
+
+    UIView *curtainView = gainMapView.superview;
+    if (!curtainView) return;
+    UIView *elementContainer = curtainView.superview;
+    if (!elementContainer) return;
+    UIView *grandContainer = elementContainer.superview;
+
+    CGSize size = gainMapView.bounds.size;
+    CGFloat cornerRadius = size.height / 2.0;
+
+    LGDILog(@"DIAG: Installing markers — gainMap=%@ curtain=%@ container=%@ grand=%@",
+            NSStringFromClass(gainMapView.class),
+            NSStringFromClass(curtainView.class),
+            NSStringFromClass(elementContainer.class),
+            grandContainer ? NSStringFromClass(grandContainer.class) : @"nil");
+    LGDILog(@"DIAG: gainMapView.frame=%@ curtainView.frame=%@ container.frame=%@",
+            NSStringFromCGRect(gainMapView.frame),
+            NSStringFromCGRect(curtainView.frame),
+            NSStringFromCGRect(elementContainer.frame));
+    LGDILog(@"DIAG: gainMapView.layer class=%@ cornerRadius=%.1f masksToBounds=%d",
+            NSStringFromClass(gainMapView.layer.class),
+            gainMapView.layer.cornerRadius,
+            gainMapView.layer.masksToBounds);
+
+    // 标记1: 红色 — gainMapView 内部
+    UIView *redMarker = [[UIView alloc] initWithFrame:gainMapView.bounds];
+    redMarker.backgroundColor = [UIColor colorWithRed:1.0 green:0 blue:0 alpha:0.4];
+    redMarker.layer.cornerRadius = cornerRadius;
+    redMarker.layer.masksToBounds = YES;
+    redMarker.userInteractionEnabled = NO;
+    [gainMapView addSubview:redMarker];
+    LGDILog(@"DIAG: RED marker added to gainMapView (inside)");
+
+    // 标记2: 绿色 — curtainView 内部
+    UIView *greenMarker = [[UIView alloc] initWithFrame:curtainView.bounds];
+    greenMarker.backgroundColor = [UIColor colorWithRed:0 green:1.0 blue:0 alpha:0.4];
+    greenMarker.layer.cornerRadius = cornerRadius;
+    greenMarker.layer.masksToBounds = YES;
+    greenMarker.userInteractionEnabled = NO;
+    [curtainView addSubview:greenMarker];
+    LGDILog(@"DIAG: GREEN marker added to curtainView (inside)");
+
+    // 标记3: 蓝色 — elementContainer, curtainView 下面
+    UIView *blueMarker = [[UIView alloc] initWithFrame:curtainView.frame];
+    blueMarker.backgroundColor = [UIColor colorWithRed:0 green:0 blue:1.0 alpha:0.4];
+    blueMarker.layer.cornerRadius = cornerRadius;
+    blueMarker.layer.masksToBounds = YES;
+    blueMarker.userInteractionEnabled = NO;
+    [elementContainer insertSubview:blueMarker belowSubview:curtainView];
+    LGDILog(@"DIAG: BLUE marker inserted below curtainView in elementContainer");
+
+    // 标记4: 黄色 — elementContainer, curtainView 上面
+    UIView *yellowMarker = [[UIView alloc] initWithFrame:curtainView.frame];
+    yellowMarker.backgroundColor = [UIColor colorWithRed:1.0 green:1.0 blue:0 alpha:0.4];
+    yellowMarker.layer.cornerRadius = cornerRadius;
+    yellowMarker.layer.masksToBounds = YES;
+    yellowMarker.userInteractionEnabled = NO;
+    [elementContainer insertSubview:yellowMarker aboveSubview:curtainView];
+    LGDILog(@"DIAG: YELLOW marker inserted above curtainView in elementContainer");
+
+    // 标记5: 紫色 — grandContainer 里（如果存在）
+    if (grandContainer) {
+        CGRect purpleFrame = [elementContainer convertRect:curtainView.frame toView:grandContainer];
+        UIView *purpleMarker = [[UIView alloc] initWithFrame:purpleFrame];
+        purpleMarker.backgroundColor = [UIColor colorWithRed:0.5 green:0 blue:0.5 alpha:0.4];
+        purpleMarker.layer.cornerRadius = cornerRadius;
+        purpleMarker.layer.masksToBounds = YES;
+        purpleMarker.userInteractionEnabled = NO;
+        [grandContainer insertSubview:purpleMarker aboveSubview:elementContainer];
+        LGDILog(@"DIAG: PURPLE marker added to grandContainer=%@ frame=%@",
+                NSStringFromClass(grandContainer.class),
+                NSStringFromCGRect(purpleFrame));
+    }
+
+    // 再往上走 3 层，看看更大的容器
+    UIView *v = grandContainer;
+    NSArray *colors = @[
+        [UIColor colorWithRed:1.0 green:0.5 blue:0 alpha:0.3],   // 橙色
+        [UIColor colorWithRed:0 green:0.5 blue:0.5 alpha:0.3],   // 青色
+        [UIColor colorWithRed:0.5 green:0.5 blue:0 alpha:0.3],   // 橄榄色
+    ];
+    NSArray *names = @[@"ORANGE", @"CYAN", @"OLIVE"];
+    for (NSInteger i = 0; i < 3 && v.superview; i++) {
+        v = v.superview;
+        CGRect markerFrame = [elementContainer convertRect:curtainView.frame toView:v];
+        UIView *marker = [[UIView alloc] initWithFrame:markerFrame];
+        marker.backgroundColor = colors[i];
+        marker.layer.cornerRadius = cornerRadius;
+        marker.layer.masksToBounds = YES;
+        marker.userInteractionEnabled = NO;
+        [v addSubview:marker];
+        LGDILog(@"DIAG: %@ marker added to level%ld %@ frame=%@",
+                names[i], (long)(i + 3),
+                NSStringFromClass(v.class),
+                NSStringFromCGRect(markerFrame));
+    }
+}
+
 static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!gainMapView || !gainMapView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
@@ -256,6 +368,9 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     UIView *elementContainer = curtainView.superview;
     if (!elementContainer) return;
 
+    // 安装诊断标记（每层不同颜色）
+    LGDIInstallDiagnosticMarkers(gainMapView);
+
     // 玻璃 frame = curtainView.frame（在 elementContainer 中的位置和大小）
     CGRect glassFrame = curtainView.frame;
     glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
@@ -265,29 +380,13 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     }
 
     glassView.userInteractionEnabled = NO;
-    glassView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.3]; // 临时加底色验证可见性
-    glassView.layer.cornerRadius = 0.0; // 形状靠 mask 控制，不用 cornerRadius
+    glassView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.5]; // 白色半透明，更容易看到
+    glassView.layer.cornerRadius = 0.0; // 形状靠 mask 控制
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 插入到 curtainView 上面（兄弟视图关系，都在 elementContainer 里）
-    // 注意：curtainView 可能不透明，玻璃在下面会被完全挡住
-    [elementContainer insertSubview:glassView aboveSubview:curtainView];
-
-    // 诊断：打印 elementContainer 层级和 curtainView 背景色/透明度
-    LGDILog(@"DIAG: elementContainer=%@ frame=%@ subviews=%lu clipsToBounds=%d",
-            NSStringFromClass(elementContainer.class),
-            NSStringFromCGRect(elementContainer.frame),
-            (unsigned long)elementContainer.subviews.count,
-            elementContainer.clipsToBounds);
-    LGDILog(@"DIAG: curtainView=%@ bgColor=%@ alpha=%.2f hidden=%d opaque=%d",
-            NSStringFromClass(curtainView.class),
-            curtainView.backgroundColor ? @"not nil" : @"nil/clear",
-            curtainView.alpha, curtainView.hidden, curtainView.layer.isOpaque);
-    LGDILog(@"DIAG: gainMapView=%@ bgColor=%@ alpha=%.2f hidden=%d opaque=%d",
-            NSStringFromClass(gainMapView.class),
-            gainMapView.backgroundColor ? @"not nil" : @"nil/clear",
-            gainMapView.alpha, gainMapView.hidden, gainMapView.layer.isOpaque);
+    // 暂时插到最上面，确保能看到
+    [elementContainer addSubview:glassView];
 
     // 关联到 gainMapView 上（每个 gainMapView 实例对应一个 glass）
     objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
@@ -305,10 +404,9 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     // 用 gainMapView 渲染 mask（获取胶囊形状的 alpha）
     LGDIScheduleMaskUpdate(gainMapView, glassView, kLGDIPillMaskLayerKey);
 
-    LGDILog(@"glass created size=%@ on elementContainer=%@ below curtain=%@",
+    LGDILog(@"glass created size=%@ on elementContainer=%@",
             NSStringFromCGSize(glassFrame.size),
-            NSStringFromClass(elementContainer.class),
-            NSStringFromClass(curtainView.class));
+            NSStringFromClass(elementContainer.class));
 }
 
 static void LGDIRemovePillGlass(UIView *gainMapView) {
