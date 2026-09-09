@@ -266,26 +266,7 @@ static UIView *LGDIFindExistingGainMapView(void) {
 
 @end
 
-#pragma mark - Glass installation (window-layer, below content)
-
-// 从 gainMapView 向上找到灵动岛的顶层容器视图（直接在 window 上的那层）
-static UIView *LGDIFindIslandRootView(UIView *gainMapView) {
-    UIView *current = gainMapView;
-    UIView *lastValid = nil;
-    NSInteger maxLevels = 15;
-
-    while (current.superview && maxLevels-- > 0) {
-        // 如果 superview 是 window，说明 current 就是顶层容器
-        if ([current.superview isKindOfClass:[UIWindow class]]) {
-            return current;
-        }
-        lastValid = current;
-        current = current.superview;
-    }
-
-    // 找不到就返回第 5 层（经验值）
-    return lastValid;
-}
+#pragma mark - Glass installation (inside element container, above curtainView)
 
 static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!gainMapView || !gainMapView.window) return;
@@ -296,21 +277,16 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
     if (glassView) return;
 
-    UIWindow *window = gainMapView.window;
-    if (!window) return;
+    // gainMapView.superview = curtainView（黑色背景）
+    UIView *curtainView = gainMapView.superview;
+    if (!curtainView) return;
 
-    // 找到灵动岛顶层容器，确定 glass 的 superview
-    UIView *islandRootView = LGDIFindIslandRootView(gainMapView);
-    UIView *glassSuperview = nil;
-    if (islandRootView && islandRootView.superview) {
-        glassSuperview = islandRootView.superview;
-    } else {
-        glassSuperview = window;
-        LGDILog(@"WARNING: could not find island root view, fallback to window");
-    }
+    // curtainView.superview = element container（内容容器）
+    UIView *elementContainer = curtainView.superview;
+    if (!elementContainer) return;
 
-    // 把 gainMapView 的 bounds 转换到 glass superview 坐标系
-    CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:glassSuperview];
+    // 把 gainMapView 的 bounds 转换到 elementContainer 坐标系
+    CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:elementContainer];
     glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
     if (!glassView) {
         LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil");
@@ -333,22 +309,18 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     glassView.layer.masksToBounds = YES;
     glassView.frame = glassFrame;
 
-    // 插到灵动岛顶层容器的下方（内容在上面，玻璃在下面当背景）
-    if (glassSuperview == window) {
-        [window addSubview:glassView];
-        LGDILog(@"glass added to window (fallback)");
-    } else {
-        [glassSuperview insertSubview:glassView belowSubview:islandRootView];
-        LGDILog(@"glass inserted below islandRootView: %@ (superview: %@)",
-                NSStringFromClass(islandRootView.class),
-                NSStringFromClass(glassSuperview.class));
-    }
+    // 关键：玻璃作为 curtainView 的兄弟视图，插在它上方
+    // 层级（从上到下）：内容 → glass → curtainView → 桌面
+    // 然后我们隐藏 curtainView，让玻璃直接看到桌面
+    [elementContainer insertSubview:glassView aboveSubview:curtainView];
 
-    LGDILog(@"glass created size=%@ cornerRadius=%.1f frame=%@ gainMapCR=%.1f",
+    // 隐藏 curtainView（黑色背景），让液态玻璃直接看到桌面
+    curtainView.hidden = YES;
+
+    LGDILog(@"glass installed above curtainView in %@, size=%@ CR=%.1f, curtainView hidden=YES",
+            NSStringFromClass(elementContainer.class),
             NSStringFromCGSize(glassFrame.size),
-            glassView.layer.cornerRadius,
-            NSStringFromCGRect(glassFrame),
-            gainMapView.layer.cornerRadius);
+            glassView.layer.cornerRadius);
 
     // 关联到 gainMapView 上
     objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
@@ -372,7 +344,14 @@ static void LGDIRemovePillGlass(UIView *gainMapView) {
         [glassView removeFromSuperview];
         objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        LGDILog(@"glass removed from window");
+
+        // 恢复 curtainView（移除玻璃时把黑色背景加回来）
+        UIView *curtainView = gainMapView.superview;
+        if (curtainView) {
+            curtainView.hidden = NO;
+        }
+
+        LGDILog(@"glass removed, curtainView restored");
     }
 }
 
@@ -516,6 +495,24 @@ static void LGDIRefreshPillGlass(UIView *gainMapView) {
     LGDILog(@"[CurtainView didMoveToWindow] hasWindow=%d bounds=%@",
             self.window != nil,
             NSStringFromCGRect(self.bounds));
+
+    // 如果 glass 存在，确保 curtainView 保持隐藏（玻璃取代黑色背景）
+    if (self.window) {
+        UIView *gainMapView = nil;
+        for (UIView *subview in self.subviews) {
+            if ([subview isKindOfClass:NSClassFromString(@"_SBGainMapView")]) {
+                gainMapView = subview;
+                break;
+            }
+        }
+        if (gainMapView) {
+            LGLiveBackdropView *glass = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
+            if (glass && !self.hidden) {
+                self.hidden = YES;
+                LGDILog(@"[CurtainView didMoveToWindow] re-hiding curtainView (glass exists)");
+            }
+        }
+    }
 }
 
 - (void)layoutSubviews {
