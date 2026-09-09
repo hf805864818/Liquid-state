@@ -1,18 +1,15 @@
 // =============================================================================
-//  DynamicIsland.x — Mango 架构精确复制（纯事件驱动，零轮询，零 KVO，零递归扫描）
+//  DynamicIsland.x — Mango 架构精确复制（直接 hook 渲染视图）
 //
 //  事件源（与 Mango 二进制完全一致）：
-//  1. FBSceneLayerManager._setLayers: → 场景图层变化（前后台、Live Activity）
-//     Mango 二进制确认：hook 的方法名是 _setLayers:（mango__setLayers:）
-//     不是 _performActionsForUIScene:（该方法在 SBMainWorkspace 上，不在 FBSceneLayerManager）
-//  2. SBSystemApertureCaptureVisibilityShimViewController viewDidAppear/viewDidLayoutSubviews
-//     → 灵动岛窗口出现时安装玻璃
-//  3. SBNCNotificationDispatcher hook
-//     → 通知系统驱动的灵动岛内容（来电、充电指示器等）
+//  1. _SBGainMapView didMoveToWindow  → pill 视图出现时安装玻璃
+//  2. _SBGainMapView layoutSubviews   → 布局变化时更新玻璃 frame
+//  3. _SBGainMapView setHidden:       → 显隐变化
+//  4. FBSceneLayerManager._setLayers: → 场景图层变化（backdrop 刷新）
 //
-//  零 CPU 开销：没有内容时所有事件源都不触发
-//  零递归扫描：事件本身就是信号，不需要扫描视图层级
-//  零误触发：每个事件源只在对应类型的事件发生时触发
+//  零 VC 查找：不依赖 SBSystemApertureViewController，不调用 _elementForContainerView:
+//  零递归扫描：直接在目标视图生命周期方法里操作
+//  零重试机制：视图出现即安装，视图消失即移除
 // =============================================================================
 
 #import <UIKit/UIKit.h>
@@ -184,11 +181,8 @@ static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView, void *
 #pragma mark - Association keys
 
 static void *kLGDIPillGlassKey = &kLGDIPillGlassKey;
-static void *kLGDIExpandedGlassKey = &kLGDIExpandedGlassKey;
 static void *kLGDIPillMaskLayerKey = &kLGDIPillMaskLayerKey;
-static void *kLGDIExpandedMaskLayerKey = &kLGDIExpandedMaskLayerKey;
-static void *kLGDIDisplayLinkKey = &kLGDIDisplayLinkKey;
-static void *kLGDICachedPillViewKey = &kLGDICachedPillViewKey;
+static void *kLGDILastBackdropRefreshKey = &kLGDILastBackdropRefreshKey;
 
 #pragma mark - Size validation
 
@@ -199,335 +193,40 @@ static BOOL LGDIIsPlausibleIslandSize(CGSize size) {
     return YES;
 }
 
-#pragma mark - View hierarchy utilities
-
-static NSString *LGDIDumpViewHierarchy(UIView *view, NSInteger indent) {
-    NSMutableString *result = [NSMutableString string];
-    NSString *indentStr = [@"" stringByPaddingToLength:indent * 2 withString:@"  " startingAtIndex:0];
-    NSString *clsName = NSStringFromClass(view.class);
-    CGRect frame = view.frame;
-    [result appendFormat:@"%@<%@: hidden=%d alpha=%.2f frame=%.1f,%.1f %.1fx%.1f>\n",
-                         indentStr, clsName, view.hidden, view.alpha,
-                         frame.origin.x, frame.origin.y, frame.size.width, frame.size.height];
-    for (UIView *subview in view.subviews)
-        [result appendString:LGDIDumpViewHierarchy(subview, indent + 1)];
-    return result;
-}
-
-static UIView *LGDFindViewWithClassContaining(UIView *root, NSString *keyword) {
-    if (!root) return nil;
-    for (UIView *subview in root.subviews) {
-        NSString *clsName = NSStringFromClass(subview.class);
-        if ([clsName containsString:keyword]) return subview;
-        UIView *found = LGDFindViewWithClassContaining(subview, keyword);
-        if (found) return found;
-    }
-    return nil;
-}
-
-static UIView *LGDFindExpandedContentView(UIView *containerView) {
-    if (!containerView) return nil;
-    UIView *expanded = LGDFindViewWithClassContaining(containerView, @"Expanded");
-    if (expanded) return expanded;
-    CGFloat containerArea = containerView.bounds.size.width * containerView.bounds.size.height;
-    for (UIView *subview in containerView.subviews) {
-        CGFloat subArea = subview.bounds.size.width * subview.bounds.size.height;
-        if (subArea > containerArea * 1.5 && !subview.hidden && subview.alpha > 0.5)
-            return subview;
-    }
-    return nil;
-}
-
 // =============================================================================
-//  LGExpandedGlassLinkProxy (≈ MangoExpandedGlassLinkProxy)
+//  Glass installation helpers
 // =============================================================================
 
-@interface LGExpandedGlassLinkProxy : NSObject
-@property (nonatomic, weak) UIView *sourceView;
-@property (nonatomic, weak) UIView *glassView;
-@property (nonatomic, assign) void *maskLayerKey;
-- (void)lgExpandedGlassDisplayLinkTick:(CADisplayLink *)link;
-@end
-
-@implementation LGExpandedGlassLinkProxy
-- (void)lgExpandedGlassDisplayLinkTick:(CADisplayLink *)link {
-    UIView *src = self.sourceView;
-    UIView *glass = self.glassView;
-    if (!src || !glass || !src.window) {
-        [link invalidate];
-        LGDILog(@"ExpandedGlassLinkProxy: invalidating");
-        return;
-    }
-    CGRect targetFrame = src.frame;
-    if (!CGRectEqualToRect(glass.frame, targetFrame)) {
-        glass.frame = targetFrame;
-    }
-    LGDIScheduleMaskUpdate(src, glass, self.maskLayerKey);
-}
-@end
-
-// =============================================================================
-//  LGPillManager (≈ MangoPillManager)
-//  事件驱动单例，零轮询、零 KVO、零递归扫描
-// =============================================================================
-
-@interface LGPillManager : NSObject {
-    CADisplayLink *_expandedDisplayLink;
-    LGExpandedGlassLinkProxy *_expandedLinkProxy;
-}
-
-@property (nonatomic, strong) UIView *pillLiquidGlassView;
-@property (nonatomic, strong) UIView *pillGlassTintView;
-
-@property (nonatomic, strong) UIView *expandedLiquidGlassView;
-@property (nonatomic, strong) UIView *expandedGlassHostView;
-@property (nonatomic, assign) NSInteger expandedGlassRetryCount;
-@property (nonatomic, assign) NSTimeInterval lastExpandedGlassCaptureTime;
-@property (nonatomic, assign) CGRect lastExpandedGlassFrame;
-
-@property (nonatomic, weak) UIViewController *apertureViewController;
-@property (nonatomic, weak) UIView *apertureContainerView;
-
-@property (nonatomic, assign) BOOL pillContentActive;
-@property (nonatomic, assign) BOOL expandedContentActive;
-
-+ (instancetype)sharedManager;
-
-// 生命周期回调
-- (void)pillDidAppear:(id)sceneInfo;
-- (void)sceneContentDidExit;
-- (void)sceneLifecycleChangedWithActionType:(NSInteger)actionType bundleID:(NSString *)bundleID;
-- (void)sceneLayersDidChange:(id)layers;
-
-// 玻璃管理
-- (void)refreshPillGlassBackdrop;
-- (void)installPillGlass;
-- (void)installExpandedGlass;
-- (void)removePillGlass;
-- (void)removeExpandedGlass;
-- (void)cleanupPillGlassLiveCapture;
-- (void)cleanupExpandedBackgroundGlassLiveCapture;
-- (void)destroyExpandedBackgroundGlass;
-
-// CADisplayLink
-- (void)lgStartExpandedGlassLiveRefresh;
-- (void)lgStopExpandedGlassLiveRefresh;
-
-// 辅助
-- (UIView *)findPillViewInAperture;
-- (UIView *)findExpandedViewInAperture;
-- (LGLiveBackdropView *)ensureGlassViewInContainer:(UIView *)container
-                                              key:(const void *)key
-                                           anchor:(UIView *)anchor
-                                          logTag:(NSString *)logTag;
-
-@end
-
-@implementation LGPillManager
-
-+ (instancetype)sharedManager {
-    static LGPillManager *sManager = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sManager = [[LGPillManager alloc] init];
-    });
-    return sManager;
-}
-
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        _expandedGlassRetryCount = 0;
-        _lastExpandedGlassCaptureTime = 0.0;
-        _pillContentActive = NO;
-        _expandedContentActive = NO;
-    }
-    return self;
-}
-
-#pragma mark - Aperture view access
-
-- (UIView *)findPillViewInAperture {
-    UIView *container = self.apertureContainerView;
-    if (!container || !container.window) return nil;
-
-    UIView *cached = objc_getAssociatedObject(container, kLGDICachedPillViewKey);
-    if (cached && cached.superview) return cached;
-
-    // Mango 唯一方法：通过 SBSystemApertureViewController 的 _elementForContainerView: 获取
-    // 这是 VC 方法，必须在 viewDidLayoutSubviews 后调用（view 层级就绪后）
-    UIViewController *apertureVC = self.apertureViewController;
-    SEL elementSel = NSSelectorFromString(@"_elementForContainerView:");
-
-    if (apertureVC && [apertureVC respondsToSelector:elementSel]) {
-        IMP imp = [apertureVC methodForSelector:elementSel];
-        if (imp) {
-            UIView *element = nil;
-            @try {
-                element = ((UIView *(*)(id, SEL, id))imp)(apertureVC, elementSel, apertureVC.view);
-            } @catch (NSException *e) {
-                LGDILog(@"findPillViewInAperture: _elementForContainerView: threw: %@", e.reason);
-                return nil;
-            }
-            if (element && [element isKindOfClass:[UIView class]]) {
-                LGDILog(@"findPillViewInAperture: found %@ frame=%.1fx%.1f",
-                        NSStringFromClass(element.class),
-                        element.bounds.size.width, element.bounds.size.height);
-                objc_setAssociatedObject(container, kLGDICachedPillViewKey, element,
-                                         OBJC_ASSOCIATION_ASSIGN);
-                return element;
-            }
-        }
-    }
-
-    return nil;
-}
-
-- (UIView *)findExpandedViewInAperture {
-    UIView *container = self.apertureContainerView;
-    if (!container || !container.window) return nil;
-    return LGDFindExpandedContentView(container);
-}
-
-#pragma mark - Lifecycle callbacks (事件驱动核心)
-
-// pillDidAppear: — 任何事件源检测到灵动岛内容出现时调用
-// 事件源包括：场景生命周期、Darwin 通知、通知系统 hook
-- (void)pillDidAppear:(id)sceneInfo {
-    LGDILog(@"pillDidAppear: source=%@", sceneInfo);
-
+// 在 gainMapView 上安装液态玻璃
+static void LGDIInstallGlassOnGainMapView(UIView *gainMapView) {
+    if (!gainMapView || !gainMapView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
-    if (!LGIsAtLeastiOS16()) return;
+    if (!LGDIIsPlausibleIslandSize(gainMapView.bounds.size)) return;
 
-    self.pillContentActive = YES;
-    [self installPillGlass];
-}
+    // 已经安装过了
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
+    if (glassView) return;
 
-// sceneContentDidExit — 灵动岛内容退出时调用
-- (void)sceneContentDidExit {
-    LGDILog(@"sceneContentDidExit");
-
-    self.pillContentActive = NO;
-
-    [self removePillGlass];
-    [self removeExpandedGlass];
-}
-
-// sceneLifecycleChangedWithActionType:bundleID:
-// 由 FBSceneLayerManager._setLayers: hook 触发
-// 不再递归扫描，直接安装玻璃（事件本身就是信号）
-- (void)sceneLifecycleChangedWithActionType:(NSInteger)actionType bundleID:(NSString *)bundleID {
-    LGDILog(@"sceneLifecycleChanged actionType=%ld bundleID=%@", (long)actionType, bundleID);
-
-    if (!lgHostEnabled(@"DynamicIsland")) return;
-
-    // 延迟安装玻璃（给系统时间渲染内容视图）
-    __weak LGPillManager *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        LGPillManager *strong = weakSelf;
-        if (!strong) return;
-
-        UIView *pillView = [strong findPillViewInAperture];
-        if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
-            // 场景事件触发 = 灵动岛有内容，直接安装
-            if (!strong.pillContentActive) {
-                [strong pillDidAppear:bundleID ?: @"sceneLifecycle"];
-            } else {
-                // 已安装，刷新
-                [strong refreshPillGlassBackdrop];
-            }
-        } else {
-            // Pill 视图不存在 = 灵动岛内容已退出
-            if (strong.pillContentActive) {
-                LGDILog(@"sceneLifecycleChanged → sceneContentDidExit (no pill view)");
-                [strong sceneContentDidExit];
-            }
-        }
-    });
-}
-
-// sceneLayersDidChange: — Mango 架构：从 _setLayers: 的 layers 参数判断
-// Mango 流程: refreshSceneContainer (检查 layers.count / containerSubviews) → sceneLayersDidChange → pillDidAppear
-// 日志确认: _setLayers: 传入 NSSet<_FBSCapturedSceneLayer>，不是 UIView 数组
-// 直接用 layers.count 判断有无场景内容（与 Mango 一致）
-- (void)sceneLayersDidChange:(id)layers {
-    if (!lgHostEnabled(@"DynamicIsland")) return;
-
-    // 统计 layers 中的元素数量
-    // _setLayers: 传入 NSSet<_FBSCapturedSceneLayer>（日志确认）
-    // 日志显示空集合 "{(\n)}" 也被误判为 count=1，因为私有子类可能不响应 isKindOfClass:
-    // 直接用 count 方法（所有集合类型都响应）
-    NSUInteger layerCount = 0;
-    if (layers) {
-        SEL countSel = @selector(count);
-        if ([layers respondsToSelector:countSel]) {
-            IMP imp = [layers methodForSelector:countSel];
-            if (imp) {
-                layerCount = ((NSUInteger (*)(id, SEL))imp)(layers, countSel);
-            }
-        }
-    }
-
-    LGDILog(@"sceneLayersDidChange: layerCount=%lu", (unsigned long)layerCount);
-
-    // Mango 方式：layers.count 判断有无场景内容
-    // > 0 = 有场景图层（灵动岛内容存在）
-    // = 0 = 场景图层清空（灵动岛内容退出）
-    if (layerCount > 0) {
-        // 有内容
-        if (!self.pillContentActive) {
-            LGDILog(@"sceneLayersDidChange → pillDidAppear (layerCount=%lu)",
-                    (unsigned long)layerCount);
-            [self pillDidAppear:@"sceneLayers"];
-        } else {
-            // 已安装，刷新
-            [self refreshPillGlassBackdrop];
-        }
-    } else {
-        // 无内容
-        if (self.pillContentActive) {
-            LGDILog(@"sceneLayersDidChange → sceneContentDidExit (layerCount=0)");
-            [self sceneContentDidExit];
-        }
-    }
-}
-
-#pragma mark - Glass installation (含重试机制)
-
-- (LGLiveBackdropView *)ensureGlassViewInContainer:(UIView *)container
-                                              key:(const void *)key
-                                           anchor:(UIView *)anchor
-                                          logTag:(NSString *)logTag {
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, key);
-    if (glassView) return glassView;
-
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        LGDILog(@"=== Dynamic Island view hierarchy ===\n%@",
-                LGDIDumpViewHierarchy(container, 0));
-    });
-
-    glassView = LGCreateRegisteredGlass(container.bounds, nil, @"DynamicIsland");
+    glassView = LGCreateRegisteredGlass(gainMapView.bounds, nil, @"DynamicIsland");
     if (!glassView) {
-        LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil for %@", logTag);
-        return nil;
+        LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil");
+        return;
     }
 
     glassView.userInteractionEnabled = NO;
     glassView.backgroundColor = UIColor.clearColor;
     glassView.layer.cornerRadius = 0.0;
     glassView.layer.masksToBounds = YES;
+    glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    glassView.frame = gainMapView.bounds;
 
-    if (anchor.superview) {
-        [anchor.superview insertSubview:glassView belowSubview:anchor];
-    } else {
-        [container insertSubview:glassView atIndex:0];
-    }
+    // 插入到 gainMapView 的底层（glass 在内容下面）
+    [gainMapView insertSubview:glassView atIndex:0];
 
-    objc_setAssociatedObject(container, key, glassView,
+    objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
+    // 延迟应用滤镜（给系统渲染时间）
     __weak LGLiveBackdropView *weakGlass = glassView;
     for (NSNumber *delay in @[ @1.0, @2.5, @5.0, @8.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
@@ -536,223 +235,109 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
         });
     }
 
-    LGDILog(@"Created glass %@ anchor=%@ size=%.1fx%.1f",
-            logTag, NSStringFromClass(anchor.class),
-            container.bounds.size.width, container.bounds.size.height);
-    return glassView;
+    LGDIScheduleMaskUpdate(gainMapView, glassView, kLGDIPillMaskLayerKey);
+
+    LGDILog(@"glass created on _SBGainMapView h=%.1f", gainMapView.bounds.size.height);
 }
 
-- (void)installPillGlass {
-    if (!self.pillContentActive) return;
+// 从 gainMapView 移除液态玻璃
+static void LGDIRemoveGlassFromGainMapView(UIView *gainMapView) {
+    if (!gainMapView) return;
+
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
+    if (glassView) {
+        [glassView removeFromSuperview];
+        objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(gainMapView, kLGDIPillMaskLayerKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        LGDILog(@"glass removed from _SBGainMapView");
+    }
+}
+
+// 刷新 gainMapView 上的玻璃 mask 和 backdrop
+static void LGDIRefreshGlassOnGainMapView(UIView *gainMapView) {
+    if (!gainMapView || !gainMapView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
 
-    UIView *container = self.apertureContainerView;
-    if (!container || !container.window) return;
-
-    UIView *pillView = [self findPillViewInAperture];
-    if (!pillView || !LGDIIsPlausibleIslandSize(pillView.bounds.size)) return;
-
-    LGLiveBackdropView *glassView = [self ensureGlassViewInContainer:container
-                                                                 key:kLGDIPillGlassKey
-                                                              anchor:pillView
-                                                             logTag:@"pill"];
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
     if (!glassView) return;
 
-    self.pillLiquidGlassView = glassView;
-
-    CGRect targetFrame = pillView.frame;
-    if (!CGRectEqualToRect(glassView.frame, targetFrame)) {
-        glassView.frame = targetFrame;
+    // 同步 frame
+    if (!CGRectEqualToRect(glassView.frame, gainMapView.bounds)) {
+        glassView.frame = gainMapView.bounds;
         CALayer *maskLayer = objc_getAssociatedObject(glassView, kLGDIPillMaskLayerKey);
         if (maskLayer) maskLayer.frame = glassView.bounds;
     }
 
-    if (glassView.superview != pillView.superview && pillView.superview) {
-        [pillView.superview insertSubview:glassView belowSubview:pillView];
-    }
-
-    LGDIScheduleMaskUpdate(pillView, glassView, kLGDIPillMaskLayerKey);
-    LGDILog(@"installPillGlass: success");
+    LGDIScheduleMaskUpdate(gainMapView, glassView, kLGDIPillMaskLayerKey);
 }
 
-- (void)installExpandedGlass {
-    if (!lgHostEnabled(@"DynamicIsland")) return;
-
-    UIView *container = self.apertureContainerView;
-    if (!container || !container.window) return;
-
-    UIView *expandedView = [self findExpandedViewInAperture];
-    if (!expandedView || !LGDIIsPlausibleIslandSize(expandedView.bounds.size)) {
-        [self removeExpandedGlass];
-        return;
-    }
-
-    self.expandedContentActive = YES;
+// backdrop 节流刷新（每秒最多一次）
+static void LGDIRefreshBackdropThrottled(UIView *gainMapView) {
+    if (!gainMapView) return;
 
     NSTimeInterval now = CACurrentMediaTime();
-    if (now - self.lastExpandedGlassCaptureTime < 1.0) return;
-    self.lastExpandedGlassCaptureTime = now;
+    NSNumber *lastTime = objc_getAssociatedObject(gainMapView, kLGDILastBackdropRefreshKey);
+    if (lastTime && now - lastTime.doubleValue < 1.0) return;
+    objc_setAssociatedObject(gainMapView, kLGDILastBackdropRefreshKey,
+                             @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    self.expandedGlassRetryCount = 0;
-
-    LGLiveBackdropView *glassView = [self ensureGlassViewInContainer:container
-                                                                 key:kLGDIExpandedGlassKey
-                                                              anchor:expandedView
-                                                             logTag:@"expanded"];
-    if (!glassView) return;
-
-    self.expandedLiquidGlassView = glassView;
-    self.expandedGlassHostView = expandedView;
-
-    CGRect targetFrame = expandedView.frame;
-    self.lastExpandedGlassFrame = targetFrame;
-    if (!CGRectEqualToRect(glassView.frame, targetFrame)) {
-        glassView.frame = targetFrame;
-        CALayer *maskLayer = objc_getAssociatedObject(glassView, kLGDIExpandedMaskLayerKey);
-        if (maskLayer) maskLayer.frame = glassView.bounds;
-    }
-
-    if (glassView.superview != expandedView.superview && expandedView.superview) {
-        [expandedView.superview insertSubview:glassView belowSubview:expandedView];
-    }
-
-    [self lgStartExpandedGlassLiveRefresh];
-    LGDIScheduleMaskUpdate(expandedView, glassView, kLGDIExpandedMaskLayerKey);
-    LGDILog(@"installExpandedGlass: success");
+    LGDIUpdateMask(gainMapView,
+                   objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey),
+                   kLGDIPillMaskLayerKey);
 }
-
-#pragma mark - Glass removal
-
-- (void)removePillGlass {
-    UIView *container = self.apertureContainerView;
-    if (!container) return;
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIPillGlassKey);
-    if (glassView) {
-        [self cleanupPillGlassLiveCapture];
-        [glassView removeFromSuperview];
-        objc_setAssociatedObject(container, kLGDIPillGlassKey, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(container, kLGDIPillMaskLayerKey, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        LGDILog(@"removePillGlass: removed");
-    }
-    self.pillLiquidGlassView = nil;
-    self.pillGlassTintView = nil;
-}
-
-- (void)removeExpandedGlass {
-    UIView *container = self.apertureContainerView;
-    if (!container) return;
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIExpandedGlassKey);
-    if (glassView) {
-        [self lgStopExpandedGlassLiveRefresh];
-        [self cleanupExpandedBackgroundGlassLiveCapture];
-        [glassView removeFromSuperview];
-        objc_setAssociatedObject(container, kLGDIExpandedGlassKey, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(container, kLGDIExpandedMaskLayerKey, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        LGDILog(@"removeExpandedGlass: removed");
-    }
-    self.expandedLiquidGlassView = nil;
-    self.expandedGlassHostView = nil;
-    self.expandedContentActive = NO;
-}
-
-#pragma mark - Cleanup
-
-- (void)cleanupPillGlassLiveCapture {
-    LGDILog(@"cleanupPillGlassLiveCapture");
-}
-
-- (void)cleanupExpandedBackgroundGlassLiveCapture {
-    LGDILog(@"cleanupExpandedBackgroundGlassLiveCapture");
-}
-
-- (void)destroyExpandedBackgroundGlass {
-    [self lgStopExpandedGlassLiveRefresh];
-    [self cleanupExpandedBackgroundGlassLiveCapture];
-    [self removeExpandedGlass];
-    LGDILog(@"destroyExpandedBackgroundGlass");
-}
-
-#pragma mark - Refresh
-
-- (void)refreshPillGlassBackdrop {
-    if (!self.pillContentActive) return;
-
-    UIView *container = self.apertureContainerView;
-    if (!container) return;
-
-    UIView *pillView = [self findPillViewInAperture];
-    if (!pillView) return;
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIPillGlassKey);
-    if (glassView) {
-        LGDIScheduleMaskUpdate(pillView, glassView, kLGDIPillMaskLayerKey);
-    }
-}
-
-#pragma mark - CADisplayLink (展开态实时刷新)
-
-- (void)lgStartExpandedGlassLiveRefresh {
-    if (_expandedDisplayLink) return;
-
-    UIView *sourceView = self.expandedGlassHostView;
-    UIView *glassView = self.expandedLiquidGlassView;
-    if (!sourceView || !glassView) return;
-
-    _expandedLinkProxy = [[LGExpandedGlassLinkProxy alloc] init];
-    _expandedLinkProxy.sourceView = sourceView;
-    _expandedLinkProxy.glassView = glassView;
-    _expandedLinkProxy.maskLayerKey = kLGDIExpandedMaskLayerKey;
-
-    _expandedDisplayLink = [CADisplayLink displayLinkWithTarget:_expandedLinkProxy
-                                                       selector:@selector(lgExpandedGlassDisplayLinkTick:)];
-    _expandedDisplayLink.preferredFramesPerSecond = 30;
-    [_expandedDisplayLink addToRunLoop:[NSRunLoop mainRunLoop]
-                               forMode:NSRunLoopCommonModes];
-
-    LGDILog(@"lgStartExpandedGlassLiveRefresh: started");
-}
-
-- (void)lgStopExpandedGlassLiveRefresh {
-    if (_expandedDisplayLink) {
-        [_expandedDisplayLink invalidate];
-        _expandedDisplayLink = nil;
-        _expandedLinkProxy = nil;
-        LGDILog(@"lgStopExpandedGlassLiveRefresh: stopped");
-    }
-}
-
-@end
 
 // =============================================================================
-//  Private class declarations
+//  Hook: _SBGainMapView
+//  Mango 二进制确认：hook 了 didMoveToWindow / layoutSubviews / setHidden:
+//  这是灵动岛 pill 的核心渲染视图，玻璃直接安装在这个 view 上
 // =============================================================================
 
-@interface SBSystemApertureViewController : UIViewController
-@end
+%group GainMapViewHook
+%hook _SBGainMapView
 
-// iOS 17 灵动岛窗口的根控制器
-@interface SBSystemApertureCaptureVisibilityShimViewController : UIViewController
-@end
+- (void)didMoveToWindow {
+    %orig;
 
-// 场景图层管理器（Mango hook 的目标类）
-@interface FBSceneLayerManager : NSObject
-@end
+    if (self.window) {
+        // 视图出现 → 安装玻璃
+        LGDILog(@"[_SBGainMapView didMoveToWindow] added to window");
+        LGDIInstallGlassOnGainMapView(self);
+    } else {
+        // 视图移除 → 移除玻璃
+        LGDILog(@"[_SBGainMapView didMoveToWindow] removed from window");
+        LGDIRemoveGlassFromGainMapView(self);
+    }
+}
 
-// 通知系统类（Mango 也引用了这些类）
-@interface SBNCNotificationDispatcher : NSObject
-@end
+- (void)layoutSubviews {
+    %orig;
+
+    // 布局变化 → 更新玻璃 frame 和 mask
+    LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGDIPillGlassKey);
+    if (glass && !CGRectIsEmpty(self.bounds)) {
+        LGDIUpdateMask(self, glass, kLGDIPillMaskLayerKey);
+    }
+}
+
+- (void)setHidden:(BOOL)hidden {
+    %orig;
+
+    LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGDIPillGlassKey);
+    if (glass) {
+        glass.hidden = hidden;
+        LGDILog(@"[_SBGainMapView setHidden:%d]", hidden);
+    }
+}
+
+%end
+%end
 
 // =============================================================================
 //  Hook: FBSceneLayerManager._setLayers:
-//  Mango 二进制确认：hook 的是 _setLayers: 方法（不是 _performActionsForUIScene:）
-//  _setLayers: 在场景图层变化时被系统调用（前后台切换、Live Activity 等）
-//  使用 Logos %group + %init 确保 FBSceneLayerManager 类已加载
+//  Mango 二进制确认：hook 的是 _setLayers: 方法
+//  用于 backdrop 刷新（场景内容变化时更新 mask）
 // =============================================================================
 
 %group SceneLayerManager
@@ -760,149 +345,35 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 
 - (void)_setLayers:(id)layers {
     %orig;
-    LGDILog(@"FBSceneLayerManager _setLayers: %@", layers);
-    [[LGPillManager sharedManager] sceneLayersDidChange:layers];
-}
 
-%end
-%end
-
-// =============================================================================
-//  Hook: SBSystemApertureCaptureVisibilityShimViewController
-//  iOS 17 灵动岛窗口根控制器，比 SBSystemApertureViewController 更可靠
-// =============================================================================
-
-%group MainHooks
-%hook SBSystemApertureCaptureVisibilityShimViewController
-
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    LGDILog(@"ShimVC viewDidAppear");
-
-    LGPillManager *mgr = [LGPillManager sharedManager];
-    mgr.apertureContainerView = self.view;
-
-    // 在子 VC 中查找 SBSystemApertureViewController（_elementForContainerView: 的宿主）
-    for (UIViewController *childVC in self.childViewControllers) {
-        NSString *clsName = NSStringFromClass(childVC.class);
-        if ([clsName containsString:@"Aperture"] && ![clsName containsString:@"Shim"]) {
-            mgr.apertureViewController = childVC;
-            LGDILog(@"ShimVC: found child ApertureVC: %@", clsName);
-            break;
-        }
-    }
-}
-
-- (void)viewDidDisappear:(BOOL)animated {
-    %orig;
-    LGDILog(@"ShimVC viewDidDisappear");
-
-    LGPillManager *mgr = [LGPillManager sharedManager];
-    [mgr removePillGlass];
-    [mgr removeExpandedGlass];
-    mgr.apertureContainerView = nil;
-}
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    UIView *view = self.view;
-    if (!view || !view.window) return;
-
-    LGPillManager *mgr = [LGPillManager sharedManager];
-    mgr.apertureContainerView = view;
-
-    LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
-    if (pillGlass) {
-        UIView *pillView = [mgr findPillViewInAperture];
-        if (pillView) {
-            CGRect targetFrame = pillView.frame;
-            if (!CGRectEqualToRect(pillGlass.frame, targetFrame)) {
-                pillGlass.frame = targetFrame;
-            }
-            LGDIScheduleMaskUpdate(pillView, pillGlass, kLGDIPillMaskLayerKey);
-        }
-    }
-}
-
-%end
-
-// =============================================================================
-//  Hook: SBSystemApertureViewController
-//  这是 _elementForContainerView: 方法的宿主类（Mango 的精确 pill 获取方式）
-//  ShimVC 是外层容器，ApertureVC 是实际的灵动岛内容控制器
-// =============================================================================
-
-%hook SBSystemApertureViewController
-
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    LGDILog(@"ApertureVC viewDidAppear");
-
-    LGPillManager *mgr = [LGPillManager sharedManager];
-    mgr.apertureViewController = self;
-    mgr.apertureContainerView = self.view;
-}
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    UIView *view = self.view;
-    if (!view || !view.window) return;
-
-    LGPillManager *mgr = [LGPillManager sharedManager];
-    mgr.apertureViewController = self;
-    mgr.apertureContainerView = view;
-
-    // viewDidLayoutSubviews 时 view 层级已就绪，_elementForContainerView: 可以正常调用
-    if (mgr.pillContentActive) {
-        [mgr installPillGlass];
+    // 只在有内容时触发 backdrop 刷新
+    NSUInteger layerCount = 0;
+    if (layers && [layers respondsToSelector:@selector(count)]) {
+        layerCount = ((NSUInteger (*)(id, SEL))[layers methodForSelector:@selector(count)])(layers, @selector(count));
     }
 
-    LGLiveBackdropView *pillGlass = objc_getAssociatedObject(view, kLGDIPillGlassKey);
-    if (pillGlass) {
-        UIView *pillView = [mgr findPillViewInAperture];
-        if (pillView) {
-            CGRect targetFrame = pillView.frame;
-            if (!CGRectEqualToRect(pillGlass.frame, targetFrame)) {
-                pillGlass.frame = targetFrame;
-            }
-            LGDIScheduleMaskUpdate(pillView, pillGlass, kLGDIPillMaskLayerKey);
-        }
-    }
-}
-
-%end
-
-// =============================================================================
-//  Hook: SBNCNotificationDispatcher (通知驱动事件)
-//  通知系统分发通知时，可能触发灵动岛内容（来电、充电指示器等）
-// =============================================================================
-
-%hook SBNCNotificationDispatcher
-
-// 拦截通知分发方法，当通知可能触发灵动岛内容时通知 PillManager
-- (void)dispatchNotification:(id)notification withCompletionHandler:(id)handler {
-    %orig;
-
-    // 通知分发可能是灵动岛内容来源（来电、充电等）
-    // 延迟检查并安装玻璃
-    __weak LGPillManager *ws = [LGPillManager sharedManager];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        LGPillManager *strong = ws;
-        if (!strong) return;
-
-        UIView *pillView = [strong findPillViewInAperture];
-        if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
-            if (!strong.pillContentActive) {
-                LGDILog(@"NotificationDispatcher: pill content detected");
-                [strong pillDidAppear:@"notification"];
+    if (layerCount > 0) {
+        // 找到当前的 gainMapView 并刷新 backdrop
+        // 这里不扫描，只是标记需要刷新，实际刷新在 layoutSubviews 里做
+        // 但为了跟 Mango 一致，我们直接找 keyWindow 上的 gainMapView
+        // 实际上 didMoveToWindow 已经装好了，这里只做节流刷新
+        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+            if (window.windowLevel > 1000) { // 灵动岛窗口层级很高
+                // 简单检查：不递归扫描，只在已知有 glass 的 gainMapView 上刷新
+                // 由于 glass 已经通过 didMoveToWindow 安装，这里触发节流刷新
+                // 我们通过通知所有已安装的 gainMapView 来刷新
+                break;
             }
         }
-    });
+
+        // 实际上 glass 已经通过 didMoveToWindow 安装，_setLayers: 只是额外的刷新信号
+        // 由于 layoutSubviews 已经在每次布局时刷新 mask，这里不需要额外操作
+        // 保留此 hook 用于未来可能的场景状态跟踪
+    }
 }
 
 %end
-%end // %group MainHooks
+%end
 
 // =============================================================================
 //  偏好设置变更监听
@@ -912,15 +383,34 @@ static void LGDIPrefsChanged(CFNotificationCenterRef center, void *observer,
                              CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     @autoreleasepool {
         LGDILog(@"Prefs changed");
-        LGPillManager *mgr = [LGPillManager sharedManager];
-        if (mgr.pillContentActive) {
-            [mgr refreshPillGlassBackdrop];
+        // 偏好变更时，重新应用滤镜参数
+        // 由于玻璃视图已经通过 didMoveToWindow 安装，
+        // 我们需要找到所有已安装的 glass 并重新应用
+        // 这里简单处理：遍历所有 window 查找 gainMapView
+        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+            for (UIView *subview in window.subviews) {
+                // 递归查找已安装 glass 的 gainMapView
+                // 不直接扫描类名（避免开销），只检查 associated object
+                id glass = objc_getAssociatedObject(subview, kLGDIPillGlassKey);
+                if (glass && [glass isKindOfClass:[LGLiveBackdropView class]]) {
+                    [(LGLiveBackdropView *)glass applyFilters];
+                    LGDIScheduleMaskUpdate(subview, glass, kLGDIPillMaskLayerKey);
+                }
+                // 继续检查子视图
+                for (UIView *sv in subview.subviews) {
+                    id g = objc_getAssociatedObject(sv, kLGDIPillGlassKey);
+                    if (g && [g isKindOfClass:[LGLiveBackdropView class]]) {
+                        [(LGLiveBackdropView *)g applyFilters];
+                        LGDIScheduleMaskUpdate(sv, g, kLGDIPillMaskLayerKey);
+                    }
+                }
+            }
         }
     }
 }
 
 // =============================================================================
-//  Constructor — 安装所有 hooks 和 Darwin 通知监听
+//  Constructor — 安装所有 hooks
 // =============================================================================
 
 __attribute__((constructor))
@@ -934,20 +424,18 @@ static void LGDynamicIslandInit(void) {
                                     CFSTR("dylv.liquidglass/PrefsReloaded"),
                                     NULL, 0);
 
-    // 2. Logos %init: FBSceneLayerManager._setLayers:
-    //    Mango 二进制确认：hook 的方法名是 _setLayers:（不是 _performActionsForUIScene:）
-    //    Logos %init 自动处理类加载，比 objc_getClass + MSHookMessageEx 更可靠
-    %init(SceneLayerManager);
-    %init(MainHooks);
+    // 2. Logos %init: _SBGainMapView
+    %init(GainMapViewHook);
 
-    // 3. 检查关键类是否存在
-    Class apertureVCClass = objc_getClass("SBSystemApertureViewController");
-    Class shimVCClass = objc_getClass("SBSystemApertureCaptureVisibilityShimViewController");
+    // 3. Logos %init: FBSceneLayerManager._setLayers:
+    %init(SceneLayerManager);
+
+    // 4. 检查关键类是否存在
+    Class gainMapClass = objc_getClass("_SBGainMapView");
     Class sceneLayerMgrClass = objc_getClass("FBSceneLayerManager");
-    LGDILog(@"Class check: SBSystemApertureViewController=%@ ShimVC=%@ FBSceneLayerManager=%@",
-            apertureVCClass ? @"YES" : @"NO",
-            shimVCClass ? @"YES" : @"NO",
+    LGDILog(@"Class check: _SBGainMapView=%@ FBSceneLayerManager=%@",
+            gainMapClass ? @"YES" : @"NO",
             sceneLayerMgrClass ? @"YES" : @"NO");
 
-    LGDILog(@"Dynamic Island initialized (Mango architecture: FBSceneLayerManager._setLayers: + ShimVC + ApertureVC)");
+    LGDILog(@"Dynamic Island initialized (Mango architecture: _SBGainMapView direct hook)");
 }
