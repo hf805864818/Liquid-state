@@ -1,15 +1,17 @@
 // =============================================================================
-//  DynamicIsland.x — Mango 架构精确复制（直接 hook 渲染视图）
+//  DynamicIsland.x — Mango 架构精确复制
 //
 //  事件源（与 Mango 二进制完全一致）：
-//  1. _SBGainMapView didMoveToWindow  → pill 视图出现时安装玻璃
-//  2. _SBGainMapView layoutSubviews   → 布局变化时更新玻璃 frame
-//  3. _SBGainMapView setHidden:       → 显隐变化
-//  4. FBSceneLayerManager._setLayers: → 场景图层变化（backdrop 刷新）
+//  1. _SBGainMapView didMoveToWindow  → pill 出现信号（触发安装）
+//  2. _SBGainMapView layoutSubviews   → 布局变化时更新玻璃
+//  3. _SBGainMapView setHidden:       → 显隐同步
+//  4. FBSceneLayerManager._setLayers: → 场景图层变化
 //
-//  零 VC 查找：不依赖 SBSystemApertureViewController，不调用 _elementForContainerView:
-//  零递归扫描：直接在目标视图生命周期方法里操作
-//  零重试机制：视图出现即安装，视图消失即移除
+//  关键架构（与 Mango 一致）：
+//  - gainMapView 只是检测时机，不装玻璃
+//  - 玻璃装在 gainMapView 的 superview（element 容器）上
+//  - mask 形状来自 _SBSystemApertureMagiciansCurtainView（窗帘视图）
+//  - 玻璃作为 curtainView 的兄弟视图，插入在它下面
 // =============================================================================
 
 #import <UIKit/UIKit.h>
@@ -43,7 +45,7 @@ static inline BOOL LGIsAtLeastiOS16(void) {
     return NO;
 }
 
-#pragma mark - Cross-process glyph mask (保留原有实现)
+#pragma mark - Cross-process glyph mask
 
 static NSString *LGDIMaskPath(void) {
     return @"/var/mobile/Library/Accessibility/liquidglass-dynamicisland-mask.bin";
@@ -182,6 +184,7 @@ static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView, void *
 
 static void *kLGDIPillGlassKey = &kLGDIPillGlassKey;
 static void *kLGDIPillMaskLayerKey = &kLGDIPillMaskLayerKey;
+static void *kLGDICurtainViewKey = &kLGDICurtainViewKey;
 
 #pragma mark - Size validation
 
@@ -193,20 +196,71 @@ static BOOL LGDIIsPlausibleIslandSize(CGSize size) {
 }
 
 // =============================================================================
-//  Glass installation helpers
+//  View finding helpers
 // =============================================================================
 
-// 在 gainMapView 上安装液态玻璃
-static void LGDIInstallGlassOnGainMapView(UIView *gainMapView) {
+// 在兄弟视图中查找 _SBSystemApertureMagiciansCurtainView
+static UIView *LGDIFindCurtainViewInContainer(UIView *container) {
+    if (!container) return nil;
+    Class curtainClass = objc_getClass("_SBSystemApertureMagiciansCurtainView");
+    if (!curtainClass) return nil;
+
+    for (UIView *subview in container.subviews) {
+        if ([subview isKindOfClass:curtainClass]) return subview;
+    }
+    return nil;
+}
+
+// 递归查找 _SBGainMapView
+static UIView *LGDIFindGainMapViewInView(UIView *root) {
+    if (!root) return nil;
+    Class gainMapClass = objc_getClass("_SBGainMapView");
+    if (!gainMapClass) return nil;
+    if ([root isKindOfClass:gainMapClass]) return root;
+    for (UIView *subview in root.subviews) {
+        UIView *found = LGDIFindGainMapViewInView(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static UIView *LGDIFindExistingGainMapView(void) {
+    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        UIView *found = LGDIFindGainMapViewInView(window);
+        if (found) return found;
+    }
+    return nil;
+}
+
+// =============================================================================
+//  Glass installation
+//  玻璃装在 gainMapView.superview 上（element 容器）
+//  mask 形状来自 curtainView（窗帘视图）
+// =============================================================================
+
+static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!gainMapView || !gainMapView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
     if (!LGDIIsPlausibleIslandSize(gainMapView.bounds.size)) return;
 
-    // 已经安装过了
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
+    UIView *container = gainMapView.superview;
+    if (!container) return;
+
+    // 已经装过了（glass 关联在 container 上）
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIPillGlassKey);
     if (glassView) return;
 
-    glassView = LGCreateRegisteredGlass(gainMapView.bounds, nil, @"DynamicIsland");
+    // 找到 curtainView（mask 形状来源）
+    UIView *curtainView = LGDIFindCurtainViewInContainer(container);
+    if (!curtainView) {
+        LGDILog(@"installPillGlass: curtainView not found in container %@",
+                NSStringFromClass(container.class));
+        return;
+    }
+
+    // 用 curtainView 的尺寸创建玻璃
+    CGRect glassFrame = curtainView.frame;
+    glassView = LGCreateRegisteredGlass(glassFrame.size, nil, @"DynamicIsland");
     if (!glassView) {
         LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil");
         return;
@@ -216,16 +270,18 @@ static void LGDIInstallGlassOnGainMapView(UIView *gainMapView) {
     glassView.backgroundColor = UIColor.clearColor;
     glassView.layer.cornerRadius = 0.0;
     glassView.layer.masksToBounds = YES;
-    glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    glassView.frame = gainMapView.bounds;
+    glassView.frame = glassFrame;
 
-    // 插入到 gainMapView 的底层（glass 在内容下面）
-    [gainMapView insertSubview:glassView atIndex:0];
+    // 插入到 curtainView 下面（兄弟视图关系）
+    [container insertSubview:glassView belowSubview:curtainView];
 
-    objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
+    // 关联到 container 上
+    objc_setAssociatedObject(container, kLGDIPillGlassKey, glassView,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(container, kLGDICurtainViewKey, curtainView,
+                             OBJC_ASSOCIATION_ASSIGN);
 
-    // 延迟应用滤镜（给系统渲染时间）
+    // 延迟应用滤镜
     __weak LGLiveBackdropView *weakGlass = glassView;
     for (NSNumber *delay in @[ @1.0, @2.5, @5.0, @8.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
@@ -234,33 +290,70 @@ static void LGDIInstallGlassOnGainMapView(UIView *gainMapView) {
         });
     }
 
-    LGDIScheduleMaskUpdate(gainMapView, glassView, kLGDIPillMaskLayerKey);
+    // 用 curtainView 渲染 mask
+    LGDIScheduleMaskUpdate(curtainView, glassView, kLGDIPillMaskLayerKey);
 
-    LGDILog(@"glass created on _SBGainMapView h=%.1f", gainMapView.bounds.size.height);
+    LGDILog(@"glass created on container=%@ curtain=%@ frame=%@",
+            NSStringFromClass(container.class),
+            NSStringFromClass(curtainView.class),
+            NSStringFromCGRect(glassFrame));
 }
 
-// 从 gainMapView 移除液态玻璃
-static void LGDIRemoveGlassFromGainMapView(UIView *gainMapView) {
+static void LGDIRemovePillGlass(UIView *gainMapView) {
     if (!gainMapView) return;
+    UIView *container = gainMapView.superview;
+    if (!container) return;
 
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIPillGlassKey);
     if (glassView) {
         [glassView removeFromSuperview];
-        objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, nil,
+        objc_setAssociatedObject(container, kLGDIPillGlassKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(gainMapView, kLGDIPillMaskLayerKey, nil,
+        objc_setAssociatedObject(container, kLGDIPillMaskLayerKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        LGDILog(@"glass removed from _SBGainMapView");
+        objc_setAssociatedObject(container, kLGDICurtainViewKey, nil,
+                                 OBJC_ASSOCIATION_ASSIGN);
+        LGDILog(@"glass removed from container=%@", NSStringFromClass(container.class));
     }
+}
+
+static void LGDIRefreshPillGlass(UIView *gainMapView) {
+    if (!gainMapView || !gainMapView.window) return;
+    UIView *container = gainMapView.superview;
+    if (!container) return;
+
+    LGLiveBackdropView *glassView = objc_getAssociatedObject(container, kLGDIPillGlassKey);
+    if (!glassView) return;
+
+    UIView *curtainView = objc_getAssociatedObject(container, kLGDICurtainViewKey);
+    if (!curtainView || !curtainView.window) {
+        // curtainView 可能变了，重新找
+        curtainView = LGDIFindCurtainViewInContainer(container);
+        if (curtainView) {
+            objc_setAssociatedObject(container, kLGDICurtainViewKey, curtainView,
+                                     OBJC_ASSOCIATION_ASSIGN);
+        }
+    }
+    if (!curtainView) return;
+
+    // 同步 frame
+    CGRect targetFrame = curtainView.frame;
+    if (!CGRectEqualToRect(glassView.frame, targetFrame)) {
+        glassView.frame = targetFrame;
+        CALayer *maskLayer = objc_getAssociatedObject(glassView, kLGDIPillMaskLayerKey);
+        if (maskLayer) maskLayer.frame = glassView.bounds;
+    }
+
+    LGDIScheduleMaskUpdate(curtainView, glassView, kLGDIPillMaskLayerKey);
 }
 
 // =============================================================================
 //  Hook: _SBGainMapView
 //  Mango 二进制确认：hook 了 didMoveToWindow / layoutSubviews / setHidden:
-//  这是灵动岛 pill 的核心渲染视图，玻璃直接安装在这个 view 上
+//  作用：检测 pill 出现/消失时机，驱动玻璃安装/更新
+//  玻璃不装在 gainMapView 上，装在它的 superview 上
 // =============================================================================
 
-// 声明 _SBGainMapView 是 UIView 子类，让编译器识别 window / bounds 等属性
 @interface _SBGainMapView : UIView
 @end
 
@@ -271,33 +364,69 @@ static void LGDIRemoveGlassFromGainMapView(UIView *gainMapView) {
     %orig;
 
     if (self.window) {
-        // 视图出现 → 安装玻璃
         LGDILog(@"[_SBGainMapView didMoveToWindow] added to window");
-        LGDIInstallGlassOnGainMapView(self);
+        LGDIInstallPillGlass(self);
     } else {
-        // 视图移除 → 移除玻璃
         LGDILog(@"[_SBGainMapView didMoveToWindow] removed from window");
-        LGDIRemoveGlassFromGainMapView(self);
+        LGDIRemovePillGlass(self);
     }
 }
 
 - (void)layoutSubviews {
     %orig;
 
-    // 布局变化 → 更新玻璃 frame 和 mask
-    LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGDIPillGlassKey);
-    if (glass && !CGRectIsEmpty(self.bounds)) {
-        LGDIUpdateMask(self, glass, kLGDIPillMaskLayerKey);
+    if (!CGRectIsEmpty(self.bounds)) {
+        LGDIRefreshPillGlass(self);
     }
 }
 
 - (void)setHidden:(BOOL)hidden {
     %orig;
 
-    LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGDIPillGlassKey);
-    if (glass) {
-        glass.hidden = hidden;
-        LGDILog(@"[_SBGainMapView setHidden:%d]", hidden);
+    UIView *container = self.superview;
+    if (container) {
+        LGLiveBackdropView *glass = objc_getAssociatedObject(container, kLGDIPillGlassKey);
+        if (glass) glass.hidden = hidden;
+    }
+}
+
+%end
+%end
+
+// =============================================================================
+//  Hook: _SBSystemApertureMagiciansCurtainView
+//  Mango 二进制确认：hook 了 didMoveToWindow / setHidden:
+//  作用：窗帘视图显隐变化时同步玻璃显隐
+// =============================================================================
+
+@interface _SBSystemApertureMagiciansCurtainView : UIView
+@end
+
+%group CurtainViewHook
+%hook _SBSystemApertureMagiciansCurtainView
+
+- (void)setHidden:(BOOL)hidden {
+    %orig;
+
+    UIView *container = self.superview;
+    if (container) {
+        LGLiveBackdropView *glass = objc_getAssociatedObject(container, kLGDIPillGlassKey);
+        if (glass) glass.hidden = hidden;
+    }
+}
+
+- (void)layoutSubviews {
+    %orig;
+
+    UIView *container = self.superview;
+    if (container && !CGRectIsEmpty(self.bounds)) {
+        LGLiveBackdropView *glass = objc_getAssociatedObject(container, kLGDIPillGlassKey);
+        if (glass) {
+            if (!CGRectEqualToRect(glass.frame, self.frame)) {
+                glass.frame = self.frame;
+            }
+            LGDIScheduleMaskUpdate(self, glass, kLGDIPillMaskLayerKey);
+        }
     }
 }
 
@@ -306,8 +435,7 @@ static void LGDIRemoveGlassFromGainMapView(UIView *gainMapView) {
 
 // =============================================================================
 //  Hook: FBSceneLayerManager._setLayers:
-//  Mango 二进制确认：hook 的是 _setLayers: 方法
-//  用于 backdrop 刷新（场景内容变化时更新 mask）
+//  保留作为场景状态跟踪（Mango 也有此 hook）
 // =============================================================================
 
 %group SceneLayerManager
@@ -315,31 +443,7 @@ static void LGDIRemoveGlassFromGainMapView(UIView *gainMapView) {
 
 - (void)_setLayers:(id)layers {
     %orig;
-
-    // 只在有内容时触发 backdrop 刷新
-    NSUInteger layerCount = 0;
-    if (layers && [layers respondsToSelector:@selector(count)]) {
-        layerCount = ((NSUInteger (*)(id, SEL))[layers methodForSelector:@selector(count)])(layers, @selector(count));
-    }
-
-    if (layerCount > 0) {
-        // 找到当前的 gainMapView 并刷新 backdrop
-        // 这里不扫描，只是标记需要刷新，实际刷新在 layoutSubviews 里做
-        // 但为了跟 Mango 一致，我们直接找 keyWindow 上的 gainMapView
-        // 实际上 didMoveToWindow 已经装好了，这里只做节流刷新
-        for (UIWindow *window in UIApplication.sharedApplication.windows) {
-            if (window.windowLevel > 1000) { // 灵动岛窗口层级很高
-                // 简单检查：不递归扫描，只在已知有 glass 的 gainMapView 上刷新
-                // 由于 glass 已经通过 didMoveToWindow 安装，这里触发节流刷新
-                // 我们通过通知所有已安装的 gainMapView 来刷新
-                break;
-            }
-        }
-
-        // 实际上 glass 已经通过 didMoveToWindow 安装，_setLayers: 只是额外的刷新信号
-        // 由于 layoutSubviews 已经在每次布局时刷新 mask，这里不需要额外操作
-        // 保留此 hook 用于未来可能的场景状态跟踪
-    }
+    // 场景图层变化时，layoutSubviews 会自动触发 mask 更新
 }
 
 %end
@@ -353,50 +457,28 @@ static void LGDIPrefsChanged(CFNotificationCenterRef center, void *observer,
                              CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     @autoreleasepool {
         LGDILog(@"Prefs changed");
-        // 偏好变更时，重新应用滤镜参数
-        // 由于玻璃视图已经通过 didMoveToWindow 安装，
-        // 我们需要找到所有已安装的 glass 并重新应用
-        // 这里简单处理：遍历所有 window 查找 gainMapView
+        // 遍历所有窗口，找到已安装的 glass 并重新应用滤镜
         for (UIWindow *window in UIApplication.sharedApplication.windows) {
             for (UIView *subview in window.subviews) {
-                // 递归查找已安装 glass 的 gainMapView
-                // 不直接扫描类名（避免开销），只检查 associated object
+                // 检查当前视图
                 id glass = objc_getAssociatedObject(subview, kLGDIPillGlassKey);
                 if (glass && [glass isKindOfClass:[LGLiveBackdropView class]]) {
                     [(LGLiveBackdropView *)glass applyFilters];
-                    LGDIScheduleMaskUpdate(subview, glass, kLGDIPillMaskLayerKey);
+                    UIView *curtain = objc_getAssociatedObject(subview, kLGDICurtainViewKey);
+                    if (curtain) LGDIScheduleMaskUpdate(curtain, glass, kLGDIPillMaskLayerKey);
                 }
-                // 继续检查子视图
+                // 检查子视图（递归一层，够用了）
                 for (UIView *sv in subview.subviews) {
                     id g = objc_getAssociatedObject(sv, kLGDIPillGlassKey);
                     if (g && [g isKindOfClass:[LGLiveBackdropView class]]) {
                         [(LGLiveBackdropView *)g applyFilters];
-                        LGDIScheduleMaskUpdate(sv, g, kLGDIPillMaskLayerKey);
+                        UIView *c = objc_getAssociatedObject(sv, kLGDICurtainViewKey);
+                        if (c) LGDIScheduleMaskUpdate(c, g, kLGDIPillMaskLayerKey);
                     }
                 }
             }
         }
     }
-}
-
-// 递归查找 _SBGainMapView 实例
-static UIView *LGDIFindGainMapViewInView(UIView *root) {
-    if (!root) return nil;
-    if ([root isKindOfClass:objc_getClass("_SBGainMapView")]) return root;
-    for (UIView *subview in root.subviews) {
-        UIView *found = LGDIFindGainMapViewInView(subview);
-        if (found) return found;
-    }
-    return nil;
-}
-
-// 查找当前窗口中的 _SBGainMapView（处理 constructor 执行时已存在的实例）
-static UIView *LGDIFindExistingGainMapView(void) {
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
-        UIView *found = LGDIFindGainMapViewInView(window);
-        if (found) return found;
-    }
-    return nil;
 }
 
 // =============================================================================
@@ -408,39 +490,43 @@ static void LGDynamicIslandInit(void) {
     if (!LGIsSpringBoardProcess()) return;
     if (!LGIsAtLeastiOS16()) return;
 
-    // 1. Darwin 通知监听 — 偏好设置变更
+    // 1. Darwin 通知监听
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL, LGDIPrefsChanged,
                                     CFSTR("dylv.liquidglass/PrefsReloaded"),
                                     NULL, 0);
 
-    // 2. Logos %init: _SBGainMapView
+    // 2. Hook: _SBGainMapView
     %init(GainMapViewHook);
 
-    // 3. Logos %init: FBSceneLayerManager._setLayers:
+    // 3. Hook: _SBSystemApertureMagiciansCurtainView
+    %init(CurtainViewHook);
+
+    // 4. Hook: FBSceneLayerManager._setLayers:
     %init(SceneLayerManager);
 
-    // 4. 检查关键类是否存在
+    // 5. 类检查
     Class gainMapClass = objc_getClass("_SBGainMapView");
+    Class curtainClass = objc_getClass("_SBSystemApertureMagiciansCurtainView");
     Class sceneLayerMgrClass = objc_getClass("FBSceneLayerManager");
-    LGDILog(@"Class check: _SBGainMapView=%@ FBSceneLayerManager=%@",
+    LGDILog(@"Class check: gainMap=%@ curtain=%@ sceneLayerMgr=%@",
             gainMapClass ? @"YES" : @"NO",
+            curtainClass ? @"YES" : @"NO",
             sceneLayerMgrClass ? @"YES" : @"NO");
 
-    LGDILog(@"Dynamic Island initialized (Mango architecture: _SBGainMapView direct hook)");
+    LGDILog(@"Dynamic Island initialized (gainMap trigger + curtain mask)");
 
-    // 5. 主动查找已存在的 _SBGainMapView 并安装玻璃
+    // 6. 主动查找已存在的 gainMapView 并安装玻璃
     //    SpringBoard 启动时灵动岛已经在窗口上，didMoveToWindow 早调用过了
-    //    hook 安装后需要主动扫描一次
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         UIView *existingGainMap = LGDIFindExistingGainMapView();
         if (existingGainMap) {
-            LGDILog(@"constructor: found existing _SBGainMapView %@",
+            LGDILog(@"constructor: found existing gainMapView %@",
                     NSStringFromCGRect(existingGainMap.frame));
-            LGDIInstallGlassOnGainMapView(existingGainMap);
+            LGDIInstallPillGlass(existingGainMap);
         } else {
-            LGDILog(@"constructor: no existing _SBGainMapView found");
+            LGDILog(@"constructor: no existing gainMapView found");
         }
     });
 }
