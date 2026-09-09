@@ -946,48 +946,6 @@ static UIView *LGDFindExpandedContentView(UIView *containerView) {
 %end // %group MainHooks
 
 // =============================================================================
-//  Darwin 通知回调（偏好设置变更）
-// =============================================================================
-
-static void LGDIDarwinEventCallback(CFNotificationCenterRef center, void *observer,
-                                     CFStringRef name, const void *object,
-                                     CFDictionaryRef userInfo) {
-    @autoreleasepool {
-        NSString *notificationName = (__bridge NSString *)name;
-        LGDILog(@"Darwin event: %@", notificationName);
-
-        LGPillManager *mgr = [LGPillManager sharedManager];
-
-        // 系统级事件触发 → 延迟 0.5 秒后检查灵动岛
-        // （给系统时间渲染灵动岛内容视图）
-        __weak LGPillManager *ws = mgr;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            LGPillManager *strong = ws;
-            if (!strong) return;
-
-            UIView *pillView = [strong findPillViewInAperture];
-            if (pillView && LGDIIsPlausibleIslandSize(pillView.bounds.size)) {
-                // 系统级事件 + Pill 视图存在 = 灵动岛有内容
-                if (!strong.pillContentActive) {
-                    LGDILog(@"Darwin event → pillDidAppear");
-                    [strong pillDidAppear:notificationName];
-                } else {
-                    // 已安装，刷新
-                    [strong refreshPillGlassBackdrop];
-                }
-            } else {
-                // Pill 视图不存在 = 灵动岛内容已退出
-                if (strong.pillContentActive) {
-                    LGDILog(@"Darwin event → sceneContentDidExit");
-                    [strong sceneContentDidExit];
-                }
-            }
-        });
-    }
-}
-
-// =============================================================================
 //  偏好设置变更监听
 // =============================================================================
 
