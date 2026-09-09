@@ -205,6 +205,15 @@ static BOOL LGDIIsPlausibleIslandSize(CGSize size) {
     return YES;
 }
 
+// 判断是否是"默认小药丸"（纯装饰，没有实际内容）
+// 默认小药丸尺寸约 125x37，长药丸 200+，展开的更大
+// 参考 MangoPillGlassExpandOnly，默认小药丸不加玻璃
+static BOOL LGDIIsDefaultMiniPill(CGSize size) {
+    // 宽度小于 150pt 认为是默认小药丸（纯装饰）
+    // 不同设备可能略有差异，但长药丸一般都在 200+
+    return size.width < 150.0;
+}
+
 // =============================================================================
 //  View finding helpers
 // =============================================================================
@@ -312,6 +321,9 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     if (!gainMapView || !gainMapView.window) return;
     if (!lgHostEnabled(@"DynamicIsland")) return;
     if (!LGDIIsPlausibleIslandSize(gainMapView.bounds.size)) return;
+
+    // 跳过默认小药丸（纯装饰，参考 MangoPillGlassExpandOnly）
+    if (LGDIIsDefaultMiniPill(gainMapView.bounds.size)) return;
 
     // 已经装过了
     LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
