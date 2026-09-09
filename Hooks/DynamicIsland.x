@@ -268,25 +268,32 @@ static UIView *LGDIFindExistingGainMapView(void) {
 
 #pragma mark - Glass installation (inside element container, above curtainView)
 
-// 调试：打印视图层级和背景色
+// 调试：打印视图层级和背景色（包含 layer 层信息）
 __attribute__((unused))
 static void LGDIDumpViewHierarchy(UIView *startView) {
     UIView *view = startView;
     NSInteger level = 0;
     while (view) {
         UIColor *bg = view.backgroundColor;
+        CGColorRef layerBg = view.layer.backgroundColor;
         CGFloat alpha = view.alpha;
         BOOL hidden = view.hidden;
+        BOOL opaque = view.opaque;
+        BOOL clips = view.clipsToBounds;
         NSString *bgDesc = bg ? [bg description] : @"(nil)";
-        // 取背景色前60个字符
-        if (bgDesc.length > 60) bgDesc = [[bgDesc substringToIndex:60] stringByAppendingString:@"..."];
-        LGDILog(@"  hierarchy L%ld %@  bg=%@  alpha=%.2f  hidden=%d  frame=%@",
+        NSString *layerBgDesc = layerBg ? [(__bridge UIColor *)layerBg description] : @"(nil)";
+        // 取背景色前40个字符
+        if (bgDesc.length > 40) bgDesc = [[bgDesc substringToIndex:40] stringByAppendingString:@"..."];
+        if (layerBgDesc.length > 40) layerBgDesc = [[layerBgDesc substringToIndex:40] stringByAppendingString:@"..."];
+        LGDILog(@"  L%ld %@  viewBg=%@  layerBg=%@  opaque=%d  clips=%d  alpha=%.2f  hidden=%d",
                 (long)level,
                 NSStringFromClass(view.class),
                 bgDesc,
+                layerBgDesc,
+                opaque,
+                clips,
                 alpha,
-                hidden,
-                NSStringFromCGRect(view.frame));
+                hidden);
         view = view.superview;
         level++;
         if (level > 10) break; // 最多打10层
@@ -310,9 +317,16 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     UIView *elementContainer = curtainView.superview;
     if (!elementContainer) return;
 
-    // 调试：打印视图层级
+    // 调试：打印视图层级（包含 layer 背景、opaque、clips）
     LGDILog(@"=== View hierarchy from gainMapView ===");
     LGDIDumpViewHierarchy(gainMapView);
+
+    // 获取 window
+    UIWindow *window = gainMapView.window;
+    LGDILog(@"window class=%@ opaque=%d bg=%@",
+            NSStringFromClass(window.class),
+            window.opaque,
+            window.backgroundColor ? [window.backgroundColor description] : @"(nil)");
 
     // 把 gainMapView 的 bounds 转换到 elementContainer 坐标系
     CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:elementContainer];
@@ -346,23 +360,56 @@ static void LGDIInstallPillGlass(UIView *gainMapView) {
     // 隐藏 curtainView（黑色背景），让液态玻璃直接看到桌面
     curtainView.hidden = YES;
 
-    // 尝试透明化 elementContainer 及其父视图的背景色
-    // 从 elementContainer 往上，把所有背景色设为 clear
+    // =========================================================================
+    //  全面透明化处理（参考 MangoPillContainerBgTransparentV2）
+    // =========================================================================
+
+    NSInteger clearViewBgCount = 0;
+    NSInteger clearLayerBgCount = 0;
+    NSInteger clearOpaqueCount = 0;
+
+    // 从 elementContainer 往上遍历，清除所有背景色 + 不透明设置
     UIView *v = elementContainer;
-    NSInteger clearCount = 0;
-    while (v && clearCount < 5) {
+    NSInteger maxLevels = 8;
+    NSInteger level = 0;
+    while (v && level < maxLevels) {
+        // 1. 清除 UIView.backgroundColor
         if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
             v.backgroundColor = UIColor.clearColor;
-            clearCount++;
+            clearViewBgCount++;
+        }
+        // 2. 清除 CALayer.backgroundColor
+        if (v.layer.backgroundColor && v.layer.backgroundColor != [UIColor clearColor].CGColor) {
+            v.layer.backgroundColor = [UIColor clearColor].CGColor;
+            clearLayerBgCount++;
+        }
+        // 3. 把 opaque 设为 NO（如果是 YES 的话）
+        if (v.opaque) {
+            v.opaque = NO;
+            clearOpaqueCount++;
         }
         v = v.superview;
+        level++;
     }
 
-    LGDILog(@"glass installed above curtainView in %@, size=%@ CR=%.1f, curtainView hidden=YES, cleared %ld bg layers",
+    // 4. 特别处理 window 本身
+    if (window.opaque) {
+        window.opaque = NO;
+        LGDILog(@"window.opaque set to NO");
+    }
+    if (window.backgroundColor && window.backgroundColor != UIColor.clearColor) {
+        window.backgroundColor = UIColor.clearColor;
+        LGDILog(@"window.backgroundColor set to clear");
+    }
+
+    LGDILog(@"glass installed above curtainView in %@, size=%@ CR=%.1f, "
+            "curtainView hidden=YES, clearViewBg=%ld, clearLayerBg=%ld, clearOpaque=%ld",
             NSStringFromClass(elementContainer.class),
             NSStringFromCGSize(glassFrame.size),
             glassView.layer.cornerRadius,
-            (long)clearCount);
+            (long)clearViewBgCount,
+            (long)clearLayerBgCount,
+            (long)clearOpaqueCount);
 
     // 关联到 gainMapView 上
     objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
