@@ -20,7 +20,11 @@
 #import <objc/message.h>
 
 // CydiaSubstrate (for MSHookMessageEx, same as Mango uses)
-extern "C" void MSHookMessageEx(Class cls, SEL sel, IMP newImp, IMP *origImp);
+// Logos .x -> .m (Objective-C), so extern "C" is invalid here
+#ifdef __cplusplus
+extern "C"
+#endif
+void MSHookMessageEx(Class cls, SEL sel, IMP newImp, IMP *origImp);
 
 static void LGDILog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
 static void LGDILog(NSString *fmt, ...) {
