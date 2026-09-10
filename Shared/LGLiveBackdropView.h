@@ -31,6 +31,12 @@ UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
                    filterType:(NSString *)filterType;
 - (void)applyFilters;
 
+// 强制 backdrop 重新建立 render-server 捕获并重挂滤镜。
+// 用于：玻璃在内容/背景尚未就绪时就加入了特殊窗口（如灵动岛独立窗口），
+// 首次 CABackdropLayer 捕获为空/黑；普通 applyFilters 在滤镜类型未变时会
+// early-return，无法触发重采样。此方法重置捕获配置并强制重挂，无动画、可重复调用。
+- (void)lgForceRefreshBackdrop;
+
 // 为 native blur 层设置形状 mask（用于 Clock 文字形状裁剪）
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer;
 

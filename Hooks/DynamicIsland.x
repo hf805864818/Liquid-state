@@ -816,6 +816,14 @@ static void LGDIDriverTick(CADisplayLink *link) {
             LGDISyncGeometryFromPresentation(NO);
             [[DIPillStateMachine shared] setInteractiveExpanding:NO];
             LGDIStopDriver();
+            // 弹簧动画到位、实时活动布局完全稳定后，强制重建一次 backdrop 捕获：
+            // 此时窗外实时画面已就绪，重采样可拿到正确内容（修复首捕为空发黑）。
+            // 节流，避免同一稳定态内重复刷新。
+            static CFTimeInterval sLGDILastForceRefresh = 0;
+            if (sLGDIGlass && now - sLGDILastForceRefresh > 0.4) {
+                sLGDILastForceRefresh = now;
+                [sLGDIGlass lgForceRefreshBackdrop];
+            }
             return;
         }
     }
@@ -902,13 +910,16 @@ static void LGDIInstallGlass(UIView *curtain) {
         });
 #endif
 
-        // backboardd 滤镜 atom 注册有重试，补发几次 applyFilters
+        // 玻璃在实时活动内容/背景尚未就绪时就加入了灵动岛独立窗口，
+        // CABackdropLayer 首次捕获可能为空/黑；且 applyFilters 在滤镜类型
+        // 未变时会 early-return。这里在布局就绪的多个时间点强制重建 backdrop
+        // 捕获组（对标 Mango refreshGlassBackdrop），使其重新采样窗外实时画面。
         __weak LGLiveBackdropView *weakGlass = glass;
-        for (NSNumber *delay in @[ @0.5, @1.5, @3.0, @6.0 ]) {
+        for (NSNumber *delay in @[ @0.3, @0.8, @1.6, @3.0 ]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                          (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
-                [weakGlass applyFilters];
+                [weakGlass lgForceRefreshBackdrop];
             });
         }
     }

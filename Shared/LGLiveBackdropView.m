@@ -1122,6 +1122,30 @@ static void LGReportMemoryUsageIfNeeded(void) {
     [self.layer setNeedsDisplay];
 }
 
+- (void)lgForceRefreshBackdrop {
+    CALayer *layer = self.layer;
+    Class backdropCls = NSClassFromString(@"CABackdropLayer");
+    if (!backdropCls || ![layer isKindOfClass:backdropCls]) {
+        [self applyFilters];
+        return;
+    }
+    // 强制 render server 销毁并重建该 backdrop 的捕获组：
+    // 清空 filters + 重置 _backdropConfigured，使 applyFilters 重新断言
+    // windowServerAware / groupName / groupNamespace / ignoresScreenClip，
+    // 从而在内容已就绪后重新采样背景（修复特殊窗口首次捕获为空/黑）。
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    layer.filters = @[];
+    _filterAttached = NO;
+    _backdropConfigured = NO;
+    _appliedScale = -1.0f;
+    [CATransaction commit];
+
+    [self applyFilters];
+    [layer setNeedsLayout];
+    [layer setNeedsDisplay];
+}
+
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer {
     // 保存 mask 引用，解决时序竞态：
     // setShapeMaskImage 可能在 _nativeBlurLayer 创建之前调用，
