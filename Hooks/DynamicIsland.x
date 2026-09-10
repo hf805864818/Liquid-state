@@ -166,23 +166,9 @@ static BOOL      sLGDIInteractiveExpanding; // 手势交互式展开中
 static BOOL      sLGDIExpandedForKeyboard;  // 因键盘弹出而展开
 static BOOL      sLGDISplitExpanded;        // 因分屏而提升层级
 
-static BOOL LGDIModeIsLiquid(NSInteger mode) {
-    return mode == kLGDIModeCompact || mode == kLGDIModeExpanded
-        || mode == kLGDIModeDetached;
-}
-
-static BOOL LGDIHasActiveLayout(void) {
-    for (id element in sLGDIElementModes) {
-        NSNumber *n = [sLGDIElementModes objectForKey:element];
-        if (LGDIModeIsLiquid(n.integerValue)) return YES;
-        // 关联表可能滞后于系统内部直接改值，KVC 校正一次（失败则信任记录值）
-        @try {
-            NSInteger cur = [[element valueForKey:@"layoutMode"] integerValue];
-            if (LGDIModeIsLiquid(cur)) return YES;
-        } @catch (__unused NSException *e) {}
-    }
-    return NO;
-}
+// 阶段2.6：激活判定不再依赖"是否记录到 compact/expanded 布局"
+// （旧的 LGDIModeIsLiquid / LGDIHasActiveLayout 已随多信号事件驱动改造移除），
+// 改为 LGDIEngage 以「总开关 + 在屏黑色幕布」直接点亮。
 
 static void LGDIRecordElementMode(id element, NSInteger mode) {
     if (!sLGDIElementModes) {
