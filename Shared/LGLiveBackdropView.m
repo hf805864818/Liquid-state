@@ -812,13 +812,13 @@ static void LGReportMemoryUsageIfNeeded(void) {
 - (NSString *)lgUniqueGroupNameWithTag:(NSString *)tag {
     NSString *base = tag.length ? tag : @"dylv.liquidglass";
     // 单调递增的全局序列号：保证「同一玻璃实例多次强制刷新」也能拿到不同的组名，
-    // 从而每次都让 render server 销毁旧捕获组、建立全新采样（self 地址/_lgId 在
-    // 实例生命周期内不变，不能单独用作刷新时的区分量）。
+    // 从而每次都让 render server 销毁旧捕获组、建立全新采样（_lgId 在实例生命周期
+    // 内不变，不能单独用作刷新时的区分量）。唯一性由 pid + 实例号 _lgId + 全局
+    // epoch 共同保证，无需对 self 指针做位运算（那会触发 objc 指针内省告警）。
     static uint32_t sLGGroupEpoch = 0;
     uint32_t epoch = ++sLGGroupEpoch;
-    return [NSString stringWithFormat:@"%@.p%d.%08x.g%u.e%u",
-            base, (int)getpid(), (uint32_t)((uintptr_t)self & 0xFFFFFFFFu),
-            _lgId, epoch];
+    return [NSString stringWithFormat:@"%@.p%d.g%u.e%u",
+            base, (int)getpid(), _lgId, epoch];
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
