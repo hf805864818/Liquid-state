@@ -141,20 +141,30 @@ static const NSInteger kLGDIModeInert    = 0;
 static const NSInteger kLGDIModeMinimal  = 1;
 static const NSInteger kLGDIModeCompact  = 2;
 static const NSInteger kLGDIModeExpanded = 3;
+static const NSInteger kLGDIModeDetached = 4;
 
 static __weak UIView            *sLGDICurtain;   // 当前幕布（唯一）
 static __weak UIView            *sLGDIHost;      // 玻璃挂载容器
 static __weak LGLiveBackdropView *sLGDIGlass;    // 当前玻璃
-static BOOL                      sLGDIActive;    // 已激活液态化（开关开 && 当前 compact/expanded）
+static BOOL                      sLGDIActive;    // 已激活液态化（开关开 && 当前 compact/expanded/detached）
 static BOOL                      sLGDISyncQueued;
 static CADisplayLink            *sLGDILink;
-static CFTimeInterval            sLGDILinkDeadline;
+static CFTimeInterval            sLGDILinkDeadline;  // 驱动硬性兜底超时
+static CFTimeInterval            sLGDIMinDriverEnd;  // 几何稳定停机的“最早”时刻（弹簧进行中不提前停）
 
 // element(weak) -> 当前 layoutMode。仅 compact/expanded 视为“有活跃内容”
 static NSMapTable<id, NSNumber *> *sLGDIElementModes;
 
+// 状态机聚合状态（阶段2）：当前最高布局模式 + 触发 reason + 交互/键盘/分屏复合态
+static NSInteger sLGDIMode;              // 当前聚合布局模式（多元素取最高）
+static NSInteger sLGDIModeReason;        // 最近一次布局模式的触发 reason
+static BOOL      sLGDIInteractiveExpanding; // 手势交互式展开中
+static BOOL      sLGDIExpandedForKeyboard;  // 因键盘弹出而展开
+static BOOL      sLGDISplitExpanded;        // 因分屏而提升层级
+
 static BOOL LGDIModeIsLiquid(NSInteger mode) {
-    return mode == kLGDIModeCompact || mode == kLGDIModeExpanded;
+    return mode == kLGDIModeCompact || mode == kLGDIModeExpanded
+        || mode == kLGDIModeDetached;
 }
 
 static BOOL LGDIHasActiveLayout(void) {
@@ -183,6 +193,7 @@ static NSString *LGDIModeName(NSInteger mode) {
         case kLGDIModeMinimal:  return @"minimal";
         case kLGDIModeCompact:  return @"compact";
         case kLGDIModeExpanded: return @"expanded";
+        case kLGDIModeDetached: return @"detached";
         default:                return [NSString stringWithFormat:@"mode%ld", (long)mode];
     }
 }
@@ -237,6 +248,116 @@ static NSString *LGDIModeName(NSInteger mode) {
             LGDRemoveGainMap() ? @"remove" : @"keep",
             LGDClearContentBg() ? @"clear" : @"keep",
             LGDIHideOutline() ? @"hide" : @"keep"];
+}
+
+@end
+
+// =============================================================================
+//  DIPillStateMachine — 完整灵动岛状态机（阶段2，对标 MangoPillElement）
+//  消费 setLayoutMode:reason:，聚合多元素状态，暴露当前是否展开/展开中，
+//  升级逐帧驱动：直到 geometry 稳定（连续多帧 frame 几乎不变）才停止，
+//  而不是硬 deadline —— 保证弹簧完成后玻璃才与系统黑岛完全对齐。
+// =============================================================================
+
+// 前向声明：DIPillStateMachine 在驱动/同步实现之前定义
+// （多元素聚合用 DIElementManager.currentPreferredMode 已在后方定义）
+static void LGDIReconcile(void);
+static void LGDIScheduleSync(NSTimeInterval driverDuration);
+
+typedef NS_ENUM(NSInteger, DIPillLayoutMode) {
+    DIPillLayoutModeInert    = kLGDIModeInert,
+    DIPillLayoutModeMinimal  = kLGDIModeMinimal,
+    DIPillLayoutModeCompact  = kLGDIModeCompact,
+    DIPillLayoutModeExpanded = kLGDIModeExpanded,
+    DIPillLayoutModeDetached = kLGDIModeDetached,
+};
+
+@interface DIPillStateMachine : NSObject
++ (instancetype)shared;
+- (void)updateLayoutMode:(DIPillLayoutMode)mode reason:(NSInteger)reason;
+- (void)setInteractiveExpanding:(BOOL)expanding;  // 手势交互展开
+- (void)setExpandedForKeyboard:(BOOL)expanded;  // 键盘弹出展开
+- (void)setSplitExpanded:(BOOL)expanded;        // 分屏提升层级
+
+@property (nonatomic, readonly) BOOL isExpanded;        // 展开卡片态（含交互/键盘）
+@property (nonatomic, readonly) BOOL isExpanding;       // 正在展开动画中
+@property (nonatomic, readonly) BOOL interactiveExpandActive; // 交互展开进行中
+@property (nonatomic, readonly) DIPillLayoutMode currentMode;
+- (NSString *)debugSummary;
+@end
+
+@implementation DIPillStateMachine
++ (instancetype)shared {
+    static dispatch_once_t once;
+    static id instance;
+    dispatch_once(&once, ^{ instance = [self new]; });
+    return instance;
+}
+
+- (instancetype)init {
+    if (!(self = [super init])) return nil;
+    return self;
+}
+
+- (void)updateLayoutMode:(DIPillLayoutMode)mode reason:(NSInteger)reason {
+    if (mode != (DIPillLayoutMode)sLGDIMode) {
+        LGDILog(@"stateMachine: mode changed %@ -> %@ reason=%ld",
+               LGDIModeName(sLGDIMode), LGDIModeName((NSInteger)mode), (long)reason);
+        sLGDIMode = mode;
+        sLGDIModeReason = reason;
+    }
+    // 展开模式变化触发 reconcile + 同步
+    LGDIReconcile();
+    if (sLGDIActive) {
+        NSTimeInterval duration = mode == DIPillLayoutModeExpanded ? 1.6 : 0.9;
+        LGDIScheduleSync(duration);
+    }
+}
+
+- (void)setInteractiveExpanding:(BOOL)expanding {
+    sLGDIInteractiveExpanding = expanding;
+    if (expanding) {
+        LGDILog(@"stateMachine: interactive expanding started");
+        // 交互展开全程驱动，直到手势结束
+        LGDIScheduleSync(2.5);
+    }
+}
+
+- (void)setExpandedForKeyboard:(BOOL)expanded {
+    sLGDIExpandedForKeyboard = expanded;
+    if (expanded) {
+        LGDILog(@"stateMachine: expanded for keyboard");
+        LGDIReconcile();
+        LGDIScheduleSync(1.2);
+    }
+}
+
+- (void)setSplitExpanded:(BOOL)expanded {
+    sLGDISplitExpanded = expanded;
+    // 分屏提升 zPosition 后续阶段处理
+}
+
+- (BOOL)isExpanded {
+    return sLGDIMode >= DIPillLayoutModeExpanded || sLGDIExpandedForKeyboard;
+}
+
+- (BOOL)isExpanding {
+    return sLGDIInteractiveExpanding || (sLGDILink && !sLGDILink.paused);
+}
+
+- (BOOL)interactiveExpandActive {
+    return sLGDIInteractiveExpanding;
+}
+
+- (DIPillLayoutMode)currentMode {
+    return (DIPillLayoutMode)sLGDIMode;
+}
+
+- (NSString *)debugSummary {
+    return [NSString stringWithFormat:@"mode=%@ expanded=%d expanding=%d"
+            @" interact=%d keyboard=%d split=%d",
+            LGDIModeName(sLGDIMode), (int)self.isExpanded, (int)self.isExpanding,
+            (int)sLGDIInteractiveExpanding, (int)sLGDIExpandedForKeyboard, (int)sLGDISplitExpanded];
 }
 
 @end
@@ -629,9 +750,18 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
 
 // =============================================================================
 //  Transition driver — 逐帧跟随系统弹簧形变
+//  阶段2：从"跑固定 deadline"升级为"几何稳定判定"——
+//  连续 kLGDISteadyFrameThreshold 帧 reading presentationLayer frame 几乎不动，
+//  且已过最早停机时刻 sLGDIMinDriverEnd，才认为弹簧动画结束并停机；
+//  sLGDILinkDeadline 仍作为硬性兜底（防止几何一直不收敛导致永驱）。
 // =============================================================================
 
 static void LGDIStopDriver(void);
+
+static const NSUInteger kLGDISteadyFrameThreshold = 8;  // ~130ms 持续稳定
+static const CGFloat    kLGDISteadyDelta = 0.15;        // pt，单帧位移阈值
+static CGRect   sLGDILastPresentationFrame;
+static NSUInteger sLGDISteadyFrameCount;
 
 static void LGDIDriverTick(CADisplayLink *link) {
     (void)link;
@@ -650,9 +780,24 @@ static void LGDIDriverTick(CADisplayLink *link) {
         LGDIReassertSuppressed();
         LGDISyncGeometryFromPresentation(YES);
 
-        if (CACurrentMediaTime() >= sLGDILinkDeadline) {
+        // 几何稳定判定
+        CALayer *present = curtain.layer.presentationLayer;
+        CGRect f = present ? present.frame : curtain.frame;
+        BOOL stable = CGRectEqualToRect(f, CGRectNull) ? NO :
+            (fabs(f.origin.x - sLGDILastPresentationFrame.origin.x) < kLGDISteadyDelta
+             && fabs(f.origin.y - sLGDILastPresentationFrame.origin.y) < kLGDISteadyDelta
+             && fabs(f.size.width  - sLGDILastPresentationFrame.size.width)  < kLGDISteadyDelta
+             && fabs(f.size.height - sLGDILastPresentationFrame.size.height) < kLGDISteadyDelta);
+        sLGDILastPresentationFrame = f;
+        sLGDISteadyFrameCount = stable ? sLGDISteadyFrameCount + 1 : 0;
+
+        CFTimeInterval now = CACurrentMediaTime();
+        if (sLGDISteadyFrameCount >= kLGDISteadyFrameThreshold
+            && now >= sLGDIMinDriverEnd) {
             LGDISyncGeometryFromPresentation(NO);
+            [[DIPillStateMachine shared] setInteractiveExpanding:NO];
             LGDIStopDriver();
+            return;
         }
     }
 }
@@ -675,7 +820,11 @@ static void LGDIStartDriverReal(NSTimeInterval duration) {
         [sLGDILink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     }
     sLGDILink.paused = NO;
-    sLGDILinkDeadline = CACurrentMediaTime() + duration;
+    CFTimeInterval now = CACurrentMediaTime();
+    sLGDILinkDeadline = now + duration;          // 硬性兜底
+    sLGDIMinDriverEnd = now + duration * 0.6;    // 弹簧进行中不提前停
+    sLGDISteadyFrameCount = 0;
+    sLGDILastPresentationFrame = CGRectNull;
 }
 
 static void LGDIStopDriver(void) {
@@ -1017,19 +1166,16 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
     LGDILog(@"setLayoutMode=%@(%ld) reason=%ld",
             LGDIModeName(layoutMode), (long)layoutMode, (long)reason);
     LGDIRecordElementMode(self, layoutMode);
-    // compact/expanded 装配玻璃；回到 inert/minimal 还原系统黑色形体
-    LGDIReconcile();
-    if (sLGDIActive) {
-        // 弹簧形变约 0.5~0.7s，驱动逐帧跟随
-        LGDIScheduleSync(0.85);
+    // 阶段2：布局模式交状态机消费（聚合多元素 + 按模式给驱动时长）
+    [[DIPillStateMachine shared] updateLayoutMode:(DIPillLayoutMode)layoutMode
+                                           reason:reason];
 #if LIQUIDASS_DEBUG
-        // 形变完成后 dump 展开形态的真实层级
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            LGDIRequestDump([NSString stringWithFormat:@"layoutMode=%ld", (long)layoutMode]);
-        });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        LGDILog(@"stateMachine=%@", [[DIPillStateMachine shared] debugSummary]);
+        LGDIRequestDump([NSString stringWithFormat:@"layoutMode=%ld", (long)layoutMode]);
+    });
 #endif
-    }
 }
 
 %end
