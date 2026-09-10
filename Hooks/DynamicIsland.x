@@ -3,15 +3,18 @@
 //
 //  核心思路（对照 Mango 的实际实现，不再走壁纸窗口弯路）：
 //
-//  1. 黑色形体来自 SpringBoard 内部三个私有视图：
+//  1. 黑色形体来自 SpringBoard 内部多个私有视图：
 //       _SBSystemApertureMagiciansCurtainView  黑色幕布（药丸/展开卡片的形变主体）
-//       _SBGainMapView                         HDR 增益压暗层（幕布子视图）
-//       描边/压暗装饰视图                       SBFTouchPassThroughView 容器内
-//     它们一律强制隐藏/清底，而不是去改 SBSystemApertureWindow 的透明度。
+//       MTMaterialView（iOS 17 静止药丸的实际黑色材质，嵌套在容器深处）
+//       _SBGainMapView                         HDR 增益压暗层
+//       描边/压暗装饰视图
+//     一律强制隐藏/清底，而不是去改 SBSystemApertureWindow 的透明度。
+//     压制对灵动岛窗口整棵子树递归进行（深度受限），换宿主/布局迁移时不还原。
 //
 //  2. 玻璃（LGLiveBackdropView / CABackdropLayer + backboardd 折射滤镜）
-//     直接插在灵动岛自己的层级里：幕布向上找到的“第一个不裁剪子视图的容器”
-//     （iOS 16 上即 SBFTouchPassThroughView），insertSubview:atIndex:0，
+//     直接插在灵动岛自己的层级里：幕布向上找到的「最高不裁剪祖先」
+//     （优先 TouchPassThrough 容器，iOS 17 布局期深层小容器会被反复替换，
+//     必须用稳定的顶层容器），insertSubview:atIndex:0，
 //     位于所有实时活动内容层之下。backdrop 可以直接采样到灵动岛窗口下方的
 //     实时画面（前台 App / 桌面图标 / 壁纸），这是和 Mango pillLiquidGlassView
 //     相同的层级方案。
@@ -153,16 +156,43 @@ static BOOL LGDIIsPlausibleSize(CGSize size) {
            size.height >= kLGDIMinHeight && size.height <= kLGDIMaxHeight;
 }
 
-// 从 curtain 向上找“最深的不裁剪子视图的祖先”作为玻璃容器。
-// iOS 16 实测为 SBFTouchPassThroughView；找不到时退回灵动岛窗口。
+// 选「最高（最靠近 window）的稳定不裁剪祖先」作为玻璃容器。
+// 早期版本取最深的不裁剪祖先，但 iOS 17 布局期系统会反复替换深层小容器，
+// 导致宿主 16ms 内连换三次、玻璃重装、已压制的黑色材质被还原。
+// 顶层容器在药丸↔展开全过程身份稳定，且能把全岛黑色材质纳入同一棵压制子树。
 static UIView *LGDIHostForCurtain(UIView *curtain) {
     UIWindow *window = curtain.window;
-    UIView *fallback = window;
+    if (!window) return nil;
+
+    UIView *topNonClipping = nil;
+    UIView *touchPassThrough = nil;
     for (UIView *a = curtain.superview; a && a != window; a = a.superview) {
         if (a.clipsToBounds) continue;
-        return a; // 第一个（最深的）不裁剪祖先
+        topNonClipping = a; // 持续上移，最终保留最高者
+        if ([NSStringFromClass(a.class) containsString:@"TouchPassThrough"]) {
+            touchPassThrough = a;
+        }
     }
-    return fallback;
+    return touchPassThrough ?: topNonClipping ?: window;
+}
+
+// DEBUG：一次性打印灵动岛窗口真实层级，定位黑色形体的实际承载视图
+static void LGDIDumpTree(UIView *v, NSUInteger depth, NSUInteger maxDepth) {
+#if LIQUIDASS_DEBUG
+    if (!v || depth > maxDepth) return;
+    CGFloat r=0,g=0,b=0,a=0;
+    UIColor *bg = v.backgroundColor;
+    [bg getRed:&r green:&g blue:&b alpha:&a];
+    LGDILog(@"tree %lu: %@ frame=%@ alpha=%.2f hidden=%d clip=%d bg=%@",
+            (unsigned long)depth, NSStringFromClass(v.class),
+            NSStringFromCGRect(v.frame), v.alpha, (int)v.hidden,
+            (int)v.clipsToBounds,
+            bg ? [NSString stringWithFormat:@"(%.2f,%.2f,%.2f,%.2f)", r, g, b, a]
+               : @"nil");
+    for (UIView *sub in v.subviews) LGDIDumpTree(sub, depth + 1, maxDepth);
+#else
+    (void)v; (void)depth; (void)maxDepth;
+#endif
 }
 
 // =============================================================================
@@ -203,11 +233,20 @@ static BOOL LGDIIsDecorSubview(UIView *v) {
     return LGDIStringMatchesAny(NSStringFromClass(v.class), kDecorKeywords);
 }
 
+static BOOL LGDIIsBlackBodyMaterial(UIView *v) {
+    NSString *name = NSStringFromClass(v.class);
+    // iOS 17 静止药丸的黑色材质本体；展开卡片的材质底同样做液态化
+    return [name isEqualToString:@"MTMaterialView"]
+        || [name containsString:@"ApertureMaterial"];
+}
+
 static BOOL LGDIShouldSuppressDecor(UIView *v) {
     if (!v || v == sLGDIGlass) return NO;
     if (LGDIClassName(v, @"_SBSystemApertureMagiciansCurtainView")) return NO;
     if (LGDIClassName(v, @"_SBGainMapView")) return NO;
     if (v.userInteractionEnabled || v.gestureRecognizers.count > 0) return NO;
+    // 黑色材质按类名直判（其内部可能有超过 2 个子视图）
+    if (LGDIIsBlackBodyMaterial(v) && !LGDIIsContentSubview(v)) return YES;
     if (v.subviews.count > 2) return NO;            // 内容容器一定有子视图
     if (LGDIIsContentSubview(v)) return NO;
     return LGDIIsDecorSubview(v);
@@ -226,33 +265,59 @@ static void LGDIRegisterSuppressed(UIView *v, NSDictionary *info) {
     [sLGDISuppressedViews addObject:v];
 }
 
+// 记录并压制单个视图（幂等）
+static void LGDISuppressOne(UIView *v) {
+    if (!v || v == sLGDIGlass) return;
+    if (!objc_getAssociatedObject(v, kLGDIRestoreInfoKey)) {
+        NSMutableDictionary *info = [NSMutableDictionary dictionary];
+        info[@"alpha"]  = @(v.alpha);
+        info[@"hidden"] = @(v.hidden);
+        if (v.backgroundColor) info[@"bg"] = v.backgroundColor;
+        LGDIRegisterSuppressed(v, info);
+        LGDILog(@"suppressed decor %@ frame=%@",
+                NSStringFromClass(v.class), NSStringFromCGRect(v.frame));
+    }
+    // 系统可能在布局中把状态改回来；等值时不重复写
+    if (v.alpha != 0.0) v.alpha = 0.0;
+    if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
+        v.backgroundColor = UIColor.clearColor;
+    }
+}
+
+// 递归全子树压制（深度受限）。iOS 17 的黑色形体是嵌套在容器深处的
+// MTMaterialView，只扫宿主直接子视图必然漏掉；换宿主时也不能还原。
+static void LGDISweepView(UIView *v, NSUInteger depth) {
+    if (!v || depth == 0 || v == sLGDIGlass) return;
+    // GainMap 在部分版本上不是 curtain 子视图，全树兜底隐藏
+    if (LGDIClassName(v, @"_SBGainMapView")) {
+        if (!v.hidden) v.hidden = YES;
+    } else if (LGDIShouldSuppressDecor(v)) {
+        LGDISuppressOne(v);
+    }
+    for (UIView *sub in v.subviews) LGDISweepView(sub, depth - 1);
+}
+
 static void LGDISuppressDecorations(UIView *host) {
     if (!host || !sLGDIActive) return;
 
-    // 容器自身底色清空
-    if (host.backgroundColor && host.backgroundColor != UIColor.clearColor
-        && !objc_getAssociatedObject(host, kLGDIRestoreInfoKey)) {
-        LGDIRegisterSuppressed(host, @{ @"bg": host.backgroundColor });
-    }
-    if (objc_getAssociatedObject(host, kLGDIRestoreInfoKey)
-        && host.backgroundColor != UIColor.clearColor) {
-        host.backgroundColor = UIColor.clearColor;
+    // 容器自身底色清空（容器类不命中装饰谓词，单独处理）
+    if (host.backgroundColor && host.backgroundColor != UIColor.clearColor) {
+        LGDISuppressOne(host);
+    } else if (objc_getAssociatedObject(host, kLGDIRestoreInfoKey)
+               && host.backgroundColor != UIColor.clearColor) {
+        host.layer.backgroundColor = UIColor.clearColor.CGColor;
     }
 
-    for (UIView *sub in host.subviews) {
-        if (!LGDIShouldSuppressDecor(sub)) continue;
-        if (!objc_getAssociatedObject(sub, kLGDIRestoreInfoKey)) {
-            NSMutableDictionary *info = [NSMutableDictionary dictionary];
-            info[@"alpha"]  = @(sub.alpha);
-            info[@"hidden"] = @(sub.hidden);
-            if (sub.backgroundColor) info[@"bg"] = sub.backgroundColor;
-            LGDIRegisterSuppressed(sub, info);
-            LGDILog(@"suppressed decor %@", NSStringFromClass(sub.class));
-        }
-        // 已记录过：系统可能在布局中把状态改回来，等值时不重复写（驱动每帧调用）
-        if (sub.alpha != 0.0) sub.alpha = 0.0;
-        if (sub.backgroundColor && sub.backgroundColor != UIColor.clearColor) {
-            sub.backgroundColor = UIColor.clearColor;
+    LGDISweepView(host, 12);
+}
+
+// 逐帧廉价再断言：只遍历已追踪视图，O(被压制数量)，不做递归和类名匹配
+static void LGDIReassertSuppressed(void) {
+    if (!sLGDIActive) return;
+    for (UIView *v in [sLGDISuppressedViews allObjects]) {
+        if (v.alpha != 0.0) v.alpha = 0.0;
+        if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
+            v.layer.backgroundColor = UIColor.clearColor.CGColor;
         }
     }
 }
@@ -277,11 +342,12 @@ static void LGDIRestoreAllSuppressed(void) {
 // =============================================================================
 
 static CGFloat LGDIFallbackCornerRadius(CGRect f) {
-    // 药丸：完全半圆角；展开卡片：约为高度的 1/4（系统实测 40~44pt 区间）
-    if (f.size.width > f.size.height * 1.5) {
-        return MIN(MAX(f.size.height * 0.24, 36.0), 52.0);
+    // 细长药丸（宽高比 > 2.2）：完全半圆角 = 高/2
+    // 展开卡片：约为高度的 1/4（系统实测 40~44pt 区间）
+    if (f.size.width > f.size.height * 2.2) {
+        return f.size.height / 2.0;
     }
-    return f.size.height / 2.0;
+    return MIN(MAX(f.size.height * 0.24, 36.0), 52.0);
 }
 
 static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
@@ -347,11 +413,11 @@ static void LGDIDriverTick(CADisplayLink *link) {
             LGDIStopDriver();
             return;
         }
-        // 形变期间系统可能反复把幕布/装饰放回来，每帧重新压制
+        // 形变期间系统可能反复把幕布/装饰放回来，每帧重新断言
         if (!curtain.hidden) curtain.hidden = YES;
         UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
         if (gain && !gain.hidden) gain.hidden = YES;
-        LGDISuppressDecorations(host);
+        LGDIReassertSuppressed();
         LGDISyncGeometryFromPresentation(YES);
 
         if (CACurrentMediaTime() >= sLGDILinkDeadline) {
@@ -426,6 +492,15 @@ static void LGDIInstallGlass(UIView *curtain) {
                 NSStringFromClass(host.class),
                 NSStringFromCGRect(glass.frame));
 
+        // 首次/换宿主安装时 dump 两次真实层级（iOS 17 黑色形体定位用）
+#if LIQUIDASS_DEBUG
+        static NSUInteger sLGDIDumpCount;
+        if (sLGDIDumpCount < 2 && host.window) {
+            sLGDIDumpCount++;
+            LGDIDumpTree(host.window, 0, 6);
+        }
+#endif
+
         // backboardd 滤镜 atom 注册有重试，补发几次 applyFilters
         __weak LGLiveBackdropView *weakGlass = glass;
         for (NSNumber *delay in @[ @0.5, @1.5, @3.0, @6.0 ]) {
@@ -440,7 +515,9 @@ static void LGDIInstallGlass(UIView *curtain) {
     sLGDICurtain = curtain;
     sLGDIHost = host;
 
-    LGDISuppressDecorations(host);
+    // 安装/迁移时从窗口根全树压制，防止黑色材质是宿主的兄弟分支；
+    // 布局期的增量压制仍只扫容器自身
+    if (sLGDIActive) LGDISweepView(host.window ?: host, 14);
     LGDISyncGeometryFromPresentation(NO);
     LGDIScheduleSync(0.35);
 }
@@ -491,12 +568,13 @@ static void LGDIDoScheduledSync(void) {
     // 弱引用可能在场景切换后丢失，找回后必须回写，否则几何同步会永久空转
     sLGDICurtain = curtain;
 
-    // 容器可能在展开时被系统换掉
+    // 容器可能在展开时被系统换掉：只移玻璃不还原压制（黑色材质必须继续隐藏）
     UIView *host = LGDIHostForCurtain(curtain);
     if (host && host != sLGDIHost) {
         LGDILog(@"host changed: %@ -> %@, reinstalling",
                 NSStringFromClass(sLGDIHost.class), NSStringFromClass(host.class));
-        LGDITeardown(NO);
+        [sLGDIGlass removeFromSuperview];
+        sLGDIHost = nil;
         LGDIInstallGlass(curtain);
         return;
     }
