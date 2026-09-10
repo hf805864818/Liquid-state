@@ -1,19 +1,35 @@
 // =============================================================================
-//  DynamicIsland.x — 灵动岛液态玻璃
+//  DynamicIsland.x — 灵动岛液态玻璃（v2 重构版）
 //
-//  事件源：
-//  1. _SBGainMapView didMoveToWindow  → pill 出现信号（触发安装）
-//  2. _SBGainMapView layoutSubviews   → 布局变化时更新玻璃
-//  3. _SBGainMapView setHidden:       → 显隐同步
-//  4. _SBSystemApertureMagiciansCurtainView setHidden: → 阻止 curtainView 重新显示
+//  核心思路（对照 Mango 的实际实现，不再走壁纸窗口弯路）：
 //
-// 架构：
-//  - 玻璃加在壁纸窗口上（这样 backdrop 直接看到桌面壁纸，液态效果正确）
-//  - 参考 Mango 的 repWin/pillWin 双窗口架构
-//  - 灵动岛窗口（SBSystemApertureWindow）设为透明，让玻璃透上来
-//  - 隐藏 curtainView（黑色背景）
-//  - frame 跟随 gainMapView 用屏幕坐标更新
-//  - touch passthrough：玻璃不拦截任何触控
+//  1. 黑色形体来自 SpringBoard 内部三个私有视图：
+//       _SBSystemApertureMagiciansCurtainView  黑色幕布（药丸/展开卡片的形变主体）
+//       _SBGainMapView                         HDR 增益压暗层（幕布子视图）
+//       描边/压暗装饰视图                       SBFTouchPassThroughView 容器内
+//     它们一律强制隐藏/清底，而不是去改 SBSystemApertureWindow 的透明度。
+//
+//  2. 玻璃（LGLiveBackdropView / CABackdropLayer + backboardd 折射滤镜）
+//     直接插在灵动岛自己的层级里：幕布向上找到的“第一个不裁剪子视图的容器”
+//     （iOS 16 上即 SBFTouchPassThroughView），insertSubview:atIndex:0，
+//     位于所有实时活动内容层之下。backdrop 可以直接采样到灵动岛窗口下方的
+//     实时画面（前台 App / 桌面图标 / 壁纸），这是和 Mango pillLiquidGlassView
+//     相同的层级方案。
+//
+//  3. 几何以 curtain 为唯一真源（药丸 ↔ 展开卡片都是它在形变）。
+//     setLayoutMode:reason: 触发后用 CADisplayLink 读 curtain 图层的
+//     presentationLayer 逐帧跟随弹簧动画，避免玻璃与黑色形体脱节。
+//
+//  4. 触控：LGLiveBackdropView 初始化时已 userInteractionEnabled = NO，
+//     不需要任何 hitTest 覆盖。
+//
+//  事件源（与 Mango 二进制中确认的 hook 点一致）：
+//    - SBSystemApertureViewController  viewWillAppear: / viewDidLayoutSubviews
+//    - SBFTouchPassThroughView         layoutSubviews
+//    - _SBSystemApertureMagiciansCurtainView  didMoveToWindow / layoutSubviews / setHidden:
+//    - _SBGainMapView                  didMoveToWindow / layoutSubviews / setHidden:
+//    - SBSystemApertureSceneElement    setLayoutMode:reason:
+//    - _SBSystemApertureContainerViewContentView  setBackgroundColor:（可选类，旧系统）
 // =============================================================================
 
 #import <UIKit/UIKit.h>
@@ -22,712 +38,752 @@
 #import "../Shared/LGGlassKit.h"
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
+#import <math.h>
 
-// CydiaSubstrate (for MSHookMessageEx, same as Mango uses)
-#ifdef __cplusplus
-extern "C"
+#ifndef LIQUIDASS_DEBUG
+#define LIQUIDASS_DEBUG 0
 #endif
-void MSHookMessageEx(Class cls, SEL sel, IMP newImp, IMP *origImp);
+
+#pragma mark - Logging
 
 static void LGDILog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
 static void LGDILog(NSString *fmt, ...) {
+#if LIQUIDASS_DEBUG
     va_list ap; va_start(ap, fmt);
     NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
     va_end(ap);
     LGLog(@"[DI] %@", s);
+#else
+    (void)fmt;
+#endif
 }
 
-#pragma mark - Process / OS checks
-
-static inline BOOL LGIsSpringBoardProcess(void) {
-    return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"];
-}
-static inline BOOL LGIsAtLeastiOS16(void) {
-    if (@available(iOS 16.0, *)) return YES;
-    return NO;
-}
-
-#pragma mark - Cross-process glyph mask (暂时未使用，保留供后续恢复)
-
-__attribute__((unused))
-static NSString *LGDIMaskPath(void) {
-    return @"/var/mobile/Library/Accessibility/liquidglass-dynamicisland-mask.bin";
-}
-__attribute__((unused))
-static CFStringRef const LGDIMaskReloadNotification =
-    CFSTR("dylv.liquidglass/DynamicIslandMaskReload");
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t width;
-    uint32_t height;
-    float    imageScale;
-    float    bezelWidthPoints;
-    float    originX;
-    float    originY;
-    uint64_t generation;
-} LGDynamicIslandMaskHeader;
-
-#define LG_DI_MASK_MAGIC 0x4c474449 // "LGDI"
-
-__attribute__((unused))
-static BOOL LGDIWriteMaskImage(UIImage *image, CGPoint screenOrigin, uint64_t generation) {
-    CGImageRef cg = image.CGImage;
-    if (!cg) return NO;
-    size_t width = CGImageGetWidth(cg), height = CGImageGetHeight(cg);
-    if (!width || !height || width > UINT32_MAX || height > UINT32_MAX) return NO;
-
-    size_t rgbaBytes = width * height * 4;
-    uint8_t *rgba = (uint8_t *)calloc(1, rgbaBytes);
-    uint8_t *alpha = (uint8_t *)malloc(width * height);
-    BOOL wrote = NO;
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGContextRef context = rgba && alpha
-        ? CGBitmapContextCreate(rgba, width, height, 8, width * 4, colorSpace,
-                                kCGBitmapByteOrder32Big | kCGImageAlphaPremultipliedLast)
-        : NULL;
-    if (context) {
-        CGContextDrawImage(context, CGRectMake(0, 0, width, height), cg);
-        for (size_t i = 0; i < width * height; i++) alpha[i] = rgba[i * 4 + 3];
-
-        LGDynamicIslandMaskHeader header = {
-            LG_DI_MASK_MAGIC,
-            (uint32_t)width,
-            (uint32_t)height,
-            (float)MAX(image.scale, 1.0),
-            18.0f,
-            (float)screenOrigin.x,
-            (float)screenOrigin.y,
-            generation,
-        };
-        NSMutableData *data = [NSMutableData dataWithBytes:&header length:sizeof(header)];
-        [data appendBytes:alpha length:width * height];
-        if ([data writeToFile:LGDIMaskPath() options:NSDataWritingAtomic error:nil]) {
-            wrote = YES;
-            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                                 LGDIMaskReloadNotification,
-                                                 NULL, NULL, true);
-        }
-    }
-    if (context) CGContextRelease(context);
-    if (colorSpace) CGColorSpaceRelease(colorSpace);
-    free(alpha);
-    free(rgba);
-    return wrote;
-}
-
-static uint64_t sLGDIMaskNextGeneration __attribute__((unused)) = 0;
-
-#pragma mark - Mask rendering (暂时未使用，保留供后续恢复)
-
-__attribute__((unused))
-static UIImage *LGDIRenderAlphaMaskFromView(UIView *view) {
-    if (!view || CGRectIsEmpty(view.bounds)) return nil;
-    CGSize size = view.bounds.size;
-    CGFloat scale = [UIScreen mainScreen].scale;
-    UIGraphicsBeginImageContextWithOptions(size, NO, scale);
-    CGContextRef ctx = UIGraphicsGetCurrentContext();
-    if (!ctx) { UIGraphicsEndImageContext(); return nil; }
-    // 用 drawViewHierarchyInRect 替代 renderInContext
-    // renderInContext 不会捕捉 layer.mask，而 drawViewHierarchyInRect 会
-    [view drawViewHierarchyInRect:view.bounds afterScreenUpdates:NO];
-    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return image;
-}
-
-__attribute__((unused))
-static void LGDIUpdateGlassMask(UIView *glassView, UIImage *maskImage, void *maskLayerKey) {
-    if (!glassView || !maskImage) return;
-    CALayer *maskLayer = objc_getAssociatedObject(glassView, maskLayerKey);
-    if (!maskLayer) {
-        maskLayer = [CALayer layer];
-        maskLayer.contentsGravity = kCAGravityResize;
-        objc_setAssociatedObject(glassView, maskLayerKey, maskLayer,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        glassView.layer.mask = maskLayer;
-    }
-    maskLayer.frame = glassView.bounds;
-    maskLayer.contents = (__bridge id _Nullable)(maskImage.CGImage);
-}
-
-__attribute__((unused))
-static void LGDIUpdateMask(UIView *sourceView, UIView *glassView, void *maskLayerKey) {
-    if (!sourceView || !sourceView.window) return;
-    if (!lgHostEnabled(@"DynamicIsland")) return;
-    CGPoint origin = [sourceView convertPoint:CGPointZero toView:nil];
-    UIImage *maskImage = LGDIRenderAlphaMaskFromView(sourceView);
-    if (!maskImage) return;
-    if (glassView) LGDIUpdateGlassMask(glassView, maskImage, maskLayerKey);
-    uint64_t generation = ++sLGDIMaskNextGeneration;
-    if (LGDIWriteMaskImage(maskImage, origin, generation)) {
-        if (glassView) [glassView.layer setNeedsDisplay];
-    }
-}
-
-static NSTimeInterval sLGDILastMaskUpdateTime __attribute__((unused)) = 0.0;
-static BOOL sLGDIMaskUpdatePending __attribute__((unused)) = NO;
-static const NSTimeInterval kLGDIMaskUpdateThrottle __attribute__((unused)) = 1.0 / 30.0;
-
-__attribute__((unused))
-static void LGDIScheduleMaskUpdate(UIView *sourceView, UIView *glassView, void *maskLayerKey) {
-    if (!sourceView) return;
-    NSTimeInterval now = CACurrentMediaTime();
-    NSTimeInterval timeSinceLast = now - sLGDILastMaskUpdateTime;
-    if (timeSinceLast >= kLGDIMaskUpdateThrottle) {
-        sLGDILastMaskUpdateTime = now;
-        LGDIUpdateMask(sourceView, glassView, maskLayerKey);
-    } else if (!sLGDIMaskUpdatePending) {
-        sLGDIMaskUpdatePending = YES;
-        NSTimeInterval delay = kLGDIMaskUpdateThrottle - timeSinceLast;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            sLGDIMaskUpdatePending = NO;
-            if (sourceView) {
-                sLGDILastMaskUpdateTime = CACurrentMediaTime();
-                LGDIUpdateMask(sourceView, glassView, maskLayerKey);
-            }
-        });
-    }
-}
-
-#pragma mark - Association keys
-
-static void *kLGDIPillGlassKey = &kLGDIPillGlassKey;
-static void *kLGDIPillMaskLayerKey __attribute__((unused)) = &kLGDIPillMaskLayerKey;
-static void *kLGDIInstanceNumberKey = &kLGDIInstanceNumberKey;
-
-#pragma mark - Size validation
-
-static BOOL LGDIIsPlausibleIslandSize(CGSize size) {
-    if (size.width <= 0 || size.height <= 0) return NO;
-    if (size.width > 500 || size.height > 300) return NO;
-    if (size.width < 80 || size.height < 20) return NO;
-    return YES;
-}
-
-// 判断是否是"默认小药丸"（纯装饰，没有实际内容）
-// 默认小药丸尺寸约 125x37，长药丸 200+，展开的更大
-// 参考 MangoPillGlassExpandOnly，默认小药丸不加玻璃
-static BOOL LGDIIsDefaultMiniPill(CGSize size) {
-    // 宽度小于 150pt 认为是默认小药丸（纯装饰）
-    // 不同设备可能略有差异，但长药丸一般都在 200+
-    return size.width < 150.0;
-}
-
-// =============================================================================
-//  View finding helpers
-// =============================================================================
-
-// 递归查找 _SBGainMapView
-static UIView *LGDIFindGainMapViewInView(UIView *root) {
-    if (!root) return nil;
-    Class gainMapClass = objc_getClass("_SBGainMapView");
-    if (!gainMapClass) return nil;
-    if ([root isKindOfClass:gainMapClass]) return root;
-    for (UIView *subview in root.subviews) {
-        UIView *found = LGDIFindGainMapViewInView(subview);
-        if (found) return found;
-    }
-    return nil;
-}
-
-static UIView *LGDIFindExistingGainMapView(void) {
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
-        UIView *found = LGDIFindGainMapViewInView(window);
-        if (found) return found;
-    }
-    return nil;
-}
-
-// =============================================================================
-// =============================================================================
-//  Glass installation — 安装在 window 上，用坐标转换跟随 gainMapView
-//
-//  为什么装在 window 上：
-//    elementContainer 及以下层级都被 clipsToBounds 裁剪，
-//    玻璃加在这些层里完全不可见（逐层探测实验确认）。
-//
-//  方案：
-//    - 玻璃直接加到 window 上（确保 100% 可见）
-//    - frame 通过 convertRect 从 gainMapView 转换到 window 坐标
-//    - 形状用 cornerRadius 做胶囊形（height/2）
-//    - layoutSubviews 时同步更新位置和大小
-// =============================================================================
-
-#pragma mark - Touch passthrough category
-// 确保 LGLiveBackdropView 完全不拦截触控事件
-
-@interface LGLiveBackdropView (LGDITouchPassthrough)
-@end
-
-@implementation LGLiveBackdropView (LGDITouchPassthrough)
-
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *result = [super hitTest:point withEvent:event];
-    if (result == self) {
-        return nil; // 完全透传，不拦截任何触控
-    }
-    return result;
-}
-
-- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    return NO; // 永远不响应点击
-}
-
-@end
-
-#pragma mark - Glass installation (on wallpaper window)
-
-// 找到壁纸窗口（最底层的窗口，桌面壁纸在这上面）
-// 参考 Mango 的 repWin 概念：玻璃装在渲染/壁纸窗口上，backdrop 直接看桌面
-static UIWindow *LGDIFindWallpaperWindow(void) {
-    // SpringBoard 的窗口层级（从下到上）：
-    // 1. _SBWallpaperWindow (壁纸窗口，最底层)
-    // 2. SBHomeScreenWindow (主屏窗口，图标在这)
-    // 3. ... 其他中间窗口 ...
-    // 4. SBSystemApertureWindow (灵动岛窗口，最上层之一)
-    //
-    // 我们要找最底层的那个窗口（壁纸窗口），这样玻璃的 backdrop 能直接看到壁纸
-
-    NSArray *windows = UIApplication.sharedApplication.windows;
-    if (windows.count == 0) return nil;
-
-    // 优先找类名包含 Wallpaper 的窗口
-    for (UIWindow *window in windows) {
-        NSString *className = NSStringFromClass(window.class);
-        if ([className containsString:@"Wallpaper"]) {
-            return window;
-        }
-    }
-
-    // 没找到的话，找 windowLevel 最低的可见窗口
-    UIWindow *lowestWindow = nil;
-    CGFloat lowestLevel = CGFLOAT_MAX;
-    for (UIWindow *window in windows) {
-        if (window.hidden) continue;
-        // 跳过明显的上层窗口
-        NSString *className = NSStringFromClass(window.class);
-        if ([className containsString:@"Aperture"]) continue;
-        if ([className containsString:@"Banner"]) continue;
-        if ([className containsString:@"Alert"]) continue;
-        if ([className containsString:@"Keyboard"]) continue;
-
-        if (window.windowLevel < lowestLevel) {
-            lowestLevel = window.windowLevel;
-            lowestWindow = window;
-        }
-    }
-
-    return lowestWindow;
-}
-
-// 调试：打印视图层级（简洁版）
-__attribute__((unused))
-static void LGDIDumpViewHierarchy(UIView *startView) {
-    UIView *view = startView;
-    NSInteger level = 0;
-    while (view) {
-        LGDILog(@"  L%ld %@  hidden=%d  frame=%@",
-                (long)level,
-                NSStringFromClass(view.class),
-                view.hidden,
-                NSStringFromCGRect(view.frame));
-        view = view.superview;
-        level++;
-        if (level > 8) break;
-    }
-}
-
-static void LGDIInstallPillGlass(UIView *gainMapView) {
-    if (!gainMapView || !gainMapView.window) return;
-    if (!lgHostEnabled(@"DynamicIsland")) return;
-    if (!LGDIIsPlausibleIslandSize(gainMapView.bounds.size)) return;
-
-    // 跳过默认小药丸（纯装饰，参考 MangoPillGlassExpandOnly）
-    if (LGDIIsDefaultMiniPill(gainMapView.bounds.size)) return;
-
-    // 已经装过了
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
-    if (glassView) return;
-
-    // gainMapView.superview = curtainView（黑色背景）
-    UIView *curtainView = gainMapView.superview;
-    if (!curtainView) return;
-
-    // 灵动岛所在的窗口（SBSystemApertureWindow）
-    UIWindow *islandWindow = gainMapView.window;
-
-    // 找到壁纸窗口（玻璃装在这里，backdrop 直接看桌面壁纸）
-    // 参考 Mango 的 repWin/pillWin 架构
-    UIWindow *wallpaperWindow = LGDIFindWallpaperWindow();
-    if (!wallpaperWindow) {
-        LGDILog(@"ERROR: cannot find wallpaper window");
-        return;
-    }
-
-    // 把 gainMapView 的 bounds 转换到屏幕坐标系
-    // 注意：gainMapView 在灵动岛窗口上，toView:nil 返回的是屏幕坐标
-    CGRect glassFrame = [gainMapView convertRect:gainMapView.bounds toView:nil];
-    glassView = LGCreateRegisteredGlass(glassFrame, nil, @"DynamicIsland");
-    if (!glassView) {
-        LGDILog(@"ERROR: LGCreateRegisteredGlass returned nil");
-        return;
-    }
-
-    glassView.userInteractionEnabled = NO;
-    glassView.backgroundColor = UIColor.clearColor;
-    glassView.layer.borderWidth = 0;
-
-    // 直接使用 gainMapView 的 cornerRadius，确保形状完全一致
-    CGFloat sourceCornerRadius = gainMapView.layer.cornerRadius;
-    glassView.layer.cornerRadius = sourceCornerRadius > 0 ? sourceCornerRadius : glassFrame.size.height / 2.0;
-
-    // 匹配系统连续圆角风格
-    if (@available(iOS 13.0, *)) {
-        glassView.layer.cornerCurve = kCACornerCurveContinuous;
-    }
-
-    glassView.layer.masksToBounds = YES;
-    glassView.frame = glassFrame;
-
-    // 关键1：玻璃加在壁纸窗口的最上层
-    // 壁纸窗口在最底层，玻璃在它上面，但在主屏/灵动岛窗口下面
-    // 这样 backdrop 直接看到壁纸，液态效果正确
-    [wallpaperWindow addSubview:glassView];
-
-    // 关键2：灵动岛窗口变透明，这样能看到下面的玻璃
-    islandWindow.opaque = NO;
-    islandWindow.backgroundColor = UIColor.clearColor;
-
-    // 隐藏 curtainView（黑色背景）
-    curtainView.hidden = YES;
-
-    LGDILog(@"glass installed on wallpaperWindow (%@, level=%.0f), size=%@ CR=%.1f, "
-            "islandWindow=%@ opaque=NO, curtainView hidden=YES",
-            NSStringFromClass(wallpaperWindow.class),
-            wallpaperWindow.windowLevel,
-            NSStringFromCGSize(glassFrame.size),
-            glassView.layer.cornerRadius,
-            NSStringFromClass(islandWindow.class));
-
-    // 关联到 gainMapView 上
-    objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, glassView,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    // 延迟应用滤镜
-    __weak LGLiveBackdropView *weakGlass = glassView;
-    for (NSNumber *delay in @[ @0.5, @1.5, @3.0, @6.0 ]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [weakGlass applyFilters];
-        });
-    }
-}
-
-static void LGDIRemovePillGlass(UIView *gainMapView) {
-    if (!gainMapView) return;
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
-    if (glassView) {
-        [glassView removeFromSuperview];
-        objc_setAssociatedObject(gainMapView, kLGDIPillGlassKey, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-        // 恢复 curtainView
-        UIView *curtainView = gainMapView.superview;
-        if (curtainView) {
-            curtainView.hidden = NO;
-        }
-
-        LGDILog(@"glass removed, curtainView restored");
-    }
-}
-
-static void LGDIRefreshPillGlass(UIView *gainMapView) {
-    if (!gainMapView || !gainMapView.window) return;
-
-    LGLiveBackdropView *glassView = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
-    if (!glassView) return;
-
-    // 玻璃在 window 上，用 window 坐标系
-    CGRect targetFrame = [gainMapView convertRect:gainMapView.bounds toView:nil];
-    CGFloat targetCR = gainMapView.layer.cornerRadius;
-    BOOL frameChanged = !CGRectEqualToRect(glassView.frame, targetFrame);
-    BOOL crChanged = ABS(glassView.layer.cornerRadius - targetCR) > 0.5;
-
-    if (frameChanged || crChanged) {
-        glassView.frame = targetFrame;
-        if (targetCR > 0) {
-            glassView.layer.cornerRadius = targetCR;
-        } else {
-            glassView.layer.cornerRadius = targetFrame.size.height / 2.0;
-        }
-        LGDILog(@"glass updated: size=%@ cornerRadius=%.1f (gainMapCR=%.1f) [window coords]",
-                NSStringFromCGSize(targetFrame.size),
-                glassView.layer.cornerRadius,
-                targetCR);
-    }
-}
-
-// =============================================================================
-//  Hook: _SBGainMapView
-//  Mango 二进制确认：hook 了 didMoveToWindow / layoutSubviews / setHidden:
-//  作用：检测 pill 出现/消失时机，驱动玻璃安装/更新
-//  玻璃不装在 gainMapView 上，装在它的 superview 上
-// =============================================================================
-
-@interface _SBGainMapView : UIView
-@end
-
-%group GainMapViewHook
-%hook _SBGainMapView
-
-- (void)didMoveToWindow {
-    %orig;
-
-    // 给每个实例分配一个编号（方便追踪）
-    static NSInteger sInstanceCounter = 0;
-    NSNumber *instNum = objc_getAssociatedObject(self, kLGDIInstanceNumberKey);
-    if (!instNum) {
-        instNum = @(++sInstanceCounter);
-        objc_setAssociatedObject(self, kLGDIInstanceNumberKey, instNum,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-
-    if (self.window) {
-        LGDILog(@"[_SBGainMapView didMoveToWindow] ADDED #%@ bounds=%@",
-                instNum,
-                NSStringFromCGRect(self.bounds));
-        LGDIInstallPillGlass(self);
-    } else {
-        LGDILog(@"[_SBGainMapView didMoveToWindow] REMOVED #%@", instNum);
-        LGDIRemovePillGlass(self);
-    }
-}
-
-- (void)layoutSubviews {
-    %orig;
-
-    if (!CGRectIsEmpty(self.bounds)) {
-        LGDILog(@"[_SBGainMapView layoutSubviews] bounds=%@", NSStringFromCGRect(self.bounds));
-
-        // 如果还没有 glass，且 size 合理，就创建
-        LGLiveBackdropView *existingGlass = objc_getAssociatedObject(self, kLGDIPillGlassKey);
-        if (!existingGlass && self.window && LGDIIsPlausibleIslandSize(self.bounds.size)) {
-            LGDILog(@"[_SBGainMapView layoutSubviews] creating glass for new instance size=%@",
-                    NSStringFromCGSize(self.bounds.size));
-            LGDIInstallPillGlass(self);
-        } else {
-            LGDIRefreshPillGlass(self);
-        }
-    }
-}
-
-- (void)setFrame:(CGRect)frame {
-    %orig;
-
-    if (!CGRectIsEmpty(self.bounds)) {
-        LGDILog(@"[_SBGainMapView setFrame:] newFrame=%@ bounds=%@",
-                NSStringFromCGRect(frame),
-                NSStringFromCGRect(self.bounds));
-
-        LGLiveBackdropView *existingGlass = objc_getAssociatedObject(self, kLGDIPillGlassKey);
-        if (!existingGlass && self.window && LGDIIsPlausibleIslandSize(self.bounds.size)) {
-            LGDIInstallPillGlass(self);
-        } else {
-            LGDIRefreshPillGlass(self);
-        }
-    }
-}
-
-- (void)setBounds:(CGRect)bounds {
-    %orig;
-
-    if (!CGRectIsEmpty(bounds)) {
-        LGDILog(@"[_SBGainMapView setBounds:] newBounds=%@", NSStringFromCGRect(bounds));
-        LGDIRefreshPillGlass(self);
-    }
-}
-
-- (void)setHidden:(BOOL)hidden {
-    %orig;
-
-    // glass 直接关联在 gainMapView 上
-    LGLiveBackdropView *glass = objc_getAssociatedObject(self, kLGDIPillGlassKey);
-    if (glass) glass.hidden = hidden;
-}
-
-%end
-%end
-
-// =============================================================================
-//  Hook: _SBSystemApertureMagiciansCurtainView
-//  Mango 二进制确认：hook 了 didMoveToWindow / setHidden:
-//  作用：窗帘视图显隐变化时同步玻璃显隐（通过 gainMapView 间接驱动）
-//  注意：glass 直接装在 gainMapView 上，不由 curtainView 管理
-// =============================================================================
+#pragma mark - Private class interfaces
 
 @interface _SBSystemApertureMagiciansCurtainView : UIView
 @end
+@interface _SBGainMapView : UIView
+@end
+@interface SBFTouchPassThroughView : UIView
+@end
+@interface SBSystemApertureViewController : UIViewController
+@end
+@interface SBSystemApertureSceneElement : NSObject
+@end
+@interface _SBSystemApertureContainerViewContentView : UIView
+@end
+@interface SBSystemApertureWindow : UIWindow
+@end
 
-%group CurtainViewHook
+#pragma mark - Constants / association keys
+
+static NSString * const kLGDIFilterPrefix    = @"DynamicIsland";
+static NSString * const kLGDIBackdropGroup   = @"dylv.liquidglass.island";
+
+static void *kLGDIRestoreInfoKey  = &kLGDIRestoreInfoKey; // 被压制装饰视图 -> 原始状态
+
+// 药丸/展开判定与尺寸门限
+static const CGFloat kLGDIMinWidth  = 60.0;
+static const CGFloat kLGDIMinHeight = 20.0;
+static const CGFloat kLGDIMaxWidth  = 500.0;
+static const CGFloat kLGDIMaxHeight = 300.0;
+
+#pragma mark - Controller state
+
+static __weak UIView            *sLGDICurtain;   // 当前幕布（唯一）
+static __weak UIView            *sLGDIHost;      // 玻璃挂载容器
+static __weak LGLiveBackdropView *sLGDIGlass;    // 当前玻璃
+static BOOL                      sLGDIActive;    // 功能开关（本进程）
+static BOOL                      sLGDISyncQueued;
+static CADisplayLink            *sLGDILink;
+static CFTimeInterval            sLGDILinkDeadline;
+
+// =============================================================================
+//  View tree helpers
+// =============================================================================
+
+static inline BOOL LGDIIsSpringBoardProcess(void) {
+    return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"];
+}
+
+static BOOL LGDIClassName(UIView *v, NSString *name) {
+    return v && [NSStringFromClass(v.class) isEqualToString:name];
+}
+
+static BOOL LGDIInApertureWindow(UIView *v) {
+    for (UIView *a = v; a; a = a.superview) {
+        NSString *name = NSStringFromClass(a.class);
+        if ([name containsString:@"SystemAperture"]) return YES;
+    }
+    return NO;
+}
+
+static UIView *LGDIFindSubviewOfClass(UIView *root, NSString *className) {
+    if (!root) return nil;
+    if ([NSStringFromClass(root.class) isEqualToString:className]) return root;
+    for (UIView *sub in root.subviews) {
+        UIView *hit = LGDIFindSubviewOfClass(sub, className);
+        if (hit) return hit;
+    }
+    return nil;
+}
+
+static UIView *LGDIFindCurtainInWindows(void) {
+    Class curtainClass = objc_getClass("_SBSystemApertureMagiciansCurtainView");
+    if (!curtainClass) return nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            UIView *hit = LGDIFindSubviewOfClass(window,
+                                                 @"_SBSystemApertureMagiciansCurtainView");
+            if (hit) return hit;
+        }
+    }
+    // 兼容老系统（connectedScenes 取不到系统窗口时回退 keyWindow/windows）
+    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        UIView *hit = LGDIFindSubviewOfClass(window,
+                                             @"_SBSystemApertureMagiciansCurtainView");
+        if (hit) return hit;
+    }
+    return nil;
+}
+
+static BOOL LGDIIsPlausibleSize(CGSize size) {
+    return size.width  >= kLGDIMinWidth  && size.width  <= kLGDIMaxWidth &&
+           size.height >= kLGDIMinHeight && size.height <= kLGDIMaxHeight;
+}
+
+// 从 curtain 向上找“最深的不裁剪子视图的祖先”作为玻璃容器。
+// iOS 16 实测为 SBFTouchPassThroughView；找不到时退回灵动岛窗口。
+static UIView *LGDIHostForCurtain(UIView *curtain) {
+    UIWindow *window = curtain.window;
+    UIView *fallback = window;
+    for (UIView *a = curtain.superview; a && a != window; a = a.superview) {
+        if (a.clipsToBounds) continue;
+        return a; // 第一个（最深的）不裁剪祖先
+    }
+    return fallback;
+}
+
+// =============================================================================
+//  装饰视图压制（描边 / 压暗层 / 容器底色）
+//  只动“叶子级、非交互、非内容”的视图，实时活动内容绝不碰。
+// =============================================================================
+
+static BOOL LGDIStringMatchesAny(NSString *s, NSArray<NSString *> *keywords) {
+    for (NSString *k in keywords) {
+        if ([s containsString:k]) return YES;
+    }
+    return NO;
+}
+
+static BOOL LGDIIsContentSubview(UIView *v) {
+    static NSArray *kContentKeywords;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        kContentKeywords = @[
+            @"Element", @"Presenter", @"Content", @"Scene", @"Compact",
+            @"Expanded", @"Leading", @"Trailing", @"Hero", @"Attachment",
+            @"Custom", @"Activity", @"ViewController",
+        ];
+    });
+    return LGDIStringMatchesAny(NSStringFromClass(v.class), kContentKeywords);
+}
+
+static BOOL LGDIIsDecorSubview(UIView *v) {
+    static NSArray *kDecorKeywords;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        kDecorKeywords = @[
+            @"Line", @"Outline", @"Stroke", @"Separator", @"Dim",
+            @"Gradient", @"Shadow", @"Backdrop", @"Material",
+            @"Background", @"Tint", @"Overlay",
+        ];
+    });
+    return LGDIStringMatchesAny(NSStringFromClass(v.class), kDecorKeywords);
+}
+
+static BOOL LGDIShouldSuppressDecor(UIView *v) {
+    if (!v || v == sLGDIGlass) return NO;
+    if (LGDIClassName(v, @"_SBSystemApertureMagiciansCurtainView")) return NO;
+    if (LGDIClassName(v, @"_SBGainMapView")) return NO;
+    if (v.userInteractionEnabled || v.gestureRecognizers.count > 0) return NO;
+    if (v.subviews.count > 2) return NO;            // 内容容器一定有子视图
+    if (LGDIIsContentSubview(v)) return NO;
+    return LGDIIsDecorSubview(v);
+}
+
+// 灵动岛内可能嵌套多个 SBFTouchPassThroughView，每个容器的装饰压制都要
+// 能在停用/换宿主时还原，因此用 weak 集合统一追踪所有被动过的视图。
+static NSHashTable<UIView *> *sLGDISuppressedViews;
+
+static void LGDIRegisterSuppressed(UIView *v, NSDictionary *info) {
+    if (!sLGDISuppressedViews) {
+        sLGDISuppressedViews = [NSHashTable weakObjectsHashTable];
+    }
+    objc_setAssociatedObject(v, kLGDIRestoreInfoKey, info,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [sLGDISuppressedViews addObject:v];
+}
+
+static void LGDISuppressDecorations(UIView *host) {
+    if (!host || !sLGDIActive) return;
+
+    // 容器自身底色清空
+    if (host.backgroundColor && host.backgroundColor != UIColor.clearColor
+        && !objc_getAssociatedObject(host, kLGDIRestoreInfoKey)) {
+        LGDIRegisterSuppressed(host, @{ @"bg": host.backgroundColor });
+    }
+    if (objc_getAssociatedObject(host, kLGDIRestoreInfoKey)
+        && host.backgroundColor != UIColor.clearColor) {
+        host.backgroundColor = UIColor.clearColor;
+    }
+
+    for (UIView *sub in host.subviews) {
+        if (!LGDIShouldSuppressDecor(sub)) continue;
+        if (!objc_getAssociatedObject(sub, kLGDIRestoreInfoKey)) {
+            NSMutableDictionary *info = [NSMutableDictionary dictionary];
+            info[@"alpha"]  = @(sub.alpha);
+            info[@"hidden"] = @(sub.hidden);
+            if (sub.backgroundColor) info[@"bg"] = sub.backgroundColor;
+            LGDIRegisterSuppressed(sub, info);
+            LGDILog(@"suppressed decor %@", NSStringFromClass(sub.class));
+        }
+        // 已记录过：系统可能在布局中把状态改回来，等值时不重复写（驱动每帧调用）
+        if (sub.alpha != 0.0) sub.alpha = 0.0;
+        if (sub.backgroundColor && sub.backgroundColor != UIColor.clearColor) {
+            sub.backgroundColor = UIColor.clearColor;
+        }
+    }
+}
+
+static void LGDIRestoreAllSuppressed(void) {
+    for (UIView *v in [sLGDISuppressedViews allObjects]) {
+        NSDictionary *info = objc_getAssociatedObject(v, kLGDIRestoreInfoKey);
+        if (!info) continue;
+        if (info[@"alpha"])  v.alpha = [info[@"alpha"] floatValue];
+        if (info[@"hidden"]) v.hidden = [info[@"hidden"] boolValue];
+        // 直接写图层，绕过 setBackgroundColor: hook（热切换宿主时开关仍为开启状态）
+        if (info[@"bg"])     v.layer.backgroundColor = [info[@"bg"] CGColor];
+        objc_setAssociatedObject(v, kLGDIRestoreInfoKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        LGDILog(@"restored decor %@", NSStringFromClass(v.class));
+    }
+    [sLGDISuppressedViews removeAllObjects];
+}
+
+// =============================================================================
+//  Geometry sync
+// =============================================================================
+
+static CGFloat LGDIFallbackCornerRadius(CGRect f) {
+    // 药丸：完全半圆角；展开卡片：约为高度的 1/4（系统实测 40~44pt 区间）
+    if (f.size.width > f.size.height * 1.5) {
+        return MIN(MAX(f.size.height * 0.24, 36.0), 52.0);
+    }
+    return f.size.height / 2.0;
+}
+
+static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
+    LGLiveBackdropView *glass = sLGDIGlass;
+    UIView *curtain = sLGDICurtain;
+    UIView *host = sLGDIHost;
+    if (!glass || !curtain || !host) return;
+
+    CALayer *pl = usePresentation ? curtain.layer.presentationLayer : nil;
+    CGRect targetFrame;
+    CGFloat targetRadius;
+
+    if (pl) {
+        // presentationLayer.frame 位于 curtain.superview 的坐标系。
+        // 注意不能用 isnormal()：原点坐标合法地可以是 0，而 isnormal(0)==false。
+        CGRect pf = pl.frame;
+        BOOL pfValid = isfinite(pf.origin.x) && isfinite(pf.origin.y)
+                    && isfinite(pf.size.width) && isfinite(pf.size.height)
+                    && !CGRectIsNull(pf) && !CGRectIsInfinite(pf)
+                    && pf.size.width > 1.0 && pf.size.height > 1.0;
+        if (pfValid) {
+            targetFrame = [curtain.superview convertRect:pf toView:host];
+            targetRadius = pl.cornerRadius > 0.5 ? pl.cornerRadius
+                                                 : LGDIFallbackCornerRadius(pf);
+        } else {
+            pl = nil;
+        }
+    }
+    if (!pl) {
+        targetFrame = [curtain convertRect:curtain.bounds toView:host];
+        targetRadius = curtain.layer.cornerRadius > 0.5
+                           ? curtain.layer.cornerRadius
+                           : LGDIFallbackCornerRadius(curtain.bounds);
+    }
+
+    if (!LGDIIsPlausibleSize(targetFrame.size)) return;
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+
+    if (!CGRectEqualToRect(glass.frame, targetFrame)) {
+        glass.frame = targetFrame;
+    }
+    if (fabs(glass.layer.cornerRadius - targetRadius) > 0.25) {
+        glass.layer.cornerRadius = targetRadius;
+    }
+    // cornerCurve / masksToBounds 安装时已固定，逐帧同步不再重复写入
+    [CATransaction commit];
+}
+
+// =============================================================================
+//  Transition driver — 逐帧跟随系统弹簧形变
+// =============================================================================
+
+static void LGDIStopDriver(void);
+
+static void LGDIDriverTick(CADisplayLink *link) {
+    (void)link;
+    @autoreleasepool {
+        UIView *curtain = sLGDICurtain;
+        UIView *host = sLGDIHost;
+        if (!sLGDIActive || !curtain || !host || !sLGDIGlass) {
+            LGDIStopDriver();
+            return;
+        }
+        // 形变期间系统可能反复把幕布/装饰放回来，每帧重新压制
+        if (!curtain.hidden) curtain.hidden = YES;
+        UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
+        if (gain && !gain.hidden) gain.hidden = YES;
+        LGDISuppressDecorations(host);
+        LGDISyncGeometryFromPresentation(YES);
+
+        if (CACurrentMediaTime() >= sLGDILinkDeadline) {
+            LGDISyncGeometryFromPresentation(NO);
+            LGDIStopDriver();
+        }
+    }
+}
+
+#pragma mark - driver target（不能把 self 用在 C 函数里，用独立对象承载）
+
+@interface LGDIDisplayLinkTarget : NSObject
+@end
+@implementation LGDIDisplayLinkTarget
+- (void)tick:(CADisplayLink *)link { LGDIDriverTick(link); }
+@end
+
+static LGDIDisplayLinkTarget *sLGDILinkTarget;
+
+static void LGDIStartDriverReal(NSTimeInterval duration) {
+    if (!sLGDILinkTarget) sLGDILinkTarget = [LGDIDisplayLinkTarget new];
+    if (!sLGDILink) {
+        sLGDILink = [CADisplayLink displayLinkWithTarget:sLGDILinkTarget
+                                                selector:@selector(tick:)];
+        [sLGDILink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    }
+    sLGDILink.paused = NO;
+    sLGDILinkDeadline = CACurrentMediaTime() + duration;
+}
+
+static void LGDIStopDriver(void) {
+    sLGDILink.paused = YES;
+}
+
+#pragma mark - Forward declarations
+
+static void LGDIScheduleSync(NSTimeInterval driverDuration);
+static void LGDIReconcile(void);
+
+// =============================================================================
+//  Glass lifecycle
+// =============================================================================
+
+static void LGDIInstallGlass(UIView *curtain) {
+    if (!sLGDIActive || !curtain || !curtain.window) return;
+    if (!LGDIIsPlausibleSize(curtain.bounds.size)) return;
+
+    UIView *host = LGDIHostForCurtain(curtain);
+    if (!host) return;
+
+    // 幕布 + GainMap 必须先于玻璃隐藏：它们和玻璃同属一个窗口层级，
+    // 若幕布仍渲染黑色，backdrop 采样到的就是黑幕布而不是窗外实时画面。
+    curtain.hidden = YES;
+    UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
+    gain.hidden = YES;
+
+    LGLiveBackdropView *glass = sLGDIGlass;
+    if (!glass || glass.superview != host) {
+        if (!glass) {
+            CGRect frame = [curtain convertRect:curtain.bounds toView:host];
+            glass = LGCreateRegisteredGlass(frame, kLGDIBackdropGroup, kLGDIFilterPrefix);
+            if (!glass) {
+                LGDILog(@"install failed: LGCreateRegisteredGlass returned nil");
+                return;
+            }
+            sLGDIGlass = glass;
+        }
+        glass.layer.cornerCurve   = kCACornerCurveContinuous;
+        glass.layer.masksToBounds = YES;
+        [host insertSubview:glass atIndex:0];
+        LGDILog(@"glass installed in host=%@ frame=%@",
+                NSStringFromClass(host.class),
+                NSStringFromCGRect(glass.frame));
+
+        // backboardd 滤镜 atom 注册有重试，补发几次 applyFilters
+        __weak LGLiveBackdropView *weakGlass = glass;
+        for (NSNumber *delay in @[ @0.5, @1.5, @3.0, @6.0 ]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                         (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [weakGlass applyFilters];
+            });
+        }
+    }
+
+    sLGDICurtain = curtain;
+    sLGDIHost = host;
+
+    LGDISuppressDecorations(host);
+    LGDISyncGeometryFromPresentation(NO);
+    LGDIScheduleSync(0.35);
+}
+
+static void LGDITeardown(BOOL featureDisabled) {
+    LGLiveBackdropView *glass = sLGDIGlass;
+
+    LGDIStopDriver();
+
+    if (glass) {
+        [glass removeFromSuperview];
+        sLGDIGlass = nil;
+    }
+    // 恢复所有被压制的装饰视图（可能分布在多个嵌套容器中）
+    LGDIRestoreAllSuppressed();
+
+    if (featureDisabled) {
+        // 恢复系统黑色形体（setHidden: hook 在 sLGDIActive=NO 时放行）
+        UIView *curtain = sLGDICurtain;
+        if (!curtain) curtain = LGDIFindCurtainInWindows();
+        if (curtain) {
+            UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
+            if (gain) gain.hidden = NO;
+            curtain.hidden = NO;
+        }
+    }
+
+    sLGDICurtain = nil;
+    sLGDIHost = nil;
+}
+
+// =============================================================================
+//  Sync scheduling
+// =============================================================================
+
+static void LGDIDoScheduledSync(void) {
+    sLGDISyncQueued = NO;
+    if (!sLGDIActive) return;
+
+    UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
+    if (!curtain || !curtain.window) return;
+
+    if (!sLGDIGlass) {
+        LGDIInstallGlass(curtain);
+        return;
+    }
+
+    // 弱引用可能在场景切换后丢失，找回后必须回写，否则几何同步会永久空转
+    sLGDICurtain = curtain;
+
+    // 容器可能在展开时被系统换掉
+    UIView *host = LGDIHostForCurtain(curtain);
+    if (host && host != sLGDIHost) {
+        LGDILog(@"host changed: %@ -> %@, reinstalling",
+                NSStringFromClass(sLGDIHost.class), NSStringFromClass(host.class));
+        LGDITeardown(NO);
+        LGDIInstallGlass(curtain);
+        return;
+    }
+
+    if (!curtain.hidden) curtain.hidden = YES;
+    UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
+    if (gain && !gain.hidden) gain.hidden = YES;
+    LGDISuppressDecorations(host);
+    LGDISyncGeometryFromPresentation(NO);
+}
+
+static void LGDIScheduleSync(NSTimeInterval driverDuration) {
+    if (!sLGDIActive) return;
+
+    if (driverDuration > 0) {
+        LGDIStartDriverReal(driverDuration);
+    }
+    if (!sLGDISyncQueued) {
+        sLGDISyncQueued = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LGDIDoScheduledSync();
+        });
+    }
+}
+
+// =============================================================================
+//  Reconcile（开关 / 启动 / 视图挂载）
+// =============================================================================
+
+static void LGDIReconcile(void) {
+    BOOL enabled = lgHostEnabled(kLGDIFilterPrefix);
+
+    if (!enabled) {
+        if (sLGDIActive || sLGDIGlass) {
+            sLGDIActive = NO;
+            LGDITeardown(YES);
+            LGDILog(@"feature disabled, stock island restored");
+        }
+        return;
+    }
+
+    sLGDIActive = YES;
+    UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
+    if (curtain && curtain.window) {
+        LGDIInstallGlass(curtain);
+    } else {
+        LGDILog(@"reconcile: no on-screen curtain yet");
+    }
+}
+
+static void LGDIHandleCurtainAttached(UIView *curtain) {
+    if (!sLGDIActive) return;
+    sLGDICurtain = curtain;
+    // didMoveToWindow 时层级往往还没布局完，延后一拍再装
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (curtain.window && LGDIIsPlausibleSize(curtain.bounds.size)) {
+            LGDIInstallGlass(curtain);
+        } else {
+            LGDIScheduleSync(0.25);
+        }
+    });
+}
+
+static BOOL LGDIShouldForceHidden(UIView *view) {
+    return sLGDIActive && view.window != nil && LGDIInApertureWindow(view);
+}
+
+// =============================================================================
+//  Hook: _SBSystemApertureMagiciansCurtainView（黑色形变主体）
+// =============================================================================
+
+%group LGDICurtainHook
 %hook _SBSystemApertureMagiciansCurtainView
 
 - (void)didMoveToWindow {
     %orig;
-    LGDILog(@"[CurtainView didMoveToWindow] hasWindow=%d bounds=%@",
-            self.window != nil,
-            NSStringFromCGRect(self.bounds));
-
-    // 如果 glass 存在，确保 curtainView 保持隐藏（玻璃取代黑色背景）
     if (self.window) {
-        UIView *gainMapView = nil;
-        for (UIView *subview in self.subviews) {
-            if ([subview isKindOfClass:NSClassFromString(@"_SBGainMapView")]) {
-                gainMapView = subview;
-                break;
-            }
-        }
-        if (gainMapView) {
-            LGLiveBackdropView *glass = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
-            if (glass && !self.hidden) {
-                self.hidden = YES;
-                LGDILog(@"[CurtainView didMoveToWindow] re-hiding curtainView (glass exists)");
-            }
+        LGDILog(@"curtain didMoveToWindow bounds=%@", NSStringFromCGRect(self.bounds));
+        LGDIHandleCurtainAttached(self);
+    }
+}
+
+- (void)layoutSubviews {
+    %orig;
+    if (LGDIShouldForceHidden(self)) {
+        if (!self.hidden) self.hidden = YES;
+        LGDIScheduleSync(0.35);
+    }
+}
+
+- (void)setHidden:(BOOL)hidden {
+    if (LGDIShouldForceHidden(self) && !hidden) {
+        LGDILog(@"curtain setHidden:NO blocked");
+        hidden = YES;
+    }
+    %orig(hidden);
+}
+
+%end
+%end
+
+// =============================================================================
+//  Hook: _SBGainMapView（HDR 压暗层）
+// =============================================================================
+
+%group LGDIGainMapHook
+%hook _SBGainMapView
+
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window) {
+        if (LGDIShouldForceHidden(self)) {
+            self.hidden = YES;
+            LGDIScheduleSync(0.25);
         }
     }
 }
 
 - (void)layoutSubviews {
     %orig;
-    if (!CGRectIsEmpty(self.bounds)) {
-        LGDILog(@"[CurtainView layoutSubviews] bounds=%@", NSStringFromCGRect(self.bounds));
-    }
-}
-
-- (void)setFrame:(CGRect)frame {
-    %orig;
-    if (!CGRectIsEmpty(frame)) {
-        LGDILog(@"[CurtainView setFrame:] frame=%@ bounds=%@",
-                NSStringFromCGRect(frame),
-                NSStringFromCGRect(self.bounds));
-    }
-}
-
-- (void)setBounds:(CGRect)bounds {
-    %orig;
-    if (!CGRectIsEmpty(bounds)) {
-        LGDILog(@"[CurtainView setBounds:] bounds=%@", NSStringFromCGRect(bounds));
+    if (LGDIShouldForceHidden(self)) {
+        if (!self.hidden) self.hidden = YES;
+        LGDIScheduleSync(0.35);
     }
 }
 
 - (void)setHidden:(BOOL)hidden {
-    // 如果 glass 存在，强制保持 curtainView 隐藏
-    UIView *gainMapView = nil;
-    for (UIView *subview in self.subviews) {
-        if ([subview isKindOfClass:NSClassFromString(@"_SBGainMapView")]) {
-            gainMapView = subview;
-            break;
-        }
-    }
-    if (gainMapView) {
-        LGLiveBackdropView *glass = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
-        if (glass && hidden == NO) {
-            LGDILog(@"[CurtainView setHidden:NO] blocked (glass exists, keeping hidden)");
-            %orig; // 先调用原方法
-            self.hidden = YES; // 再强制隐藏
-            return;
-        }
-    }
+    if (LGDIShouldForceHidden(self) && !hidden) hidden = YES;
+    %orig(hidden);
+}
+
+%end
+%end
+
+// =============================================================================
+//  Hook: SBFTouchPassThroughView（灵动岛容器：压装饰 + 布局信号）
+//  该类系统多处使用，必须用灵动岛窗口祖先过滤。
+// =============================================================================
+
+%group LGDITouchHook
+%hook SBFTouchPassThroughView
+
+- (void)layoutSubviews {
     %orig;
-    LGDILog(@"[CurtainView setHidden:] hidden=%d", hidden);
-}
-
-%end
-%end
-
-// =============================================================================
-//  Hook: FBSceneLayerManager._setLayers:
-//  保留作为场景状态跟踪（Mango 也有此 hook）
-// =============================================================================
-
-%group SceneLayerManager
-%hook FBSceneLayerManager
-
-- (void)_setLayers:(id)layers {
-    %orig;
-    // 场景图层变化时，layoutSubviews 会自动触发 mask 更新
-}
-
-%end
-%end
-
-// =============================================================================
-//  偏好设置变更监听
-// =============================================================================
-
-static void LGDIPrefsChanged(CFNotificationCenterRef center, void *observer,
-                             CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-    @autoreleasepool {
-        LGDILog(@"Prefs changed");
-        // 找到已存在的 gainMapView 并重新应用滤镜
-        UIView *gainMapView = LGDIFindExistingGainMapView();
-        if (gainMapView) {
-            LGLiveBackdropView *glass = objc_getAssociatedObject(gainMapView, kLGDIPillGlassKey);
-            if (glass && [glass isKindOfClass:[LGLiveBackdropView class]]) {
-                [glass applyFilters];
-            }
-        }
+    if (sLGDIActive && LGDIInApertureWindow(self)) {
+        LGDISuppressDecorations(self);
+        LGDIScheduleSync(0.35);
     }
 }
 
+%end
+%end
+
 // =============================================================================
-//  Constructor — 安装所有 hooks
+//  Hook: SBSystemApertureViewController
+// =============================================================================
+
+%group LGDIApertureVCHook
+%hook SBSystemApertureViewController
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig(animated);
+    LGDILog(@"aperture viewWillAppear");
+    if (sLGDIActive) LGDIScheduleSync(0.35);
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (sLGDIActive) LGDIScheduleSync(0.35);
+}
+
+%end
+%end
+
+// =============================================================================
+//  Hook: SBSystemApertureSceneElement（药丸 ↔ 展开形变时机）
+// =============================================================================
+
+%group LGDISceneElementHook
+%hook SBSystemApertureSceneElement
+
+- (void)setLayoutMode:(NSInteger)layoutMode reason:(NSInteger)reason {
+    %orig(layoutMode, reason);
+    LGDILog(@"setLayoutMode=%ld reason=%ld", (long)layoutMode, (long)reason);
+    if (sLGDIActive) {
+        // 弹簧形变约 0.5~0.7s，驱动逐帧跟随
+        LGDIScheduleSync(0.85);
+    }
+}
+
+%end
+%end
+
+// =============================================================================
+//  Hook: _SBSystemApertureContainerViewContentView（部分版本上的容器底色）
+// =============================================================================
+
+%group LGDIContentContainerHook
+%hook _SBSystemApertureContainerViewContentView
+
+- (void)setBackgroundColor:(UIColor *)color {
+    if (sLGDIActive && color && color != UIColor.clearColor
+        && CGColorGetAlpha(color.CGColor) > 0.0) {
+        // 记录原色，停用功能时由 LGDIRestoreAllSuppressed 统一还原
+        if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
+            LGDIRegisterSuppressed(self, @{ @"bg": color });
+        }
+        color = UIColor.clearColor;
+    }
+    %orig(color);
+}
+
+- (void)layoutSubviews {
+    %orig;
+    if (sLGDIActive && self.backgroundColor
+        && self.backgroundColor != UIColor.clearColor) {
+        if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
+            LGDIRegisterSuppressed(self, @{ @"bg": self.backgroundColor });
+        }
+        self.backgroundColor = UIColor.clearColor;
+    }
+}
+
+%end
+%end
+
+// =============================================================================
+//  Hook: SBSystemApertureWindow（布局信号，绝不动窗口透明度）
+// =============================================================================
+
+%group LGDIApertureWindowHook
+%hook SBSystemApertureWindow
+
+- (void)layoutSubviews {
+    %orig;
+    if (sLGDIActive) LGDIScheduleSync(0.35);
+}
+
+%end
+%end
+
+// =============================================================================
+//  Constructor
 // =============================================================================
 
 __attribute__((constructor))
 static void LGDynamicIslandInit(void) {
-    if (!LGIsSpringBoardProcess()) return;
-    if (!LGIsAtLeastiOS16()) return;
+    if (!LGDIIsSpringBoardProcess()) return;
+    if (@available(iOS 16.0, *)) {} else return;
 
-    // 1. Darwin 通知监听
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                    NULL, LGDIPrefsChanged,
-                                    CFSTR("dylv.liquidglass/PrefsReloaded"),
-                                    NULL, 0);
-
-    // 2. Hook: _SBGainMapView
-    %init(GainMapViewHook);
-
-    // 3. Hook: _SBSystemApertureMagiciansCurtainView
-    %init(CurtainViewHook);
-
-    // 4. Hook: FBSceneLayerManager._setLayers:
-    %init(SceneLayerManager);
-
-    // 5. 类检查
-    Class gainMapClass = objc_getClass("_SBGainMapView");
-    Class curtainClass = objc_getClass("_SBSystemApertureMagiciansCurtainView");
-    Class sceneLayerMgrClass = objc_getClass("FBSceneLayerManager");
-    LGDILog(@"Class check: gainMap=%@ curtain=%@ sceneLayerMgr=%@",
-            gainMapClass ? @"YES" : @"NO",
-            curtainClass ? @"YES" : @"NO",
-            sceneLayerMgrClass ? @"YES" : @"NO");
-
-    LGDILog(@"Dynamic Island initialized (gainMap trigger + curtain mask)");
-
-    // 6. 主动查找已存在的 gainMapView 并安装玻璃
-    //    SpringBoard 启动时灵动岛已经在窗口上，didMoveToWindow 早调用过了
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UIView *existingGainMap = LGDIFindExistingGainMapView();
-        if (existingGainMap) {
-            LGDILog(@"constructor: found existing gainMapView %@",
-                    NSStringFromCGRect(existingGainMap.frame));
-            LGDIInstallPillGlass(existingGainMap);
-        } else {
-            LGDILog(@"constructor: no existing gainMapView found");
-        }
+    // 设置变更：开关关闭时恢复原黑色岛，开启时重新装配（滤镜参数刷新由
+    // LGLiveBackdropView 全局监听 ParametersReloaded 自动完成，无需此处处理）
+    lgObservePreferenceReload(^{
+        LGDIReconcile();
     });
+
+    if (objc_getClass("_SBSystemApertureMagiciansCurtainView")) {
+        %init(LGDICurtainHook);
+    }
+    if (objc_getClass("_SBGainMapView")) {
+        %init(LGDIGainMapHook);
+    }
+    if (objc_getClass("SBFTouchPassThroughView")) {
+        %init(LGDITouchHook);
+    }
+    if (objc_getClass("SBSystemApertureViewController")) {
+        %init(LGDIApertureVCHook);
+    }
+    if (objc_getClass("SBSystemApertureSceneElement")) {
+        %init(LGDISceneElementHook);
+    }
+    if (objc_getClass("_SBSystemApertureContainerViewContentView")) {
+        %init(LGDIContentContainerHook);
+    }
+    if (objc_getClass("SBSystemApertureWindow")) {
+        %init(LGDIApertureWindowHook);
+    }
+
+    sLGDIActive = lgHostEnabled(kLGDIFilterPrefix);
+    LGDILog(@"initialized enabled=%d", sLGDIActive);
+
+    // SpringBoard 启动时灵动岛已存在，didMoveToWindow 早于注入发生
+    for (NSNumber *delay in @[ @0.8, @2.5, @5.0 ]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (sLGDIActive && !sLGDIGlass) LGDIReconcile();
+        });
+    }
 }
