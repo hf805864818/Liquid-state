@@ -1410,6 +1410,52 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 %end
 
 // =============================================================================
+//  Hook: _SAUIProvidedViewContainerView（SystemAperture 内容容器，对标 Mango）
+// -----------------------------------------------------------------------------
+//  Mango 专门 hook 了这个类（[Island] hooked _SAUIProvidedViewContainerView）。
+//  它是承载实时活动「提供视图」的内层容器（compact 药丸/展开卡片内容的直接父
+//  容器），自身常带一块近黑不透明背景，在 z-order 上盖在 atIndex:0 的玻璃之上。
+//  外层的 _SBSystemApertureContainerViewContentView 并非这块黑底的实际承载者，
+//  仅靠全树遍历可能在它晚于遍历加入/重设背景时漏掉，因此这里直接 hook，实时剥离。
+//  只清背景色，绝不动 alpha/hidden，内容子视图（图标/文字/专辑图）原样保留。
+// =============================================================================
+
+%group LGDISAProvidedContainerHook
+%hook _SAUIProvidedViewContainerView
+
+- (void)setBackgroundColor:(UIColor *)color {
+    if (LGDILiquidSuppressionActive() && LGDClearContentBg()
+        && LGDIColorIsNearBlackOpaque(color)) {
+        if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
+            LGDIRegisterSuppressed(self, @{ @"bg": color });
+            LGDILog(@"SAProvided container near-black bg intercepted on %@",
+                    NSStringFromClass(self.class));
+        }
+        color = UIColor.clearColor;
+    }
+    %orig(color);
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window && LGDILiquidSuppressionActive() && LGDClearContentBg()) {
+        LGDIStripNearBlackBackground(self);
+        LGDIScheduleSync(0.25);
+    }
+}
+
+- (void)layoutSubviews {
+    %orig;
+    if (LGDILiquidSuppressionActive() && LGDClearContentBg()) {
+        LGDIStripNearBlackBackground(self);
+        LGDIScheduleSync(0.25);
+    }
+}
+
+%end
+%end
+
+// =============================================================================
 //  Hook: SBSystemApertureWindow（布局信号，绝不动窗口透明度）
 // =============================================================================
 
@@ -1456,6 +1502,9 @@ static void LGDynamicIslandInit(void) {
     }
     if (objc_getClass("_SBSystemApertureContainerViewContentView")) {
         %init(LGDIContentContainerHook);
+    }
+    if (objc_getClass("_SAUIProvidedViewContainerView")) {
+        %init(LGDISAProvidedContainerHook);
     }
     if (objc_getClass("SBSystemApertureWindow")) {
         %init(LGDIApertureWindowHook);
