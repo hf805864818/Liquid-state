@@ -85,6 +85,44 @@ static NSString * const kLGDIBackdropGroup   = @"dylv.liquidglass.island";
 
 static void *kLGDIRestoreInfoKey  = &kLGDIRestoreInfoKey; // 被压制装饰视图 -> 原始状态
 
+// =============================================================================
+//  透明化四路独立开关（对标 Mango 的 CurtainHiddenV2 / GainMapDisabledV2 /
+//  ContentTransparentV2 / OutlineHiddenV2）。全部默认开启，行为与旧版
+//  SingleControl（全有或全无）完全一致；任一路关闭即保留该层系统原样。
+//  偏好键为 DynamicIsland.HideCurtain / RemoveGainMap / ClearContentBg /
+//  HideOutline（NSNumber BOOL）。
+// =============================================================================
+
+static BOOL LGDIHideCurtain(void);      // 隐藏 _SBSystemApertureMagiciansCurtainView 黑色幕布
+static BOOL LGDRemoveGainMap(void);     // 移除 _SBGainMapView HDR 压暗层
+static BOOL LGDClearContentBg(void);    // 清空容器/装饰背景色
+static BOOL LGDIHideOutline(void);      // 隐藏描边/高光等装饰视图
+
+static BOOL LGDIReadBool(NSString *key, BOOL defaultValue) {
+    // 与 LGGlassKit 使用同一偏好域，避免引入额外依赖
+    id v = LGGlassPreferenceValue(key);
+    if ([v isKindOfClass:[NSNumber class]]) return [v boolValue];
+    if ([v isKindOfClass:[NSString class]]) {
+        return [v caseInsensitiveCompare:@"YES"] == NSOrderedSame
+            || [v caseInsensitiveCompare:@"true"] == NSOrderedSame
+            || [v caseInsensitiveCompare:@"1"] == NSOrderedSame;
+    }
+    return defaultValue;
+}
+
+static BOOL LGDIHideCurtain(void) {
+    return LGDIReadBool(@"DynamicIsland.HideCurtain", YES);
+}
+static BOOL LGDRemoveGainMap(void) {
+    return LGDIReadBool(@"DynamicIsland.RemoveGainMap", YES);
+}
+static BOOL LGDClearContentBg(void) {
+    return LGDIReadBool(@"DynamicIsland.ClearContentBg", YES);
+}
+static BOOL LGDIHideOutline(void) {
+    return LGDIReadBool(@"DynamicIsland.HideOutline", YES);
+}
+
 // 药丸/展开判定与尺寸门限
 static const CGFloat kLGDIMinWidth  = 60.0;
 static const CGFloat kLGDIMinHeight = 20.0;
@@ -148,6 +186,60 @@ static NSString *LGDIModeName(NSInteger mode) {
         default:                return [NSString stringWithFormat:@"mode%ld", (long)mode];
     }
 }
+
+// =============================================================================
+//  DIElementManager — 灵动岛元素接管层（阶段1，轻量登记）
+//  在既有 sLGDIElementModes 视图树路径之上，提供一个 ObjC 管理器，
+//  供后续阶段（内容 Provider / 完整状态机）挂接。它暴露：
+//    - 当前核心 element（优先取 expanded，其次 compact）
+//    - 当前最优（最高）布局模式 + 模式名
+//    - 四路透明化偏好聚合结果（供设置页 / 日志/后续阶段直接读取）
+//  不替换已验证的视图树压制路径，仅作为增强与信息中枢。
+// =============================================================================
+
+@interface DIElementManager : NSObject
+@end
+@implementation DIElementManager
+
++ (id)currentLiquidElement {
+    // 优先 expanded（展开卡片），否则取任一 compact 长药丸
+    id expanded = nil, compact = nil;
+    for (id e in sLGDIElementModes) {
+        NSInteger m = [[sLGDIElementModes objectForKey:e] integerValue];
+        if (m == kLGDIModeExpanded) expanded = e;
+        else if (m == kLGDIModeCompact && !compact) compact = e;
+    }
+    return expanded ?: compact;
+}
+
++ (NSInteger)currentPreferredMode {
+    NSInteger best = kLGDIModeInert;
+    for (id e in sLGDIElementModes) {
+        NSInteger m = [[sLGDIElementModes objectForKey:e] integerValue];
+        if (m > best) best = m;
+    }
+    return best;
+}
+
+#pragma mark - 四路透明化偏好（聚合读取，供后续阶段/设置页）
++ (BOOL)hideCurtain   { return LGDIHideCurtain(); }
++ (BOOL)removeGainMap { return LGDRemoveGainMap(); }
++ (BOOL)clearContentBg{ return LGDClearContentBg(); }
++ (BOOL)hideOutline   { return LGDIHideOutline(); }
++ (BOOL)isLiquidActive{ return sLGDIActive; }
+
+#pragma mark - 诊断
++ (NSString *)debugSummary {
+    return [NSString stringWithFormat:
+            @"mode=%@ active=%d curtain=%@ gainMap=%@ contentBg=%@ outline=%@",
+            LGDIModeName([self currentPreferredMode]), (int)sLGDIActive,
+            LGDIHideCurtain() ? @"hide" : @"keep",
+            LGDRemoveGainMap() ? @"remove" : @"keep",
+            LGDClearContentBg() ? @"clear" : @"keep",
+            LGDIHideOutline() ? @"hide" : @"keep"];
+}
+
+@end
 
 // =============================================================================
 //  View tree helpers
@@ -360,11 +452,14 @@ static BOOL LGDIShouldSuppressDecor(UIView *v) {
     if (LGDIClassName(v, @"_SBSystemApertureMagiciansCurtainView")) return NO;
     if (LGDIClassName(v, @"_SBGainMapView")) return NO;
     if (v.userInteractionEnabled || v.gestureRecognizers.count > 0) return NO;
-    // 黑色材质按类名直判（其内部可能有超过 2 个子视图）
-    if (LGDIIsBlackBodyMaterial(v) && !LGDIIsContentSubview(v)) return YES;
+    // 黑色材质本体由 LGDIHideOutline 控制（幕布隐藏走 HideCurtain 开关，
+    // 盖在幕布之上、随岛的黑色材质仍需跟随停止液态时还原）
+    if (LGDIIsBlackBodyMaterial(v) && !LGDIIsContentSubview(v))
+        return LGDIHideOutline();
     if (v.subviews.count > 2) return NO;            // 内容容器一定有子视图
     if (LGDIIsContentSubview(v)) return NO;
-    return LGDIIsDecorSubview(v);
+    // 描边/高光/阴影等装饰归入 LGDIHideOutline 开关
+    return LGDIHideOutline() && LGDIIsDecorSubview(v);
 }
 
 // 灵动岛内可能嵌套多个 SBFTouchPassThroughView，每个容器的装饰压制都要
@@ -405,7 +500,7 @@ static void LGDISweepView(UIView *v, NSUInteger depth) {
     if (!v || depth == 0 || v == sLGDIGlass) return;
     // GainMap 在部分版本上不是 curtain 子视图，全树兜底隐藏
     if (LGDIClassName(v, @"_SBGainMapView")) {
-        if (!v.hidden) v.hidden = YES;
+        if (LGDRemoveGainMap() && !v.hidden) v.hidden = YES;
     } else if (LGDIShouldSuppressDecor(v)) {
         LGDISuppressOne(v);
     }
@@ -415,8 +510,9 @@ static void LGDISweepView(UIView *v, NSUInteger depth) {
 static void LGDISuppressDecorations(UIView *host) {
     if (!host || !sLGDIActive) return;
 
-    // 容器自身底色清空（容器类不命中装饰谓词，单独处理）
-    if (host.backgroundColor && host.backgroundColor != UIColor.clearColor) {
+    // 容器自身底色清空（由 LGDClearContentBg 控制）
+    if (LGDClearContentBg()
+        && host.backgroundColor && host.backgroundColor != UIColor.clearColor) {
         LGDISuppressOne(host);
     } else if (objc_getAssociatedObject(host, kLGDIRestoreInfoKey)
                && host.backgroundColor != UIColor.clearColor) {
@@ -430,6 +526,24 @@ static void LGDISuppressDecorations(UIView *host) {
 static void LGDIReassertSuppressed(void) {
     if (!sLGDIActive) return;
     for (UIView *v in [sLGDISuppressedViews allObjects]) {
+        // 尊重四路开关：若某路已关闭，则对应装饰不再被重新压制
+        // （并把已被压制的还原），避免"关闭开关但效果仍在"
+        if (LGDIClassName(v, @"_SBGainMapView")) {
+            if (!LGDRemoveGainMap()) continue;
+        } else if (LGDIClassName(v, @"_SBSystemApertureMagiciansCurtainView")) {
+            if (!LGDIHideCurtain()) continue;
+        } else if (LGDIClassName(v, @"_SBSystemApertureContainerViewContentView")) {
+            if (!LGDClearContentBg()) continue;
+        } else if (!LGDIHideOutline()) {
+            // 其余装饰/黑色材质：还原其原始状态
+            NSDictionary *info = objc_getAssociatedObject(v, kLGDIRestoreInfoKey);
+            if (info[@"alpha"])  v.alpha = [info[@"alpha"] floatValue];
+            if (info[@"hidden"]) v.hidden = [info[@"hidden"] boolValue];
+            if (info[@"bg"])     v.layer.backgroundColor = [info[@"bg"] CGColor];
+            objc_setAssociatedObject(v, kLGDIRestoreInfoKey, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            continue;
+        }
         if (v.alpha != 0.0) v.alpha = 0.0;
         if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
             v.layer.backgroundColor = UIColor.clearColor.CGColor;
@@ -529,9 +643,10 @@ static void LGDIDriverTick(CADisplayLink *link) {
             return;
         }
         // 形变期间系统可能反复把幕布/装饰放回来，每帧重新断言
-        if (!curtain.hidden) curtain.hidden = YES;
+        // （四路开关各管一路，单独开关关闭后该层不再被强制隐藏）
+        if (LGDIHideCurtain() && !curtain.hidden) curtain.hidden = YES;
         UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
-        if (gain && !gain.hidden) gain.hidden = YES;
+        if (LGDRemoveGainMap() && gain && !gain.hidden) gain.hidden = YES;
         LGDIReassertSuppressed();
         LGDISyncGeometryFromPresentation(YES);
 
@@ -585,9 +700,10 @@ static void LGDIInstallGlass(UIView *curtain) {
 
     // 幕布 + GainMap 必须先于玻璃隐藏：它们和玻璃同属一个窗口层级，
     // 若幕布仍渲染黑色，backdrop 采样到的就是黑幕布而不是窗外实时画面。
-    curtain.hidden = YES;
+    // （LGDIHideCurtain / LGDRemoveGainMap 四路开关分别控制）
+    if (LGDIHideCurtain() && !curtain.hidden) curtain.hidden = YES;
     UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
-    gain.hidden = YES;
+    if (LGDRemoveGainMap() && gain && !gain.hidden) gain.hidden = YES;
 
     LGLiveBackdropView *glass = sLGDIGlass;
     if (!glass || glass.superview != host) {
@@ -696,9 +812,16 @@ static void LGDIDoScheduledSync(void) {
         return;
     }
 
-    if (!curtain.hidden) curtain.hidden = YES;
+    if (LGDIHideCurtain() && !curtain.hidden) curtain.hidden = YES;
     UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
-    if (gain && !gain.hidden) gain.hidden = YES;
+    if (gain) {
+        BOOL shouldHide = LGDRemoveGainMap();
+        if (shouldHide && !gain.hidden) gain.hidden = YES;
+        // 关闭 RemoveGainMap 后，如果此前已隐藏（系统未重设），
+        // 执行一次还原以尊重用户选择：但 GainMap 通常随布局重排，
+        // 这里仅在显式关闭且仍隐藏时放行系统原样。
+        else if (!shouldHide && gain.hidden) gain.hidden = NO;
+    }
     LGDISuppressDecorations(host);
     LGDISyncGeometryFromPresentation(NO);
 }
@@ -759,7 +882,20 @@ static void LGDIHandleCurtainAttached(UIView *curtain) {
 }
 
 static BOOL LGDIShouldForceHidden(UIView *view) {
-    return sLGDIActive && view.window != nil && LGDIInApertureWindow(view);
+    if (sLGDIActive && view.window != nil && LGDIInApertureWindow(view)) {
+        // 按类名把强制隐藏分派到四路开关：
+        //   curtain -> HideCurtain
+        //   GainMap -> RemoveGainMap
+        //   其余装饰/黑色材质 -> HideOutline（或 ClearContentBg 兜底）
+        if (LGDIClassName(view, @"_SBSystemApertureMagiciansCurtainView"))
+            return LGDIHideCurtain();
+        if (LGDIClassName(view, @"_SBGainMapView"))
+            return LGDRemoveGainMap();
+        if (LGDIClassName(view, @"_SBSystemApertureContainerViewContentView"))
+            return LGDClearContentBg();
+        return LGDIHideOutline();
+    }
+    return NO;
 }
 
 // =============================================================================
