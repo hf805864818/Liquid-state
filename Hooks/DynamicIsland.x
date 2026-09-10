@@ -75,6 +75,8 @@ static void LGDILog(NSString *fmt, ...) {
 @end
 @interface _SBSystemApertureContainerViewContentView : UIView
 @end
+@interface _SAUIProvidedViewContainerView : UIView
+@end
 @interface SBSystemApertureWindow : UIWindow
 @end
 
