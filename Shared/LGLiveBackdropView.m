@@ -220,6 +220,46 @@ BOOL LGLiquidIsPerformanceDegraded(void) {
     return sLGPerformanceDegraded;
 }
 
+// ── 偏好写入合并（Debounce） ──
+// 热状态和充电状态可能在短时间内交替变化（如插拔充电器时热状态也波动），
+// 使用 500ms debounce 合并多次偏好写入和 Darwin 通知，减少跨进程通信开销。
+static dispatch_source_t s_stateWriteTimer;
+static BOOL s_stateWritePending = NO;
+
+static void LGFlushStateWrite(void) {
+    if (!s_stateWritePending) return;
+    s_stateWritePending = NO;
+
+    CFPreferencesSetAppValue((__bridge CFStringRef)@"Thermal.State",
+                             (__bridge CFTypeRef)@(sLGThermalState),
+                             (__bridge CFStringRef)LGPrefsDomain);
+    CFPreferencesSetAppValue((__bridge CFStringRef)@"Charging.Active",
+                             (__bridge CFTypeRef)@(sLGCharging),
+                             (__bridge CFStringRef)LGPrefsDomain);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+    notify_post(LGPrefsChangedNotificationCString);
+    LGLog(@"state write flushed: thermal=%lu charging=%d",
+          (unsigned long)sLGThermalState, (int)sLGCharging);
+}
+
+static void LGScheduleStateWrite(void) {
+    s_stateWritePending = YES;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        s_stateWriteTimer = dispatch_source_create(
+            DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+            dispatch_get_main_queue());
+        dispatch_source_set_event_handler(s_stateWriteTimer, ^{
+            LGFlushStateWrite();
+        });
+    });
+    // 500ms debounce：500ms 内如果又来新事件，重新计时
+    dispatch_source_set_timer(s_stateWriteTimer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)),
+        DISPATCH_TIME_FOREVER, 0);
+    dispatch_resume(s_stateWriteTimer);
+}
+
 static void LGThermalStateChanged(void) {
     NSUInteger newState = [NSProcessInfo processInfo].thermalState;
     if (newState == sLGThermalState) return;
@@ -230,15 +270,8 @@ static void LGThermalStateChanged(void) {
 
     LGLog(@"thermal state changed: %lu throttling=%d", (unsigned long)newState, shouldThrottle);
 
-    // 写入热状态到偏好文件，通知 backboardd 渲染器
-    CFPreferencesSetAppValue((__bridge CFStringRef)@"Thermal.State",
-                             (__bridge CFTypeRef)@(newState),
-                             (__bridge CFStringRef)LGPrefsDomain);
-    CFPreferencesSetAppValue((__bridge CFStringRef)@"Charging.Active",
-                             (__bridge CFTypeRef)@(sLGCharging),
-                             (__bridge CFStringRef)LGPrefsDomain);
-    CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
-    notify_post(LGPrefsChangedNotificationCString);
+    // 合并写入偏好文件，通知 backboardd 渲染器（debounce 500ms）
+    LGScheduleStateWrite();
 
     // 重新评估综合降级状态
     LGUpdatePerformanceDegradedState();
@@ -247,7 +280,7 @@ static void LGThermalStateChanged(void) {
     if (sLGMotionSetup) LGRefreshMotionHighlights();
 
     // 不直接调用 reapplyFilterForParameterReload。
-    // 上面的 notify_post 会触发通知链: backboardd 重新读取参数后
+    // LGScheduleStateWrite 的 notify_post 会触发通知链: backboardd 重新读取参数后
     // 发回 kLGParametersReloaded 通知, SpringBoard 的 LGParametersReloaded
     // 会统一刷新所有 glass 的滤镜。避免双重刷新导致的闪烁。
 }
@@ -260,20 +293,12 @@ static void LGBatteryStateDidChange(NSNotification *note) {
     sLGCharging = (state == UIDeviceBatteryStateCharging || state == UIDeviceBatteryStateFull);
     if (wasCharging != sLGCharging) {
         LGLog(@"battery state changed: charging=%d", sLGCharging);
-        // 写入偏好文件，通知 backboardd 渲染器降级
-        CFPreferencesSetAppValue((__bridge CFStringRef)@"Charging.Active",
-                                 (__bridge CFTypeRef)@(sLGCharging),
-                                 (__bridge CFStringRef)LGPrefsDomain);
-        CFPreferencesSetAppValue((__bridge CFStringRef)@"Thermal.State",
-                                 (__bridge CFTypeRef)@(sLGThermalState),
-                                 (__bridge CFStringRef)LGPrefsDomain);
-        CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
-        // 发送 Darwin 通知，让 backboardd 重新读取偏好
-        notify_post(LGPrefsChangedNotificationCString);
+        // 合并写入偏好文件，通知 backboardd 渲染器降级（debounce 500ms）
+        LGScheduleStateWrite();
         LGUpdatePerformanceDegradedState();
         if (sLGMotionSetup) LGRefreshMotionHighlights();
         // 不直接调用 reapplyFilterForParameterReload, 避免双重刷新。
-        // notify_post 已触发通知链, backboardd 刷新后会通过
+        // LGScheduleStateWrite 的 notify_post 已触发通知链, backboardd 刷新后会通过
         // kLGParametersReloaded 通知回到 SpringBoard 统一刷新。
     }
 }
@@ -287,6 +312,46 @@ static void LGScreenStateChanged(NSNotification *note) {
     if (wasOn != sLGScreenOn) {
         LGLog(@"screen state changed: on=%d", sLGScreenOn);
         LGUpdatePerformanceDegradedState();
+
+        if (!sLGScreenOn) {
+            // ── 屏幕熄灭：暂停所有 glass 的 GPU 渲染 ──
+            // CABackdropLayer 在视图不可见时仍会在 render server 中持续合成，
+            // 屏幕熄灭后没有任何用户可见内容，此时清空所有 glass 的滤镜可消除
+            // 锁屏/熄屏状态下的完全无用 GPU 开销。
+            if (sLGAllGlasses) {
+                NSArray<LGLiveBackdropView *> *glasses = sLGAllGlasses.allObjects;
+                if (glasses.count > 0) {
+                    [CATransaction begin];
+                    [CATransaction setDisableActions:YES];
+                    for (LGLiveBackdropView *glass in glasses) {
+                        @try {
+                            glass.layer.filters = @[];
+                        } @catch (__unused NSException *e) {}
+                    }
+                    [CATransaction commit];
+                    LGLog(@"screen off: paused %lu glass filters",
+                          (unsigned long)glasses.count);
+                }
+            }
+            // 停止运动传感器（双重保险，LGRefreshMotionHighlights 也会检查）
+            if (sLGMotionRunning) {
+                [sLGMotionManager stopDeviceMotionUpdates];
+                sLGMotionRunning = NO;
+                LGLog(@"screen off: motion sensor stopped");
+            }
+        } else {
+            // ── 屏幕亮起：恢复所有 glass 的滤镜 ──
+            if (sLGAllGlasses) {
+                NSArray<LGLiveBackdropView *> *glasses = sLGAllGlasses.allObjects;
+                for (LGLiveBackdropView *glass in glasses) {
+                    if (glass.window) {
+                        [glass applyFilters];
+                    }
+                }
+                LGLog(@"screen on: restored %lu glass filters",
+                      (unsigned long)glasses.count);
+            }
+        }
     }
 }
 static CFStringRef const kLGMotionPrefsReloadNotification = CFSTR("dylv.liquidassprefs/Reload");

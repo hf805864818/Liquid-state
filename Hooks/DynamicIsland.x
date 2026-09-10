@@ -86,10 +86,11 @@ static NSString * const kLGDIBackdropGroup   = @"dylv.liquidglass.island";
 static void *kLGDIRestoreInfoKey  = &kLGDIRestoreInfoKey; // 被压制装饰视图 -> 原始状态
 
 // 药丸/展开判定与尺寸门限
-static const CGFloat kLGDIMinWidth  = 60.0;
-static const CGFloat kLGDIMinHeight = 20.0;
-static const CGFloat kLGDIMaxWidth  = 500.0;
-static const CGFloat kLGDIMaxHeight = 300.0;
+// 提高上限以适配 iPhone 16 Pro Max 等大屏设备的展开卡片
+static const CGFloat kLGDIMinWidth  = 40.0;
+static const CGFloat kLGDIMinHeight = 16.0;
+static const CGFloat kLGDIMaxWidth  = 800.0;
+static const CGFloat kLGDIMaxHeight = 400.0;
 
 #pragma mark - Controller state
 
@@ -208,20 +209,35 @@ static BOOL LGDIIsPlausibleSize(CGSize size) {
 // 早期版本取最深的不裁剪祖先，但 iOS 17 布局期系统会反复替换深层小容器，
 // 导致宿主 16ms 内连换三次、玻璃重装、已压制的黑色材质被还原。
 // 顶层容器在药丸↔展开全过程身份稳定，且能把全岛黑色材质纳入同一棵压制子树。
+//
+// v2 修复：不再偏好 TouchPassThrough（它可能是药丸尺寸的小容器，
+// 展开时玻璃 frame 超出 host bounds 虽不裁剪但 backdrop 采样区域受限）。
+// 改为选最大的不裁剪祖先（面积最大），确保展开卡片也能完整覆盖。
 static UIView *LGDIHostForCurtain(UIView *curtain) {
     UIWindow *window = curtain.window;
     if (!window) return nil;
 
     UIView *topNonClipping = nil;
     UIView *touchPassThrough = nil;
+    CGFloat topArea = 0;
+    CGFloat tptArea = 0;
     for (UIView *a = curtain.superview; a && a != window; a = a.superview) {
         if (a.clipsToBounds) continue;
-        topNonClipping = a; // 持续上移，最终保留最高者
+        CGFloat area = a.bounds.size.width * a.bounds.size.height;
+        if (area > topArea) {
+            topNonClipping = a;
+            topArea = area;
+        }
         if ([NSStringFromClass(a.class) containsString:@"TouchPassThrough"]) {
             touchPassThrough = a;
+            tptArea = area;
         }
     }
-    return touchPassThrough ?: topNonClipping ?: window;
+    // 优先选面积最大的不裁剪祖先；TouchPassThrough 仅在其面积 >= topNonClipping 的 80% 时才用
+    if (touchPassThrough && tptArea >= topArea * 0.8) {
+        return touchPassThrough;
+    }
+    return topNonClipping ?: window;
 }
 
 // DEBUG：一次性打印灵动岛窗口真实层级，定位黑色形体的实际承载视图
@@ -343,6 +359,9 @@ static BOOL LGDIIsDecorSubview(UIView *v) {
             @"Line", @"Outline", @"Stroke", @"Separator", @"Dim",
             @"Gradient", @"Shadow", @"Backdrop", @"Material",
             @"Background", @"Tint", @"Overlay",
+            // v2: 扩展关键词
+            @"Curtain", @"GainMap", @"Bezel", @"Ring", @"Border",
+            @"Scrim", @"Vignette", @"Hairline", @"Glow",
         ];
     });
     return LGDIStringMatchesAny(NSStringFromClass(v.class), kDecorKeywords);
@@ -351,8 +370,13 @@ static BOOL LGDIIsDecorSubview(UIView *v) {
 static BOOL LGDIIsBlackBodyMaterial(UIView *v) {
     NSString *name = NSStringFromClass(v.class);
     // iOS 17 静止药丸的黑色材质本体；展开卡片的材质底同样做液态化
+    // v2: 扩展匹配模式以兼容 iOS 18+ 新类名
     return [name isEqualToString:@"MTMaterialView"]
-        || [name containsString:@"ApertureMaterial"];
+        || [name containsString:@"ApertureMaterial"]
+        || [name containsString:@"ApertureBlack"]
+        || [name containsString:@"MagiciansMaterial"]
+        || ([name containsString:@"Material"] && LGDIInApertureWindow(v)
+            && !LGDIIsContentSubview(v));
 }
 
 static BOOL LGDIShouldSuppressDecor(UIView *v) {
@@ -459,10 +483,14 @@ static void LGDIRestoreAllSuppressed(void) {
 static CGFloat LGDIFallbackCornerRadius(CGRect f) {
     // 细长药丸（宽高比 > 2.2）：完全半圆角 = 高/2
     // 展开卡片：约为高度的 1/4（系统实测 40~44pt 区间）
+    // v2: 更精确的展开卡片圆角，系统展开卡片约 44pt
     if (f.size.width > f.size.height * 2.2) {
         return f.size.height / 2.0;
     }
-    return MIN(MAX(f.size.height * 0.24, 36.0), 52.0);
+    // 展开卡片：基于高度计算，但限制在 36~52pt 范围
+    // 大屏设备（如 iPhone 16 Pro Max）展开卡片可能更高
+    CGFloat radius = f.size.height * 0.26;
+    return MIN(MAX(radius, 36.0), 55.0);
 }
 
 static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
@@ -496,6 +524,19 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
         targetRadius = curtain.layer.cornerRadius > 0.5
                            ? curtain.layer.cornerRadius
                            : LGDIFallbackCornerRadius(curtain.bounds);
+    }
+
+    // v2: 如果 curtain frame 太小（可能是过渡态），尝试用内容容器的 frame
+    // 在灵动岛窗口中查找实际的内容容器，其 bounds 可能更接近用户看到的展开区域
+    if (targetFrame.size.width < kLGDIMinWidth || targetFrame.size.height < kLGDIMinHeight) {
+        UIView *contentHost = sLGDIHost;
+        if (contentHost && contentHost.window) {
+            CGRect hostFrame = [contentHost convertRect:contentHost.bounds toView:host];
+            if (LGDIIsPlausibleSize(hostFrame.size)) {
+                targetFrame = hostFrame;
+                targetRadius = LGDIFallbackCornerRadius(hostFrame);
+            }
+        }
     }
 
     if (!LGDIIsPlausibleSize(targetFrame.size)) return;
@@ -634,7 +675,8 @@ static void LGDIInstallGlass(UIView *curtain) {
 
     // 安装/迁移时从窗口根全树压制，防止黑色材质是宿主的兄弟分支；
     // 布局期的增量压制仍只扫容器自身
-    if (sLGDIActive) LGDISweepView(host.window ?: host, 14);
+    // v2: 增加 sweep 深度到 16，确保深层嵌套的 MTMaterialView 被捕获
+    if (sLGDIActive) LGDISweepView(host.window ?: host, 16);
     LGDISyncGeometryFromPresentation(NO);
     LGDIScheduleSync(0.35);
 }
@@ -884,8 +926,10 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
     // compact/expanded 装配玻璃；回到 inert/minimal 还原系统黑色形体
     LGDIReconcile();
     if (sLGDIActive) {
-        // 弹簧形变约 0.5~0.7s，驱动逐帧跟随
-        LGDIScheduleSync(0.85);
+        // 弹簧形变持续时间：compact 约 0.5~0.7s，expanded 约 0.8~1.2s
+        // v2: 根据模式调整驱动时长，展开模式给更长时间跟踪弹簧动画
+        NSTimeInterval driverDuration = (layoutMode == kLGDIModeExpanded) ? 1.5 : 0.85;
+        LGDIScheduleSync(driverDuration);
 #if LIQUIDASS_DEBUG
         // 形变完成后 dump 展开形态的真实层级
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
@@ -933,7 +977,60 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 %end
 
 // =============================================================================
-//  Hook: SBSystemApertureWindow（布局信号，绝不动窗口透明度）
+//  Hook: MTMaterialView（iOS 17 静止药丸黑色材质本体）
+//  v2 新增：直接 hook MTMaterialView，确保灵动岛窗口内的材质视图被隐藏。
+//  此前依赖 LGDISweepView 的递归扫描，但 MTMaterialView 可能出现在
+//  深层嵌套中超过 sweep 深度，直接 hook 确保不遗漏。
+// =============================================================================
+
+%group LGDIMaterialViewHook
+
+%hook MTMaterialView
+
+- (void)didMoveToWindow {
+    %orig;
+    if (sLGDIActive && self.window && LGDIInApertureWindow(self)) {
+        if (!self.hidden) {
+            self.hidden = YES;
+            LGDILog(@"MTMaterialView hidden in aperture window");
+        }
+        LGDIScheduleSync(0.35);
+    }
+}
+
+- (void)layoutSubviews {
+    %orig;
+    if (sLGDIActive && LGDIInApertureWindow(self)) {
+        if (!self.hidden) self.hidden = YES;
+        LGDIScheduleSync(0.35);
+    }
+}
+
+- (void)setHidden:(BOOL)hidden {
+    if (sLGDIActive && !hidden && LGDIInApertureWindow(self)) {
+        hidden = YES;
+    }
+    %orig(hidden);
+}
+
+- (void)setBackgroundColor:(UIColor *)color {
+    if (sLGDIActive && LGDIInApertureWindow(self) && color
+        && CGColorGetAlpha(color.CGColor) > 0.0) {
+        if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
+            LGDIRegisterSuppressed(self, @{ @"bg": color, @"alpha": @(self.alpha) });
+        }
+        color = UIColor.clearColor;
+    }
+    %orig(color);
+}
+
+%end
+%end
+
+// =============================================================================
+//  Hook: SBSystemApertureWindow（布局信号 + 窗口透明化）
+//  v2: 除了布局信号，还要确保窗口背景透明，否则 CABackdropLayer 无法
+//  采样到窗口下方的实时画面（壁纸/前台 App/桌面图标）。
 // =============================================================================
 
 %group LGDIApertureWindowHook
@@ -941,7 +1038,31 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
-    if (sLGDIActive) LGDIScheduleSync(0.35);
+    // v2: 确保窗口背景透明
+    if (sLGDIActive) {
+        if (self.backgroundColor && self.backgroundColor != UIColor.clearColor) {
+            if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
+                LGDIRegisterSuppressed(self, @{ @"bg": self.backgroundColor });
+            }
+            self.backgroundColor = UIColor.clearColor;
+        }
+        // 确保窗口 opaque = NO，否则即使背景透明也做不透明合成
+        if (self.layer.opaque) {
+            self.layer.opaque = NO;
+        }
+        LGDIScheduleSync(0.35);
+    }
+}
+
+- (void)setBackgroundColor:(UIColor *)color {
+    if (sLGDIActive && color && color != UIColor.clearColor
+        && CGColorGetAlpha(color.CGColor) > 0.0) {
+        if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
+            LGDIRegisterSuppressed(self, @{ @"bg": color });
+        }
+        color = UIColor.clearColor;
+    }
+    %orig(color);
 }
 
 %end
@@ -980,6 +1101,10 @@ static void LGDynamicIslandInit(void) {
     if (objc_getClass("_SBSystemApertureContainerViewContentView")) {
         %init(LGDIContentContainerHook);
     }
+    // v2: MTMaterialView 直接 hook，确保灵动岛内嵌套的黑色材质被隐藏
+    if (objc_getClass("MTMaterialView")) {
+        %init(LGDIMaterialViewHook);
+    }
     if (objc_getClass("SBSystemApertureWindow")) {
         %init(LGDIApertureWindowHook);
     }
@@ -992,7 +1117,8 @@ static void LGDynamicIslandInit(void) {
 
     // SpringBoard 启动时若已有实时活动（音乐/导航等），系统通常会补发
     // setLayoutMode:；这里的延迟 reconcile 仅作兜底
-    for (NSNumber *delay in @[ @0.8, @2.5, @5.0 ]) {
+    // v2: 增加更多延迟重试，确保冷启动场景下也能捕获到已有活动
+    for (NSNumber *delay in @[ @0.8, @2.5, @5.0, @8.0, @12.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{

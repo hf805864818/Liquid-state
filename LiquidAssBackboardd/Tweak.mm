@@ -1361,6 +1361,37 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     static uint64_t tsum_stop = 0, tsum_ours = 0, tsum_gauss = 0, tcount = 0;
     uint64_t t_start = mach_absolute_time();
 
+    // ── 帧率限制（Frame Rate Throttling） ──
+    // 性能降级时跳过自定义渲染帧，直接 return（不调用原始高斯模糊）。
+    // 上一帧的渲染结果保留在 destTex 中，视觉上无闪烁风险（与隔帧渲染不同，
+    // 隔帧渲染在自定义和原始高斯之间交替导致闪烁，而此方案跳帧时不渲染任何内容）。
+    // 注意: 仅在降级状态（热/充电/低电量/屏幕亮度低）下启用帧率限制。
+    {
+        static mach_timebase_info_data_t s_throttleTB = {0, 0};
+        if (s_throttleTB.denom == 0) mach_timebase_info(&s_throttleTB);
+        static uint64_t s_lastThrottledFrame = 0;
+
+        BOOL throttled = (g_thermalState >= 2 || g_chargingActive);
+        if (throttled) {
+            // 降级时目标 30fps（~33.3ms 间隔）
+            uint64_t minIntervalNs = 33_333_333;
+            if (g_thermalState >= 3) {
+                // Serious+ 热状态降至 20fps（~50ms 间隔）
+                minIntervalNs = 50_000_000;
+            }
+            uint64_t now = t_start;
+            uint64_t elapsed = (now - s_lastThrottledFrame)
+                * s_throttleTB.numer / s_throttleTB.denom;
+            if (elapsed < minIntervalNs) {
+                // 跳过此帧，保留上一帧结果
+                return;
+            }
+            s_lastThrottledFrame = now;
+        } else {
+            s_lastThrottledFrame = t_start;
+        }
+    }
+
     // 注意: 不再使用隔帧渲染 (frame skipping)。
     // 隔帧渲染会在自定义液态渲染和原始 Gaussian 渲染之间交替，
     // 两条渲染路径的视觉差异 (折射/色散/高光) 会导致明显闪烁。
