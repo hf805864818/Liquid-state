@@ -1374,10 +1374,12 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
         BOOL throttled = (g_thermalState >= 2 || g_chargingActive);
         if (throttled) {
             // 降级时目标 30fps（~33.3ms 间隔）
-            uint64_t minIntervalNs = 33_333_333;
+            // 注: 不使用 33_333_333 数字分隔符（C++14 语法，C++11 下会被解析为
+            // 自定义字面量操作符导致编译失败），改用纯数字。
+            uint64_t minIntervalNs = 33333333ull;
             if (g_thermalState >= 3) {
                 // Serious+ 热状态降至 20fps（~50ms 间隔）
-                minIntervalNs = 50_000_000;
+                minIntervalNs = 50000000ull;
             }
             uint64_t now = t_start;
             uint64_t elapsed = (now - s_lastThrottledFrame)
