@@ -476,43 +476,110 @@ static UIView *LGDIHostForCurtain(UIView *curtain) {
     return touchPassThrough ?: topNonClipping ?: window;
 }
 
+// =============================================================================
+//  阶段 3.1 纯诊断工具（LIQUIDASS_DEBUG 编译，零视觉改动）
+//  目的：为「附件黑底 + 内容重承载」决策取证，只输出日志，不写任何
+//  hidden / alpha / backgroundColor / frame。CI 以 LIQUIDASS_DEBUG=1 出包。
+// =============================================================================
+#if LIQUIDASS_DEBUG
+
+// UIColor 安全描述（动态色/非 RGB 色空间不崩）
+static NSString *LGDIDiagColorDesc(UIColor *bg) {
+    if (!bg) return @"nil";
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if ([bg getRed:&r green:&g blue:&b alpha:&a]) {
+        return [NSString stringWithFormat:@"(%.2f,%.2f,%.2f,%.2f)", r, g, b, a];
+    }
+    return @"non-rgb";
+}
+
+// window 所属 scene 标识（persistentIdentifier + 激活状态）
+static NSString *LGDIDiagSceneId(UIWindow *w) {
+    if (!w) return @"<nil-win>";
+    @try {
+        UIWindowScene *ws = w.windowScene;
+        if (!ws) return @"<no-scene>";
+        NSString *pid = ws.session.persistentIdentifier;
+        return [NSString stringWithFormat:@"%@/state=%ld/role=%@",
+                pid ?: NSStringFromClass(ws.class),
+                (long)ws.activationState, ws.session.role];
+    } @catch (NSException *e) {
+        return @"<scene-err>";
+    }
+}
+
+// 向上打印祖先链（含每级 sibling index）：定位附件内容根与黑底承载者
+static void LGDIDiagLogAncestorChain(UIView *v, NSUInteger maxUp, NSString *prefix) {
+    UIView *a = v;
+    for (NSUInteger i = 0; a && i <= maxUp; i++) {
+        NSUInteger idx = NSNotFound, total = 0;
+        if (a.superview) {
+            idx = [a.superview.subviews indexOfObject:a];
+            total = a.superview.subviews.count;
+        }
+        LGDILog(@"%@chain %lu: %@ sibIdx=%lu/%lu of %@ frame=%@ hidden=%d "
+                @"alpha=%.2f clip=%d bg=%@ layer=%@",
+                prefix, (unsigned long)i, NSStringFromClass(a.class),
+                (unsigned long)idx, (unsigned long)total,
+                a.superview ? NSStringFromClass(a.superview.class) : @"<nil>",
+                NSStringFromCGRect(a.frame), (int)a.hidden, a.alpha,
+                (int)a.clipsToBounds, LGDIDiagColorDesc(a.backgroundColor),
+                NSStringFromClass(a.layer.class));
+        a = a.superview;
+    }
+}
+
+#endif
+
 // DEBUG：一次性打印灵动岛窗口真实层级，定位黑色形体的实际承载视图
 static void LGDIDumpTree(UIView *v, NSUInteger depth, NSUInteger maxDepth) {
 #if LIQUIDASS_DEBUG
     if (!v || depth > maxDepth) return;
-    CGFloat r=0,g=0,b=0,a=0;
-    UIColor *bg = v.backgroundColor;
-    [bg getRed:&r green:&g blue:&b alpha:&a];
     NSString *cls = NSStringFromClass(v.class);
-    LGDILog(@"tree %lu: %@ frame=%@ alpha=%.2f hidden=%d clip=%d bg=%@ layer=%@",
+    NSUInteger sibIdx = NSNotFound, sibCount = 0;
+    if (v.superview) {
+        sibIdx = [v.superview.subviews indexOfObject:v];
+        sibCount = v.superview.subviews.count;
+    }
+    LGDILog(@"tree %lu: %@ frame=%@ alpha=%.2f hidden=%d clip=%d bg=%@ layer=%@ sib=%lu/%lu",
             (unsigned long)depth, cls,
             NSStringFromCGRect(v.frame), v.alpha, (int)v.hidden,
-            (int)v.clipsToBounds,
-            bg ? [NSString stringWithFormat:@"(%.2f,%.2f,%.2f,%.2f)", r, g, b, a]
-               : @"nil",
-            NSStringFromClass(v.layer.class));
+            (int)v.clipsToBounds, LGDIDiagColorDesc(v.backgroundColor),
+            NSStringFromClass(v.layer.class),
+            (unsigned long)sibIdx, (unsigned long)sibCount);
+
+    // 附件提供容器 / 材质层：黑底的直接承载者，额外打印 recipe / layer group
+    if ([cls containsString:@"ProvidedView"] || [cls containsString:@"Material"]
+        || [cls containsString:@"Backdrop"]) {
+        NSString *recipe = @"-";
+        @try {
+            id rn = [v valueForKey:@"recipeName"] ?: [v valueForKey:@"_recipeName"];
+            if (rn) recipe = [rn description];
+        } @catch (NSException *e) { recipe = @"n/a"; }
+        id group = nil, scale = nil;
+        @try { group = [v.layer valueForKey:@"groupName"]; } @catch (...) {}
+        @try { scale = [v.layer valueForKey:@"scale"]; } @catch (...) {}
+        LGDILog(@"tree %lu:   MAT/PROVIDED/BACKDROP recipe=%@ layerGroup=%@ scale=%@",
+                (unsigned long)depth, recipe, group, scale);
+    }
 
     // _UIPortalView 把别处的 layer 树投影到灵动岛窗口，是黑色形体的头号嫌疑
     if ([cls containsString:@"PortalView"]) {
         @try {
-            UIView *sv = nil;
-            sv = [v valueForKey:@"sourceView"];
+            UIView *sv = [v valueForKey:@"sourceView"];
             if (sv) {
                 UIWindow *srcWin = sv.window;
                 CGRect inWin = srcWin ? [sv convertRect:sv.bounds toView:srcWin] : CGRectNull;
-                LGDILog(@"tree %lu:   PORTAL sourceView=%@ inWindow=%@ hidden=%d "
-                        @"alpha=%.2f clips=%d frameInSrcWin=%@ subviews=%lu",
+                LGDILog(@"tree %lu:   PORTAL sourceView=%@ inWindow=%@ level=%.1f "
+                        @"scene=%@ hidden=%d alpha=%.2f clips=%d frameInSrcWin=%@ subviews=%lu",
                         (unsigned long)depth, NSStringFromClass(sv.class),
-                        NSStringFromClass(srcWin.class), (int)sv.hidden, sv.alpha,
-                        (int)sv.clipsToBounds, NSStringFromCGRect(inWin),
-                        (unsigned long)sv.subviews.count);
-                // 展开源视图一层子树
-                for (UIView *ss in sv.subviews) {
-                    LGDILog(@"tree %lu:     portalSrcSub %@ frame=%@ hidden=%d alpha=%.2f bg=%@",
-                            (unsigned long)depth, NSStringFromClass(ss.class),
-                            NSStringFromCGRect(ss.frame), (int)ss.hidden, ss.alpha,
-                            ss.backgroundColor ? @"set" : @"nil");
-                }
+                        NSStringFromClass(srcWin.class), srcWin.windowLevel,
+                        LGDIDiagSceneId(srcWin),
+                        (int)sv.hidden, sv.alpha, (int)sv.clipsToBounds,
+                        NSStringFromCGRect(inWin), (unsigned long)sv.subviews.count);
+                // 源视图向上 5 层祖先链：黑底承载者通常是源视图的第 1~3 级父容器
+                LGDIDiagLogAncestorChain(sv, 5,
+                    [NSString stringWithFormat:@"tree %lu:   ", (unsigned long)depth]);
             }
             CALayer *sl = [v valueForKey:@"sourceLayer"];
             if (sl && sl != sv.layer) {
@@ -533,16 +600,198 @@ static void LGDIDumpTree(UIView *v, NSUInteger depth, NSUInteger maxDepth) {
 }
 
 #if LIQUIDASS_DEBUG
+
+// ① 全窗口清单：确认附件源窗口与灵动岛窗口的层级先后 / scene 归属
+static void LGDIDumpWindowInventory(UIWindow *apertureWin) {
+    LGDILog(@"----- [diag1] window inventory begin -----");
+    NSUInteger wi = 0;
+    NSArray<UIScene *> *scenes = [UIApplication sharedApplication].connectedScenes.allObjects;
+    for (UIScene *scene in scenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) {
+            LGDILog(@"win#%lu non-window-scene=%@ state=%ld",
+                    (unsigned long)wi, NSStringFromClass(scene.class),
+                    (long)scene.activationState);
+            wi++;
+            continue;
+        }
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            LGDILog(@"win#%lu %@ level=%.1f hidden=%d key=%d frame=%@ scene=%@%@",
+                    (unsigned long)wi, NSStringFromClass(w.class), w.windowLevel,
+                    (int)w.hidden, (int)w.isKeyWindow,
+                    NSStringFromCGRect(w.frame), LGDIDiagSceneId(w),
+                    (w == apertureWin) ? @"  <== CURTAIN_WIN" : @"");
+            wi++;
+        }
+    }
+    LGDILog(@"----- [diag1] window inventory end (%lu windows) -----", (unsigned long)wi);
+}
+
+// ② host z 序：curtain→host 祖先链 + host 父级兄弟顺序 + host 内部子视图。
+//    坐实/推翻「附件投影在玻璃合成顺序下方」这一关键推断。
+static void LGDIDumpHostZOrder(UIView *curtain, UIView *host, UIWindow *win) {
+    if (!curtain || !host) return;
+    LGDILog(@"----- [diag2] z-order curtain -> host -----");
+    NSMutableArray<UIView *> *chain = [NSMutableArray array];
+    for (UIView *a = curtain; a && a != win; a = a.superview) [chain addObject:a];
+    for (NSUInteger i = 0; i < chain.count; i++) {
+        UIView *a = chain[i];
+        NSUInteger idx = a.superview ? [a.superview.subviews indexOfObject:a] : NSNotFound;
+        LGDILog(@"zchain %lu: %@ sibIdx=%lu/%lu of %@",
+                (unsigned long)i, NSStringFromClass(a.class),
+                (unsigned long)idx,
+                (unsigned long)(a.superview ? a.superview.subviews.count : 0),
+                a.superview ? NSStringFromClass(a.superview.class) : @"<nil>");
+    }
+
+    UIView *hp = host.superview;
+    if (hp) {
+        LGDILog(@"[diag2] host siblings inside %@ (%lu) — idx 小=合成顺序在下",
+                NSStringFromClass(hp.class), (unsigned long)hp.subviews.count);
+        NSUInteger si = 0;
+        for (UIView *s in hp.subviews) {
+            NSString *cn = NSStringFromClass(s.class);
+            NSString *mark = (s == host) ? @"  <== HOST"
+                : [cn containsString:@"PortalView"] ? @"  <== PORTAL"
+                : [cn containsString:@"LGLiveBackdrop"] ? @"  <== GLASS?" : @"";
+            LGDILog(@"hsib %lu: %@ frame=%@ hidden=%d alpha=%.2f%@",
+                    (unsigned long)si, cn, NSStringFromCGRect(s.frame),
+                    (int)s.hidden, s.alpha, mark);
+            si++;
+        }
+    }
+    LGDILog(@"[diag2] host.subviews (%lu) — 玻璃应在 idx 0",
+            (unsigned long)host.subviews.count);
+    NSUInteger hi = 0;
+    for (UIView *s in host.subviews) {
+        NSString *cn = NSStringFromClass(s.class);
+        NSString *mark = [cn isEqualToString:@"LGLiveBackdropView"] ? @"  <== GLASS"
+            : [cn containsString:@"PortalView"] ? @"  <== PORTAL" : @"";
+        LGDILog(@"hsub %lu: %@ frame=%@ hidden=%d alpha=%.2f%@",
+                (unsigned long)hi, cn, NSStringFromCGRect(s.frame),
+                (int)s.hidden, s.alpha, mark);
+        hi++;
+        if (hi >= 30) { LGDILog(@"hsub ... truncated"); break; }
+    }
+}
+
+// ③ 附件结构化快拍：全 Aperture/Alerting 窗口收集
+//    PortalView / ProvidedView 容器 / MTMaterial，输出 portal 源视图与祖先链。
+static void LGDIDiagCollectMarked(UIView *v, NSUInteger depth, NSUInteger maxDepth,
+                                  NSMutableArray<UIView *> *hits) {
+    if (!v || depth > maxDepth) return;
+    NSString *cn = NSStringFromClass(v.class);
+    if ([cn containsString:@"PortalView"] || [cn containsString:@"ProvidedView"]
+        || [cn containsString:@"MTMaterial"]) {
+        [hits addObject:v];
+    }
+    for (UIView *s in v.subviews) LGDIDiagCollectMarked(s, depth + 1, maxDepth, hits);
+}
+
+static void LGDIDumpAttachmentSnapshot(UIWindow *apertureWin) {
+    LGDILog(@"----- [diag3] attachment snapshot begin -----");
+    NSUInteger n = 0;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            NSString *wcn = NSStringFromClass(w.class);
+            if (!([wcn containsString:@"Aperture"] || [wcn containsString:@"Alerting"]
+                  || w == apertureWin)) continue;
+            NSMutableArray<UIView *> *hits = [NSMutableArray array];
+            LGDIDiagCollectMarked(w.rootViewController.view ?: (UIView *)w,
+                                  0, 16, hits);
+            if (hits.count == 0) continue;
+            LGDILog(@"attWin %@ level=%.1f scene=%@ markedHits=%lu",
+                    wcn, w.windowLevel, LGDIDiagSceneId(w),
+                    (unsigned long)hits.count);
+            for (UIView *v in hits) {
+                NSString *cn = NSStringFromClass(v.class);
+                CGRect inWin = [v convertRect:v.bounds toView:w];
+                LGDILog(@"att#%lu %@ frameInWin=%@ hidden=%d alpha=%.2f bg=%@ subs=%lu",
+                        (unsigned long)n, cn, NSStringFromCGRect(inWin),
+                        (int)v.hidden, v.alpha,
+                        LGDIDiagColorDesc(v.backgroundColor),
+                        (unsigned long)v.subviews.count);
+                if ([cn containsString:@"PortalView"]) {
+                    @try {
+                        UIView *sv = [v valueForKey:@"sourceView"];
+                        if (sv) {
+                            UIWindow *sw = sv.window;
+                            CGRect sf = sw ? [sv convertRect:sv.bounds toView:sw]
+                                           : CGRectNull;
+                            LGDILog(@"att#%lu PORTAL-SRC %@ srcWin=%@ level=%.1f "
+                                    @"scene=%@ frame=%@ hidden=%d alpha=%.2f "
+                                    @"clip=%d bg=%@ subs=%lu",
+                                    (unsigned long)n, NSStringFromClass(sv.class),
+                                    NSStringFromClass(sw.class), sw.windowLevel,
+                                    LGDIDiagSceneId(sw), NSStringFromCGRect(sf),
+                                    (int)sv.hidden, sv.alpha,
+                                    (int)sv.clipsToBounds,
+                                    LGDIDiagColorDesc(sv.backgroundColor),
+                                    (unsigned long)sv.subviews.count);
+                            LGDIDiagLogAncestorChain(sv, 5,
+                                [NSString stringWithFormat:@"att#%lu src-",
+                                    (unsigned long)n]);
+                        } else {
+                            LGDILog(@"att#%lu PORTAL sourceView == nil", (unsigned long)n);
+                        }
+                    } @catch (NSException *e) {
+                        LGDILog(@"att#%lu PORTAL introspect failed: %@",
+                                (unsigned long)n, e.reason);
+                    }
+                }
+                n++;
+                if (n >= 80) {
+                    LGDILog(@"att ... truncated at 80");
+                    LGDILog(@"----- [diag3] attachment snapshot end (truncated) -----");
+                    return;
+                }
+            }
+        }
+    }
+    LGDILog(@"----- [diag3] attachment snapshot end (%lu marked views) -----",
+            (unsigned long)n);
+}
+
 static NSUInteger sLGDIDumpCount;
 static void LGDIRequestDump(NSString *reason) {
-    if (sLGDIDumpCount >= 8) return;
+    // 阶段 3.1：三场景（音乐 compact/expanded、红果）反复切换都要能抓到，上限放宽
+    if (sLGDIDumpCount >= 24) return;
     UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     UIWindow *win = curtain.window ?: (sLGDIHost.window);
     if (!win) return;
     sLGDIDumpCount++;
-    LGDILog(@"===== aperture tree dump #%lu reason=%@ =====",
-            (unsigned long)sLGDIDumpCount, reason);
+    LGDILog(@"===== [DI-DUMP] #%lu reason=%@ mode=%@ =====",
+            (unsigned long)sLGDIDumpCount, reason,
+            LGDIModeName((NSInteger)[DIPillStateMachine shared].currentMode));
+
+    // ① 全窗口清单（类名 / level / scene）
+    LGDIDumpWindowInventory(win);
+
+    // ② 灵动岛主窗口完整树（深度 8）
+    LGDILog(@"----- [tree] aperture window %@ level=%.1f -----",
+            NSStringFromClass(win.class), win.windowLevel);
     LGDIDumpTree(win, 0, 8);
+
+    // ③ 其它 Aperture/Alerting 窗口（附件源窗口，深度 12）
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            if (w == win) continue;
+            NSString *cn = NSStringFromClass(w.class);
+            if ([cn containsString:@"Aperture"] || [cn containsString:@"Alerting"]) {
+                LGDILog(@"----- [tree] diag window %@ level=%.1f scene=%@ -----",
+                        cn, w.windowLevel, LGDIDiagSceneId(w));
+                LGDIDumpTree(w.rootViewController.view ?: (UIView *)w, 0, 12);
+            }
+        }
+    }
+
+    // ④ host z 序（玻璃 vs 附件投影的合成先后）
+    UIView *diagHost = sLGDIHost ?: (curtain ? LGDIHostForCurtain(curtain) : nil);
+    LGDIDumpHostZOrder(curtain, diagHost, win);
+
+    // ⑤ 附件结构化快拍（portal 源视图 + 黑底祖先链）
+    LGDIDumpAttachmentSnapshot(win);
 
     LGLiveBackdropView *glass = sLGDIGlass;
     if (glass) {
@@ -554,11 +803,13 @@ static void LGDIRequestDump(NSString *reason) {
             [fdesc addObject:t ?: NSStringFromClass([f class])];
         }
         LGDILog(@"glass diag: win=%@ level=%.1f group=%@ ns=%@ scale=%@ "
-                @"filters=%@ opaque=%d opacity=%.2f hidden=%d",
+                @"filters=%@ opaque=%d opacity=%.2f hidden=%d frame=%@",
                 NSStringFromClass(glass.window.class), glass.window.windowLevel,
                 [l valueForKey:@"groupName"], [l valueForKey:@"groupNamespace"],
-                [l valueForKey:@"scale"], fdesc, (int)l.opaque, l.opacity, (int)l.hidden);
+                [l valueForKey:@"scale"], fdesc, (int)l.opaque, l.opacity,
+                (int)l.hidden, NSStringFromCGRect(glass.frame));
     }
+    LGDILog(@"===== [DI-DUMP] #%lu end =====", (unsigned long)sLGDIDumpCount);
 }
 #endif
 
@@ -857,6 +1108,8 @@ static CGRect LGDIFindExpandedContentFrame(UIView *glass, UIView *curtain) {
 
     __block CGRect bestFrame = CGRectNull;
     __block CGFloat bestArea = 0;
+    __block UIView *bestView = nil;
+    __block NSUInteger candidateCount = 0;
 
     void (^checkView)(UIView *) = ^(UIView *v) {
         if (!v || v == glass || v == curtain || v.hidden || v.alpha < 0.01) return;
@@ -875,9 +1128,11 @@ static CGRect LGDIFindExpandedContentFrame(UIView *glass, UIView *curtain) {
         // 必须在灵动岛区域（屏幕顶部 1/3）
         if (f.origin.y > 300) return;
 
+        candidateCount++;
         CGFloat area = f.size.width * f.size.height;
         if (area > bestArea) {
             bestArea = area;
+            bestView = v;
             bestFrame = [glass.window convertRect:f toView:glass.superview ?: glass.window];
         }
     };
@@ -910,9 +1165,28 @@ static CGRect LGDIFindExpandedContentFrame(UIView *glass, UIView *curtain) {
         }
     }
 
+    // 阶段 3.1 诊断：展开帧搜索逐帧执行，按 ~60 帧（约 1s）节流输出一次
+    // 命中/未命中状态与命中者类名，确认几何启发式到底选中了谁。
+#if LIQUIDASS_DEBUG
+    {
+        static NSUInteger sLGDIExpScanTick = 0;
+        if ((sLGDIExpScanTick++ % 60) == 0) {
+            if (!CGRectIsNull(bestFrame) && LGDIIsPlausibleSize(bestFrame.size)) {
+                LGDILog(@"expanded scan: HIT view=%@ win=%@ frame=%@ candidates=%lu "
+                        @"(compact %.0fx%.0f)",
+                        NSStringFromClass(bestView.class),
+                        NSStringFromClass(bestView.window.class),
+                        NSStringFromCGRect(bestFrame),
+                        (unsigned long)candidateCount, compactW, compactH);
+            } else {
+                LGDILog(@"expanded scan: MISS candidates=%lu (compact %.0fx%.0f)",
+                        (unsigned long)candidateCount, compactW, compactH);
+            }
+        }
+    }
+#endif
+
     if (!CGRectIsNull(bestFrame) && LGDIIsPlausibleSize(bestFrame.size)) {
-        LGDILog(@"expanded content frame found: %@ (compact was %.0fx%.0f)",
-                NSStringFromCGRect(bestFrame), compactW, compactH);
         return bestFrame;
     }
     return CGRectNull;
