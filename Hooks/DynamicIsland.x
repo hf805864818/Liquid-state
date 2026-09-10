@@ -985,13 +985,18 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 
 %group LGDIMaterialViewHook
 
+// 注意: MTMaterialView 在文件中仅为 @class 前置声明，编译器无法解析其继承自
+// UIView 的属性。因此在 hook 体内统一把它转为 UIView * 再访问属性。
+#define LGDIMVV ((UIView *)self)
+
 %hook MTMaterialView
 
 - (void)didMoveToWindow {
     %orig;
-    if (sLGDIActive && self.window && LGDIInApertureWindow(self)) {
-        if (!self.hidden) {
-            self.hidden = YES;
+    UIView *v = LGDIMVV;
+    if (sLGDIActive && v.window && LGDIInApertureWindow(v)) {
+        if (!v.hidden) {
+            v.hidden = YES;
             LGDILog(@"MTMaterialView hidden in aperture window");
         }
         LGDIScheduleSync(0.35);
@@ -1000,29 +1005,34 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
-    if (sLGDIActive && LGDIInApertureWindow(self)) {
-        if (!self.hidden) self.hidden = YES;
+    UIView *v = LGDIMVV;
+    if (sLGDIActive && LGDIInApertureWindow(v)) {
+        if (!v.hidden) v.hidden = YES;
         LGDIScheduleSync(0.35);
     }
 }
 
 - (void)setHidden:(BOOL)hidden {
-    if (sLGDIActive && !hidden && LGDIInApertureWindow(self)) {
+    UIView *v = LGDIMVV;
+    if (sLGDIActive && !hidden && LGDIInApertureWindow(v)) {
         hidden = YES;
     }
     %orig(hidden);
 }
 
 - (void)setBackgroundColor:(UIColor *)color {
-    if (sLGDIActive && LGDIInApertureWindow(self) && color
+    UIView *v = LGDIMVV;
+    if (sLGDIActive && LGDIInApertureWindow(v) && color
         && CGColorGetAlpha(color.CGColor) > 0.0) {
-        if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
-            LGDIRegisterSuppressed(self, @{ @"bg": color, @"alpha": @(self.alpha) });
+        if (!objc_getAssociatedObject(v, kLGDIRestoreInfoKey)) {
+            LGDIRegisterSuppressed(v, @{ @"bg": color, @"alpha": @(v.alpha) });
         }
         color = UIColor.clearColor;
     }
     %orig(color);
 }
+
+#undef LGDIMVV
 
 %end
 %end
