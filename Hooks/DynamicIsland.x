@@ -85,6 +85,10 @@ static NSString * const kLGDIBackdropGroup   = @"dylv.liquidglass.island";
 
 static void *kLGDIRestoreInfoKey  = &kLGDIRestoreInfoKey; // 被压制装饰视图 -> 原始状态
 
+// 总开关（含全局开关 / 前台 App 排除）。前向声明，供本文件靠前的视图压制路径使用。
+// 阶段2.6：激活不再依赖 setLayoutMode: 回调是否到达，统一以此 + 在屏幕布判定。
+static BOOL LGDIFeatureEnabled(void);
+
 // =============================================================================
 //  透明化四路独立开关（对标 Mango 的 CurtainHiddenV2 / GainMapDisabledV2 /
 //  ContentTransparentV2 / OutlineHiddenV2）。全部默认开启，行为与旧版
@@ -629,7 +633,9 @@ static void LGDISweepView(UIView *v, NSUInteger depth) {
 }
 
 static void LGDISuppressDecorations(UIView *host) {
-    if (!host || !sLGDIActive) return;
+    // 阶段2.6：只要求总开关开启（不再要求 setLayoutMode 已把 sLGDIActive 置位），
+    // 与 Beta6 的 curtain/touch 事件独立驱动保持一致。
+    if (!host || !LGDIFeatureEnabled()) return;
 
     // 容器自身底色清空（由 LGDClearContentBg 控制）
     if (LGDClearContentBg()
@@ -932,15 +938,73 @@ static void LGDITeardown(BOOL featureDisabled) {
 }
 
 // =============================================================================
+//  Engagement（阶段2.6：多信号事件驱动，对标 Beta6 mangoos.dylib）
+// -----------------------------------------------------------------------------
+//  旧设计把整条液态链 gate 在唯一的被动信号上：只有系统回调
+//  SBSystemApertureSceneElement setLayoutMode:reason: 且记录到 compact/expanded，
+//  sLGDIActive 才置位；一旦该回调在某些实时活动/系统小版本上未按预期到达，
+//  连黑幕都不会隐藏、玻璃也不会创建 —— 表现为"完全没效果"。
+//
+//  Beta6 的做法（其 [Island] hook 日志实证）：curtain 的 didMoveToWindow/
+//  setHidden、gainmap、touchPassthrough、viewWillAppear 任一事件都能独立驱动。
+//  这里改为：只要「总开关开 && 存在一块在灵动岛窗口内、尺寸合理的在屏幕布」
+//  即点亮 sLGDIActive 并安装玻璃；setLayoutMode 仅用于区分形态与驱动时长。
+// =============================================================================
+
+static BOOL LGDIFeatureEnabled(void) {
+    return lgHostEnabled(kLGDIFilterPrefix);
+}
+
+static BOOL LGDICurtainReady(UIView *curtain) {
+    return curtain && curtain.window
+        && LGDIInApertureWindow(curtain)
+        && LGDIIsPlausibleSize(curtain.bounds.size);
+}
+
+// 点亮/刷新液态化。curtain 为 nil 时自动在窗口中查找。可重入、幂等。
+static void LGDIEngage(UIView *curtain) {
+    if (!LGDIFeatureEnabled()) {
+        if (sLGDIActive || sLGDIGlass) {
+            sLGDIActive = NO;
+            LGDITeardown(YES);
+            LGDILog(@"disengage: feature turned off, stock island restored");
+        }
+        return;
+    }
+    if (!curtain) curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
+    if (!LGDICurtainReady(curtain)) return;   // 布局未完成/已下屏：等下一个事件重试
+
+    if (!sLGDIActive) {
+        sLGDIActive = YES;
+        LGDILog(@"engaged by on-screen curtain %@ frame=%@",
+                NSStringFromClass(curtain.class),
+                NSStringFromCGRect(curtain.bounds));
+    }
+    LGDIInstallGlass(curtain);
+}
+
+// =============================================================================
 //  Sync scheduling
 // =============================================================================
 
 static void LGDIDoScheduledSync(void) {
     sLGDISyncQueued = NO;
-    if (!sLGDIActive) return;
+    if (!LGDIFeatureEnabled()) {
+        if (sLGDIActive || sLGDIGlass) {
+            sLGDIActive = NO;
+            LGDITeardown(YES);
+        }
+        return;
+    }
 
     UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     if (!curtain || !curtain.window) return;
+
+    // 尚未激活：以在屏幕布为信号直接点亮（不再等待 setLayoutMode 回调）
+    if (!sLGDIActive) {
+        LGDIEngage(curtain);
+        return;
+    }
 
     if (!sLGDIGlass) {
         LGDIInstallGlass(curtain);
@@ -976,9 +1040,11 @@ static void LGDIDoScheduledSync(void) {
 }
 
 static void LGDIScheduleSync(NSTimeInterval driverDuration) {
-    if (!sLGDIActive) return;
+    if (!LGDIFeatureEnabled()) return;
 
-    if (driverDuration > 0) {
+    // 仅在已激活时启动逐帧驱动；未激活时只排队一次 sync（其内部会完成点亮）。
+    // 点亮后 LGDIInstallGlass 尾部会再次 ScheduleSync，届时正常拉起 driver。
+    if (sLGDIActive && driverDuration > 0) {
         LGDIStartDriverReal(driverDuration);
     }
     if (!sLGDISyncQueued) {
@@ -994,44 +1060,46 @@ static void LGDIScheduleSync(NSTimeInterval driverDuration) {
 // =============================================================================
 
 static void LGDIReconcile(void) {
-    BOOL enabled = lgHostEnabled(kLGDIFilterPrefix);
-    // 只在 compact 长药丸 / expanded 展开卡片上液态化；
-    // inert 空闲小药丸与 minimal 极小形态保持系统原样
-    BOOL want = enabled && LGDIHasActiveLayout();
-
-    if (!want) {
+    // 阶段2.6：是否液态化只取决于「总开关 + 在屏黑色幕布」，
+    // 不再依赖 setLayoutMode 是否记录到 compact/expanded（旧逻辑的单点静默失效）。
+    if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
             sLGDIActive = NO;
             LGDITeardown(YES);
-            LGDILog(@"inert/minimal or disabled: stock island restored");
+            LGDILog(@"disabled: stock island restored");
         }
         return;
     }
 
-    sLGDIActive = YES;
     UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     if (curtain && curtain.window) {
-        LGDIInstallGlass(curtain);
+        LGDIEngage(curtain);
     } else {
-        LGDILog(@"reconcile: active layout but no on-screen curtain yet");
+        LGDILog(@"reconcile: enabled but no on-screen curtain yet");
     }
 }
 
 static void LGDIHandleCurtainAttached(UIView *curtain) {
-    if (!sLGDIActive) return;
+    // 阶段2.6：curtain 上屏本身即激活信号（对标 Beta6 curtain didMoveToWindow 驱动）。
+    if (!LGDIFeatureEnabled()) return;
+    if (!curtain.window || !LGDIInApertureWindow(curtain)) return;
     sLGDICurtain = curtain;
     // didMoveToWindow 时层级往往还没布局完，延后一拍再装
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (curtain.window && LGDIIsPlausibleSize(curtain.bounds.size)) {
-            LGDIInstallGlass(curtain);
+        if (LGDICurtainReady(curtain)) {
+            LGDIEngage(curtain);
         } else {
+            // 尺寸尚未就绪：排队 sync（内部会在 curtain 就绪后点亮），并由后续
+            // layoutSubviews / viewWillAppear 等事件再次触发，形成多信号冗余。
             LGDIScheduleSync(0.25);
         }
     });
 }
 
 static BOOL LGDIShouldForceHidden(UIView *view) {
-    if (sLGDIActive && view.window != nil && LGDIInApertureWindow(view)) {
+    // 阶段2.6：只要求总开关开 + 位于灵动岛窗口，不再要求 sLGDIActive 已置位，
+    // 保证黑色幕布在玻璃创建之前就被压制，杜绝"先黑一下"的闪烁。
+    if (LGDIFeatureEnabled() && view.window != nil && LGDIInApertureWindow(view)) {
         // 按类名把强制隐藏分派到四路开关：
         //   curtain -> HideCurtain
         //   GainMap -> RemoveGainMap
@@ -1124,7 +1192,7 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
-    if (sLGDIActive && LGDIInApertureWindow(self)) {
+    if (LGDIFeatureEnabled() && LGDIInApertureWindow(self)) {
         LGDISuppressDecorations(self);
         LGDIScheduleSync(0.35);
     }
@@ -1143,12 +1211,12 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 - (void)viewWillAppear:(BOOL)animated {
     %orig(animated);
     LGDILog(@"aperture viewWillAppear");
-    if (sLGDIActive) LGDIScheduleSync(0.35);
+    if (LGDIFeatureEnabled()) LGDIScheduleSync(0.35);
 }
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    if (sLGDIActive) LGDIScheduleSync(0.35);
+    if (LGDIFeatureEnabled()) LGDIScheduleSync(0.35);
 }
 
 %end
@@ -1189,7 +1257,8 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 %hook _SBSystemApertureContainerViewContentView
 
 - (void)setBackgroundColor:(UIColor *)color {
-    if (sLGDIActive && color && color != UIColor.clearColor
+    if (LGDIFeatureEnabled() && LGDIInApertureWindow(self)
+        && color && color != UIColor.clearColor
         && CGColorGetAlpha(color.CGColor) > 0.0) {
         // 记录原色，停用功能时由 LGDIRestoreAllSuppressed 统一还原
         if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
@@ -1202,7 +1271,8 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
-    if (sLGDIActive && self.backgroundColor
+    if (LGDIFeatureEnabled() && LGDIInApertureWindow(self)
+        && self.backgroundColor
         && self.backgroundColor != UIColor.clearColor) {
         if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
             LGDIRegisterSuppressed(self, @{ @"bg": self.backgroundColor });
@@ -1223,7 +1293,7 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
-    if (sLGDIActive) LGDIScheduleSync(0.35);
+    if (LGDIFeatureEnabled()) LGDIScheduleSync(0.35);
 }
 
 %end
