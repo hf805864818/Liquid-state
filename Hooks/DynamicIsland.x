@@ -86,8 +86,13 @@ static NSString * const kLGDIBackdropGroup   = @"dylv.liquidglass.island";
 static void *kLGDIRestoreInfoKey  = &kLGDIRestoreInfoKey; // 被压制装饰视图 -> 原始状态
 
 // 总开关（含全局开关 / 前台 App 排除）。前向声明，供本文件靠前的视图压制路径使用。
-// 阶段2.6：激活不再依赖 setLayoutMode: 回调是否到达，统一以此 + 在屏幕布判定。
 static BOOL LGDIFeatureEnabled(void);
+// 阶段2.6.1：是否存在「真实实时活动」布局（compact 长药丸 / expanded 展开卡片 /
+// detached）。空闲 inert/minimal 小药丸不算——它没有液态化意义，且活动进出时
+// 反复建/拆玻璃正是默认小岛闪烁的根因。定义在状态机之后。
+static BOOL LGDIHasActiveLayout(void);
+// 压制黑幕/装饰、装玻璃的总前提：总开关开 且 当前为活动布局。
+static BOOL LGDILiquidSuppressionActive(void);
 
 // =============================================================================
 //  透明化四路独立开关（对标 Mango 的 CurtainHiddenV2 / GainMapDisabledV2 /
@@ -351,6 +356,29 @@ typedef NS_ENUM(NSInteger, DIPillLayoutMode) {
 }
 
 @end
+
+// =============================================================================
+//  活动布局判定（阶段2.6.1）
+// -----------------------------------------------------------------------------
+//  真机日志（iOS17）证实 setLayoutMode:reason: 始终可靠上报，状态机 currentMode
+//  准确反映当前形态。因此液态化严格 gate 在 compact/expanded/detached：
+//    - 空闲 inert/minimal 小药丸保持系统原样（不隐藏黑幕、不建玻璃），
+//      彻底消除「默认小岛无意义且活动进出时一闪一闪」；
+//    - 玻璃只在真实实时活动出现时才创建，backdrop 捕获组在活动上下文建立，
+//      避免在空闲空上下文建玻璃导致采样为空（黑）。
+// =============================================================================
+static BOOL LGDIModeIsLiquid(NSInteger mode) {
+    return mode == kLGDIModeCompact || mode == kLGDIModeExpanded
+        || mode == kLGDIModeDetached;
+}
+
+static BOOL LGDIHasActiveLayout(void) {
+    return LGDIModeIsLiquid((NSInteger)[DIPillStateMachine shared].currentMode);
+}
+
+static BOOL LGDILiquidSuppressionActive(void) {
+    return LGDIFeatureEnabled() && LGDIHasActiveLayout();
+}
 
 // =============================================================================
 //  View tree helpers
@@ -619,9 +647,8 @@ static void LGDISweepView(UIView *v, NSUInteger depth) {
 }
 
 static void LGDISuppressDecorations(UIView *host) {
-    // 阶段2.6：只要求总开关开启（不再要求 setLayoutMode 已把 sLGDIActive 置位），
-    // 与 Beta6 的 curtain/touch 事件独立驱动保持一致。
-    if (!host || !LGDIFeatureEnabled()) return;
+    // 阶段2.6.1：仅在真实活动布局（compact/expanded）才压制装饰；空闲小岛保持原样。
+    if (!host || !LGDILiquidSuppressionActive()) return;
 
     // 容器自身底色清空（由 LGDClearContentBg 控制）
     if (LGDClearContentBg()
@@ -957,12 +984,23 @@ static void LGDIEngage(UIView *curtain) {
         }
         return;
     }
+    // 阶段2.6.1：空闲 inert/minimal 小药丸不液态化。活动结束回到空闲时，
+    // 主动拆除玻璃并还原系统黑色形体，避免空闲岛残留/闪烁。
+    if (!LGDIHasActiveLayout()) {
+        if (sLGDIActive || sLGDIGlass) {
+            sLGDIActive = NO;
+            LGDITeardown(YES);
+            LGDILog(@"disengage: idle/inert island — keep stock, liquid removed");
+        }
+        return;
+    }
     if (!curtain) curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     if (!LGDICurtainReady(curtain)) return;   // 布局未完成/已下屏：等下一个事件重试
 
     if (!sLGDIActive) {
         sLGDIActive = YES;
-        LGDILog(@"engaged by on-screen curtain %@ frame=%@",
+        LGDILog(@"engaged (active layout mode=%@) by curtain %@ frame=%@",
+                LGDIModeName((NSInteger)[DIPillStateMachine shared].currentMode),
                 NSStringFromClass(curtain.class),
                 NSStringFromCGRect(curtain.bounds));
     }
@@ -983,10 +1021,20 @@ static void LGDIDoScheduledSync(void) {
         return;
     }
 
+    // 阶段2.6.1：空闲小岛不液态化（兜底，正常路径由状态机 reconcile 拆除）
+    if (!LGDIHasActiveLayout()) {
+        if (sLGDIActive || sLGDIGlass) {
+            sLGDIActive = NO;
+            LGDITeardown(YES);
+            LGDILog(@"scheduled sync: idle layout — liquid removed");
+        }
+        return;
+    }
+
     UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     if (!curtain || !curtain.window) return;
 
-    // 尚未激活：以在屏幕布为信号直接点亮（不再等待 setLayoutMode 回调）
+    // 尚未激活：以在屏幕布为信号点亮（此时必为 compact/expanded）
     if (!sLGDIActive) {
         LGDIEngage(curtain);
         return;
@@ -1046,8 +1094,11 @@ static void LGDIScheduleSync(NSTimeInterval driverDuration) {
 // =============================================================================
 
 static void LGDIReconcile(void) {
-    // 阶段2.6：是否液态化只取决于「总开关 + 在屏黑色幕布」，
-    // 不再依赖 setLayoutMode 是否记录到 compact/expanded（旧逻辑的单点静默失效）。
+    // 阶段2.6.1：点亮/拆除统一由 LGDIEngage 裁决——
+    //   总开关关            -> 拆除还原
+    //   inert/minimal 空闲  -> 拆除还原（默认小岛保持系统原样，不闪）
+    //   compact/expanded    -> 找到在屏幕布即装玻璃
+    // LGDIEngage 内部先判布局再找 curtain，空闲态即使 curtain 暂未取到也会拆除。
     if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
             sLGDIActive = NO;
@@ -1056,13 +1107,7 @@ static void LGDIReconcile(void) {
         }
         return;
     }
-
-    UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
-    if (curtain && curtain.window) {
-        LGDIEngage(curtain);
-    } else {
-        LGDILog(@"reconcile: enabled but no on-screen curtain yet");
-    }
+    LGDIEngage(nil);
 }
 
 static void LGDIHandleCurtainAttached(UIView *curtain) {
@@ -1083,9 +1128,9 @@ static void LGDIHandleCurtainAttached(UIView *curtain) {
 }
 
 static BOOL LGDIShouldForceHidden(UIView *view) {
-    // 阶段2.6：只要求总开关开 + 位于灵动岛窗口，不再要求 sLGDIActive 已置位，
-    // 保证黑色幕布在玻璃创建之前就被压制，杜绝"先黑一下"的闪烁。
-    if (LGDIFeatureEnabled() && view.window != nil && LGDIInApertureWindow(view)) {
+    // 阶段2.6.1：仅在真实活动布局（compact/expanded）才强制隐藏黑色形体；
+    // 空闲 inert/minimal 小岛放行，保持系统原样（首帧黑幕由 LGDIInstallGlass 直接隐藏）。
+    if (LGDILiquidSuppressionActive() && view.window != nil && LGDIInApertureWindow(view)) {
         // 按类名把强制隐藏分派到四路开关：
         //   curtain -> HideCurtain
         //   GainMap -> RemoveGainMap
@@ -1243,7 +1288,7 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 %hook _SBSystemApertureContainerViewContentView
 
 - (void)setBackgroundColor:(UIColor *)color {
-    if (LGDIFeatureEnabled() && LGDIInApertureWindow(self)
+    if (LGDILiquidSuppressionActive() && LGDIInApertureWindow(self)
         && color && color != UIColor.clearColor
         && CGColorGetAlpha(color.CGColor) > 0.0) {
         // 记录原色，停用功能时由 LGDIRestoreAllSuppressed 统一还原
@@ -1257,7 +1302,7 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 
 - (void)layoutSubviews {
     %orig;
-    if (LGDIFeatureEnabled() && LGDIInApertureWindow(self)
+    if (LGDILiquidSuppressionActive() && LGDIInApertureWindow(self)
         && self.backgroundColor
         && self.backgroundColor != UIColor.clearColor) {
         if (!objc_getAssociatedObject(self, kLGDIRestoreInfoKey)) {
