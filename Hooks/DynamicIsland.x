@@ -183,17 +183,83 @@ static void LGDIDumpTree(UIView *v, NSUInteger depth, NSUInteger maxDepth) {
     CGFloat r=0,g=0,b=0,a=0;
     UIColor *bg = v.backgroundColor;
     [bg getRed:&r green:&g blue:&b alpha:&a];
-    LGDILog(@"tree %lu: %@ frame=%@ alpha=%.2f hidden=%d clip=%d bg=%@",
-            (unsigned long)depth, NSStringFromClass(v.class),
+    NSString *cls = NSStringFromClass(v.class);
+    LGDILog(@"tree %lu: %@ frame=%@ alpha=%.2f hidden=%d clip=%d bg=%@ layer=%@",
+            (unsigned long)depth, cls,
             NSStringFromCGRect(v.frame), v.alpha, (int)v.hidden,
             (int)v.clipsToBounds,
             bg ? [NSString stringWithFormat:@"(%.2f,%.2f,%.2f,%.2f)", r, g, b, a]
-               : @"nil");
+               : @"nil",
+            NSStringFromClass(v.layer.class));
+
+    // _UIPortalView 把别处的 layer 树投影到灵动岛窗口，是黑色形体的头号嫌疑
+    if ([cls containsString:@"PortalView"]) {
+        @try {
+            UIView *sv = [v valueForKey:@"sourceView"];
+            if (sv) {
+                UIWindow *srcWin = sv.window;
+                CGRect inWin = srcWin ? [sv convertRect:sv.bounds toView:srcWin] : CGRectNull;
+                LGDILog(@"tree %lu:   PORTAL sourceView=%@ inWindow=%@ hidden=%d "
+                        @"alpha=%.2f clips=%d frameInSrcWin=%@ subviews=%lu",
+                        (unsigned long)depth, NSStringFromClass(sv.class),
+                        NSStringFromClass(srcWin.class), (int)sv.hidden, sv.alpha,
+                        (int)sv.clipsToBounds, NSStringFromCGRect(inWin),
+                        (unsigned long)sv.subviews.count);
+                // 展开源视图一层子树
+                for (UIView *ss in sv.subviews) {
+                    LGDILog(@"tree %lu:     portalSrcSub %@ frame=%@ hidden=%d alpha=%.2f bg=%@",
+                            (unsigned long)depth, NSStringFromClass(ss.class),
+                            NSStringFromCGRect(ss.frame), (int)ss.hidden, ss.alpha,
+                            ss.backgroundColor ? @"set" : @"nil");
+                }
+            }
+            CALayer *sl = [v valueForKey:@"sourceLayer"];
+            if (sl && sl != sv.layer) {
+                LGDILog(@"tree %lu:   PORTAL sourceLayer=%@ hidden=%d opacity=%.2f sublayers=%lu",
+                        (unsigned long)depth, NSStringFromClass(sl.class),
+                        (int)sl.hidden, sl.opacity, (unsigned long)sl.sublayers.count);
+            }
+        } @catch (NSException *e) {
+            LGDILog(@"tree %lu:   PORTAL introspect failed: %@",
+                    (unsigned long)depth, e.reason);
+        }
+    }
+
     for (UIView *sub in v.subviews) LGDIDumpTree(sub, depth + 1, maxDepth);
 #else
     (void)v; (void)depth; (void)maxDepth;
 #endif
 }
+
+#if LIQUIDASS_DEBUG
+static NSUInteger sLGDIDumpCount;
+static void LGDIRequestDump(NSString *reason) {
+    if (sLGDIDumpCount >= 8) return;
+    UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
+    UIWindow *win = curtain.window ?: (sLGDIHost.window);
+    if (!win) return;
+    sLGDIDumpCount++;
+    LGDILog(@"===== aperture tree dump #%lu reason=%@ =====",
+            (unsigned long)sLGDIDumpCount, reason);
+    LGDIDumpTree(win, 0, 8);
+
+    LGLiveBackdropView *glass = sLGDIGlass;
+    if (glass) {
+        CALayer *l = glass.layer;
+        NSMutableArray *fdesc = [NSMutableArray array];
+        for (id f in l.filters) {
+            NSString *t = nil;
+            @try { t = [f valueForKey:@"type"]; } @catch (...) {}
+            [fdesc addObject:t ?: NSStringFromClass([f class])];
+        }
+        LGDILog(@"glass diag: win=%@ level=%.1f group=%@ ns=%@ scale=%@ "
+                @"filters=%@ opaque=%d opacity=%.2f hidden=%d",
+                NSStringFromClass(glass.window.class), glass.window.windowLevel,
+                [l valueForKey:@"groupName"], [l valueForKey:@"groupNamespace"],
+                [l valueForKey:@"scale"], fdesc, (int)l.opaque, l.opacity, (int)l.hidden);
+    }
+}
+#endif
 
 // =============================================================================
 //  装饰视图压制（描边 / 压暗层 / 容器底色）
@@ -492,13 +558,31 @@ static void LGDIInstallGlass(UIView *curtain) {
                 NSStringFromClass(host.class),
                 NSStringFromCGRect(glass.frame));
 
-        // 首次/换宿主安装时 dump 两次真实层级（iOS 17 黑色形体定位用）
+        // 诊断：dump 真实层级 + 红色信标（DEBUG 构建专用）
 #if LIQUIDASS_DEBUG
-        static NSUInteger sLGDIDumpCount;
-        if (sLGDIDumpCount < 2 && host.window) {
-            sLGDIDumpCount++;
-            LGDIDumpTree(host.window, 0, 6);
+        {
+            static BOOL sLGDIBeaconAdded;
+            if (!sLGDIBeaconAdded) {
+                sLGDIBeaconAdded = YES;
+                CALayer *beacon = [CALayer layer];
+                beacon.name = @"LGDIBeacon";
+                beacon.backgroundColor =
+                    [UIColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:0.85].CGColor;
+                beacon.frame = glass.layer.bounds;
+                beacon.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+                [glass.layer addSublayer:beacon];
+                LGDILog(@"DIAG red beacon installed over glass: "
+                        @"red pill => backdrop capture is BLACK; "
+                        @"still-black pill => an occluder sits ABOVE the glass");
+            }
         }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LGDIRequestDump(@"install");
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            LGDIRequestDump(@"install+0.4s");
+        });
 #endif
 
         // backboardd 滤镜 atom 注册有重试，补发几次 applyFilters
@@ -762,6 +846,13 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
     if (sLGDIActive) {
         // 弹簧形变约 0.5~0.7s，驱动逐帧跟随
         LGDIScheduleSync(0.85);
+#if LIQUIDASS_DEBUG
+        // 形变完成后 dump 展开形态的真实层级
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            LGDIRequestDump([NSString stringWithFormat:@"layoutMode=%ld", (long)layoutMode]);
+        });
+#endif
     }
 }
 
