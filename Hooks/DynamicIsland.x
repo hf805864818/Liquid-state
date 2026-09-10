@@ -661,7 +661,7 @@ static void LGDISweepView(UIView *v, NSUInteger depth) {
 // -----------------------------------------------------------------------------
 //  关键：玻璃以 insertSubview:atIndex:0 装在容器最底层。iOS 17 长药丸/展开卡片
 //  的纯黑并不只来自 curtain——内容/呈现容器（_SAUIProvidedViewContainerView、
-//  *Presenter*/*Content* 等）自身常带一块「近黑不透明 backgroundColor」，它们在
+//  Presenter、Content 等）自身常带一块「近黑不透明 backgroundColor」，它们在
 //  z-order 上盖在玻璃之上，把玻璃整片涂成黑。旧逻辑因 LGDIIsContentSubview 明确
 //  跳过所有内容视图，这块黑底从未被处理 —— 这正是「玻璃一直黑、看不到液态」的
 //  直接原因之一。
