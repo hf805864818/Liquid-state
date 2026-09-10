@@ -202,7 +202,7 @@ NSArray<NSDictionary *> *LGPrefsSurfaceItems(NSString *identifier) {
     if ([identifier isEqualToString:LGPrefsSurfaceAppLibrarySearch]) return LGRendererItemsForHostPrefix(@"AppLibSearch");
     if ([identifier isEqualToString:LGPrefsSurfaceNotifications]) return LGRendererItemsForHostPrefix(@"Notification");
     if ([identifier isEqualToString:LGPrefsSurfaceNotificationCenter]) return LGRendererItemsForHostPrefix(@"NotificationCenter");
-    if ([identifier isEqualToString:LGPrefsSurfaceDynamicIsland]) return LGRendererItemsForHostPrefix(@"DynamicIsland");
+    if ([identifier isEqualToString:LGPrefsSurfaceDynamicIsland]) return LGDynamicIslandItems();
     if ([identifier isEqualToString:LGPrefsSurfaceQuickActions]) return LGRendererItemsForHostPrefix(@"QuickActions");
     if ([identifier isEqualToString:LGPrefsSurfacePasscode]) return LGRendererItemsForHostPrefix(@"Passcode");
     if ([identifier isEqualToString:LGPrefsSurfaceClock]) return LGClockItems();

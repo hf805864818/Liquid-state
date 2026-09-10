@@ -114,6 +114,10 @@
 "prefs.section.lockscreen_notifications.title" = "通知";
 "prefs.section.notification_center.title" = "通知中心";
 "prefs.section.dynamic_island.title" = "灵动岛";
+"prefs.section.di_diagnostics.title" = "诊断";
+"prefs.section.di_diagnostics.subtitle" = "";
+"prefs.control.di_empty_capture_debug" = "空捕获诊断（洋红）";
+"prefs.subtitle.di_empty_capture_debug" = "灵动岛跨窗口背景捕获为空时，在玻璃区域渲染洋红色。仅用于排查玻璃全透明问题，验证后请关闭。";
 "prefs.section.banner.title" = "横幅";
 "prefs.section.lockscreen_quick_actions.title" = "快捷操作";
 "prefs.section.lockscreen_passcode.title" = "密码";

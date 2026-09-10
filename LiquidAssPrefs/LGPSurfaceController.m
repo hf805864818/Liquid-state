@@ -983,6 +983,7 @@ static void LGEnsureTabBarExclusionsInitialized(void) {
         [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"Notification")];
         [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"NotificationCenter")];
         [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"DynamicIsland")];
+        [items addObject:@{ @"key": @"DynamicIsland.EmptyCaptureDebug" }];
         [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"QuickActions")];
         [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"Passcode")];
         [items addObjectsFromArray:LGRendererItemsForHostPrefix(@"Clock")];

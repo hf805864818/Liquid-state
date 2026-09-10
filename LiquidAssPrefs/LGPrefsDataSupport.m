@@ -1741,6 +1741,23 @@ NSArray<NSDictionary *> *LGTabBarItems(void) {
     ]);
 }
 
+NSArray<NSDictionary *> *LGDynamicIslandItems(void) {
+    // 灵动岛独立合成域的跨窗口 backdrop 捕获可能为空，导致玻璃整块透明。
+    // 诊断开关打开后空采样像素渲染洋红色，用于设备上确认根因；
+    // 切换经「应用」下发 dylv.liquidassprefs/Reload，backboardd 热重载即时生效。
+    return LGJoinItemGroups(@[
+        LGRendererItemsForHostPrefix(@"DynamicIsland"),
+        @[
+            LGSectionSetting(LGLocalized(@"prefs.section.di_diagnostics.title"),
+                             LGLocalized(@"prefs.section.di_diagnostics.subtitle")),
+            LGSwitchSetting(@"DynamicIsland.EmptyCaptureDebug",
+                            LGLocalized(@"prefs.control.di_empty_capture_debug"),
+                            LGLocalized(@"prefs.subtitle.di_empty_capture_debug"),
+                            NO),
+        ],
+    ]);
+}
+
 NSArray<NSDictionary *> *LGLockscreenItems(void) {
     return LGJoinItemGroups(@[
         @[
@@ -1754,7 +1771,7 @@ NSArray<NSDictionary *> *LGLockscreenItems(void) {
         @[
             LGSectionSetting(LGLocalized(@"prefs.section.dynamic_island.title"), nil),
         ],
-        LGRendererItemsForHostPrefix(@"DynamicIsland"),
+        LGDynamicIslandItems(),
         @[
             LGSectionSetting(LGLocalized(@"prefs.section.lockscreen_quick_actions.title"), nil),
         ],

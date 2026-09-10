@@ -190,3 +190,8 @@
 "prefs.app_icons_warning.confirm" = "Enable";
 "prefs.control.fresnel_glare" = "Fresnel Glare";
 "prefs.subtitle.fresnel_glare" = "Controls the edge glare added by the glass shader.";
+
+"prefs.section.di_diagnostics.title" = "診斷";
+"prefs.section.di_diagnostics.subtitle" = "";
+"prefs.control.di_empty_capture_debug" = "空擷取診斷（洋紅）";
+"prefs.subtitle.di_empty_capture_debug" = "動態島跨視窗背景擷取為空時，在玻璃區域渲染洋紅色。僅用於排查玻璃全透明問題，驗證後請關閉。";

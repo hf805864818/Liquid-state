@@ -126,6 +126,10 @@
 "prefs.section.lockscreen_notifications.title" = "Notifications";
 "prefs.section.notification_center.title" = "Notification Center";
 "prefs.section.dynamic_island.title" = "Dynamic Island";
+"prefs.section.di_diagnostics.title" = "Diagnostics";
+"prefs.section.di_diagnostics.subtitle" = "";
+"prefs.control.di_empty_capture_debug" = "Empty-Capture Debug (Magenta)";
+"prefs.subtitle.di_empty_capture_debug" = "Paints the Dynamic Island glass magenta when cross-window backdrop capture is empty. Only for diagnosing the transparent-glass issue; turn it off after verifying.";
 "prefs.section.banner.title" = "Banners";
 "prefs.section.lockscreen_quick_actions.title" = "Quick Actions";
 "prefs.section.lockscreen_passcode.title" = "Passcode";
