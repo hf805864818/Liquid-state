@@ -853,17 +853,21 @@ static CGRect LGDIFindExpandedContentFrame(UIView *glass, UIView *curtain) {
             [NSStringFromClass(w.class) containsString:@"Alerting"] ||
             w == glass.window) {
             // 深搜此窗口，找展开内容视图
-            __weak void (^weakBlock)(UIView *, NSUInteger);
-            __block void (^block)(UIView *, NSUInteger);
-            weakBlock = ^(UIView *v, NSUInteger depth) {
+            // 递归 block 的正确 ARC 写法：walk 由 strong 局部变量持有
+            //（block literal 不能直接赋给 __weak，否则赋完即被释放，
+            // 触发 -Warc-unsafe-retained-assign）；weakWalk 同时用
+            // __block（让 block 按引用捕获、递归时读到赋值后的值）和
+            // __weak（block 不强持有自身，避免 retain cycle）修饰。
+            __block __weak void (^weakWalk)(UIView *, NSUInteger);
+            void (^walk)(UIView *, NSUInteger) = ^(UIView *v, NSUInteger depth) {
                 if (!v || depth > 12) return;
                 checkView(v);
-                for (UIView *sub in v.subviews) weakBlock(sub, depth + 1);
+                for (UIView *sub in v.subviews) weakWalk(sub, depth + 1);
             };
-            block = weakBlock;
+            weakWalk = walk;
             UIView *root = w.rootViewController.view;
             if (!root) root = (UIView *)w;
-            block(root, 0);
+            walk(root, 0);
         }
     }
 
