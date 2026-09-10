@@ -391,17 +391,6 @@ float2 backdropSampleUV(float2 capturePx,
     return clamp(sampleUV, 0.0, 1.0);
 }
 
-// 灵动岛跨窗口捕获"坏采样"判定：
-//  - mode 0（其它 host）：仅空采样（a≈0）算坏，保持旧行为；
-//  - mode>0（灵动岛）：空采样 或 近黑污染（被隐藏的黑窗帘/附件黑底/
-//    MTMaterial 被该合成域采到，非空但 rgb 全黑）都算坏，走兜底底色。
-bool lgDIBadCapture(float4 c, constant Uniforms &u) {
-    if (c.a < 0.01) return true;
-    if (u.captureFallbackMode > 0.5 && c.a > 0.5
-        && c.r < 0.12 && c.g < 0.12 && c.b < 0.14) return true;
-    return false;
-}
-
 float4 liquidGlassPixel(texture2d<float, access::sample> src,
                         texture2d<float, access::sample> glyphMask,
                         constant Uniforms &u, uint2 gid, uint2 dimensions)
@@ -560,11 +549,10 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
 
     if (R < shortest * 0.45 && distFromSide >= bezel) {
         float4 flat = src.sample(s, captureUV);
-        // 灵动岛独立合成域兜底：除了"空采样"(a≈0)，还有"近黑污染"——
-        // 被隐藏的黑窗帘 / 附件黑底 / MTMaterial 仍可能被该合成域采到，
-        // 采样非空但 rgb 全黑，视觉同样是纯黑方块。两种情况都替换成
-        // 玻璃底色（mode 2 洋红诊断）。
-        if (u.captureFallbackMode > 0.5 && lgDIBadCapture(flat, u)) {
+        if (flat.a < 0.01 && u.captureFallbackMode > 0.5) {
+            // 跨窗口 backdrop 捕获为空（灵动岛独立合成域兜底）：不返回全透明，
+            // 用深色玻璃材质底色替代；边缘着色/菲涅尔在调用方仍会叠加。
+            // mode 2 为洋红诊断色，设备上看到实心洋红即证实"空捕获"。
             float3 fb = u.captureFallbackMode > 1.5
                         ? float3(1.0, 0.0, 1.0)
                         : float3(0.045, 0.045, 0.055);
@@ -602,25 +590,17 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
     float4 fallback = float4(0.0);
     bool loadedFallback = false;
     bool captureEmpty = false;
-    // 折射采样为空/近黑时，尝试原位采样；原位也坏才走兜底底色。
-    // mode 0 时坏采样仅指 a≈0，行为与旧逻辑完全一致；mode>0 时近黑污染也算坏。
-    bool greenNeedsFallback = (u.captureFallbackMode > 0.5)
-        ? lgDIBadCapture(greenSample, u)
-        : (greenSample.a < 0.01);
-    if (greenNeedsFallback) {
+    if (greenSample.a < 0.01) {
         fallback = src.sample(s, captureUV);
         loadedFallback = true;
-        // 原位是真实内容：直接采用原位；原位也坏则保持绿色采样进入下方兜底
-        if (!lgDIBadCapture(fallback, u)) {
-            greenSample = fallback;
-        }
+        greenSample = fallback;
     }
-    if (lgDIBadCapture(greenSample, u)) {
+    if (greenSample.a < 0.01) {
         if (u.captureFallbackMode > 0.5) {
-            // 折射与原位两路采样都为空/近黑：灵动岛跨窗口捕获失败兜底。
+            // 折射采样与原位采样都为空：灵动岛跨窗口捕获失败兜底。
             // 用深色玻璃底色（或洋红诊断色）替代，跳过色散（没有可色散的
-            // 真实内容），后续边缘着色渐变 + 菲涅尔眩光仍正常叠加，
-            // 保证边缘有液态高光而不是整块纯黑/纯透明。
+            // 内容），后续边缘着色渐变 + 菲涅尔眩光仍正常叠加，
+            // 保证边缘有液态高光而不是整块纯透明。
             captureEmpty = true;
             float3 fb = u.captureFallbackMode > 1.5
                         ? float3(1.0, 0.0, 1.0)
@@ -1031,9 +1011,7 @@ static void lgReloadHostPrefs(void) {
     // 为空的像素渲染洋红色，用于设备上确认"跨窗口捕获为空"这一根因。
     NSNumber *diEmptyDbg = prefs[@"DynamicIsland.EmptyCaptureDebug"];
     g_diEmptyCaptureDebug = (diEmptyDbg && [diEmptyDbg isKindOfClass:[NSNumber class]] && diEmptyDbg.boolValue);
-    // 无条件打印当前值：设备上确认偏好是否真的被 backboardd 读到
-    lglog("DynamicIsland empty-capture debug: %s (magenta when capture empty/near-black)",
-          g_diEmptyCaptureDebug ? "ON" : "off");
+    if (g_diEmptyCaptureDebug) lglog("DynamicIsland empty-capture debug: ON (magenta fallback)");
     {
         static int sPrefsPathDiagCount = 0;
         if (sPrefsPathDiagCount < 5) {
@@ -1650,10 +1628,9 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     lu.captureFallbackMode = 0.f;
     if (!strcmp(hp->prefPrefix, "DynamicIsland")) {
         lu.captureFallbackMode = g_diEmptyCaptureDebug ? 2.f : 1.f;
-        // 周期性日志（约每 120 次渲染一次）：切换诊断开关后可从日志确认
-        // mode 是否真的变为 2；dims 对应当前灵动岛玻璃的渲染分辨率。
         static int sDIFallbackLog = 0;
-        if ((sDIFallbackLog++ % 120) == 0) {
+        if (sDIFallbackLog < 3) {
+            sDIFallbackLog++;
             lglog("[DI] capture fallback mode=%.0f atom=0x%x dims=%llux%llu",
                   lu.captureFallbackMode, ftype, w, h);
         }
