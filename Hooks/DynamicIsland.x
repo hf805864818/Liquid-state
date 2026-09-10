@@ -373,7 +373,17 @@ static BOOL LGDIModeIsLiquid(NSInteger mode) {
 }
 
 static BOOL LGDIHasActiveLayout(void) {
-    return LGDIModeIsLiquid((NSInteger)[DIPillStateMachine shared].currentMode);
+    // 以「当前仍存活的 element 集合」的实时聚合模式为准，而不能只看状态机里最后一次
+    // setLayoutMode: 上报的 sLGDIMode：实时活动结束时，系统往往直接释放对应的
+    // SBSystemApertureSceneElement，而不会再回调一次 setLayoutMode:inert。
+    // 此时旧值会停留在 compact/expanded，若据此判定，玻璃与黑幕压制会一直残留到
+    // 空闲小药丸上 —— 表现为「默认小岛发灰」。sLGDIElementModes 是
+    // weakToStrong 映射表，element 释放后条目自动剔除，currentPreferredMode
+    // 随之回到 inert/minimal，正好给出「此刻是否真有实时活动」的准确信号。
+    NSInteger liveMode = (NSInteger)[DIElementManager currentPreferredMode];
+    // 手势交互展开期间 element 必然存活且上报 compact/expanded，liveMode 已覆盖；
+    // 不再额外回退到依赖 sLGDIMode 的 isExpanded（element 释放后该值会过期卡死）。
+    return LGDIModeIsLiquid(liveMode);
 }
 
 static BOOL LGDILiquidSuppressionActive(void) {

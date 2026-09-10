@@ -763,6 +763,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
 
 @implementation LGLiveBackdropView {
     NSString        *_lgGroupName;
+    NSString        *_lgGroupTag;   // 调用方传入的语义前缀（仅用于命名/调试）
     CAGradientLayer *_specular;
     CAGradientLayer *_specularBoost;
     CALayer         *_specularMask;
@@ -800,6 +801,26 @@ static void LGReportMemoryUsageIfNeeded(void) {
     return NSClassFromString(@"CABackdropLayer") ?: [CALayer class];
 }
 
+// 生成全局唯一的 backdrop 捕获组名（对标 Mango 的 go.mangoos.p<pid>.<hash>.g<counter>）。
+// render server 以 (groupNamespace, groupName) 标识一个捕获组：
+//   - 灵动岛玻璃在实时活动「出现/消失」时会被反复建/拆；
+//   - 若每次都复用同一个固定 groupName，新建（或强制刷新）的 CABackdropLayer
+//     会被 render server 归到上一个已销毁 / 首捕为空(黑) 的陈旧捕获组上，
+//     重新 setValue 同名 groupName 对它是 no-op，无法触发重新采样 → 玻璃永久发黑。
+// 因此每个玻璃实例都必须拿到一个进程内/全局唯一的组名，强制 render server
+// 为其建立全新的捕获上下文。tag 仅保留语义前缀便于日志辨识。
+- (NSString *)lgUniqueGroupNameWithTag:(NSString *)tag {
+    NSString *base = tag.length ? tag : @"dylv.liquidglass";
+    // 单调递增的全局序列号：保证「同一玻璃实例多次强制刷新」也能拿到不同的组名，
+    // 从而每次都让 render server 销毁旧捕获组、建立全新采样（self 地址/_lgId 在
+    // 实例生命周期内不变，不能单独用作刷新时的区分量）。
+    static uint32_t sLGGroupEpoch = 0;
+    uint32_t epoch = ++sLGGroupEpoch;
+    return [NSString stringWithFormat:@"%@.p%d.%08x.g%u.e%u",
+            base, (int)getpid(), (uint32_t)((uintptr_t)self & 0xFFFFFFFFu),
+            _lgId, epoch];
+}
+
 - (instancetype)initWithFrame:(CGRect)frame {
     return [self initWithFrame:frame groupName:nil filterType:nil];
 }
@@ -814,13 +835,10 @@ static void LGReportMemoryUsageIfNeeded(void) {
     _lgFilterType = [filterType copy];
     static uint32_t idCounter = 0;
     _lgId = ++idCounter;
-    if (groupName.length) {
-
-        _lgGroupName = [groupName copy];
-    } else {
-
-        _lgGroupName = [NSString stringWithFormat:@"dylv.liquidglass.g%u", _lgId];
-    }
+    // 无论调用方是否传入 groupName，实际下发给 CABackdropLayer 的组名都必须
+    // 全局唯一（见 lgUniqueGroupNameWithTag: 说明）。传入名仅作为语义前缀。
+    _lgGroupTag  = [groupName copy] ?: @"dylv.liquidglass";
+    _lgGroupName = [self lgUniqueGroupNameWithTag:_lgGroupTag];
     self.userInteractionEnabled = NO;
     self.backgroundColor        = [UIColor clearColor];
     self.opaque                 = NO;
@@ -1133,9 +1151,16 @@ static void LGReportMemoryUsageIfNeeded(void) {
     // 清空 filters + 重置 _backdropConfigured，使 applyFilters 重新断言
     // windowServerAware / groupName / groupNamespace / ignoresScreenClip，
     // 从而在内容已就绪后重新采样背景（修复特殊窗口首次捕获为空/黑）。
+    //
+    // 关键：必须同步更换为一个全新的 groupName。render server 以 groupName
+    // 标识捕获组，若重建时仍用同名，setValue: 对它是 no-op，旧的（首捕为空/黑
+    // 的）捕获组会被继续复用，重采样永远不会发生。换新名后旧组被销毁、新组强制
+    // 重新建立捕获上下文（对标 Mango 每个玻璃实例使用唯一 go.mangoos.p*.g* 组名）。
+    NSString *newGroup = [self lgUniqueGroupNameWithTag:_lgGroupTag ?: @"dylv.liquidglass"];
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     layer.filters = @[];
+    _lgGroupName = newGroup;
     _filterAttached = NO;
     _backdropConfigured = NO;
     _appliedScale = -1.0f;
