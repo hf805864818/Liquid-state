@@ -656,17 +656,71 @@ static void LGDISweepView(UIView *v, NSUInteger depth) {
     for (UIView *sub in v.subviews) LGDISweepView(sub, depth - 1);
 }
 
+// =============================================================================
+//  近黑背景剥离（对标 Mango 的 "stripped near-black bg" / pillContentTransparent）
+// -----------------------------------------------------------------------------
+//  关键：玻璃以 insertSubview:atIndex:0 装在容器最底层。iOS 17 长药丸/展开卡片
+//  的纯黑并不只来自 curtain——内容/呈现容器（_SAUIProvidedViewContainerView、
+//  *Presenter*/*Content* 等）自身常带一块「近黑不透明 backgroundColor」，它们在
+//  z-order 上盖在玻璃之上，把玻璃整片涂成黑。旧逻辑因 LGDIIsContentSubview 明确
+//  跳过所有内容视图，这块黑底从未被处理 —— 这正是「玻璃一直黑、看不到液态」的
+//  直接原因之一。
+//
+//  这里只清背景色、绝不改 alpha/hidden：视图本体与其上的实时内容（图标/文字/
+//  专辑图）原样保留，仅移除把玻璃盖住的黑色漆。判定阈值与 Mango 一致：
+//  alpha 足够大且 r/g/b 都很低（近黑）才剥离，彩色/浅色内容背景不受影响。
+// =============================================================================
+
+static BOOL LGDIColorIsNearBlackOpaque(UIColor *c) {
+    if (!c || c == UIColor.clearColor) return NO;
+    CGFloat r = 0, g = 0, b = 0, a = 0, w = 0;
+    if ([c getRed:&r green:&g blue:&b alpha:&a]) {
+        // 已解析为 RGBA
+    } else if ([c getWhite:&w alpha:&a]) {
+        r = g = b = w;  // 灰度（含黑白/灰）
+    } else {
+        return NO;     // 图案/图案色等无法取分量，保守不动
+    }
+    if (!(a > 0.4)) return NO;                 // 透明底无需剥离
+    return (r < 0.25 && g < 0.25 && b < 0.25); // 近黑
+}
+
+// 仅清背景色（bg-only）。记录到同一压制集合，停用/回空闲时由 restore 统一还原。
+static void LGDIStripNearBlackBackground(UIView *v) {
+    if (!v || v == sLGDIGlass) return;
+    // curtain / gainMap 由各自的隐藏 hook 管理，这里不重复动
+    if (LGDIClassName(v, @"_SBSystemApertureMagiciansCurtainView")) return;
+    if (LGDIClassName(v, @"_SBGainMapView")) return;
+    UIColor *bg = v.backgroundColor;
+    if (!LGDIColorIsNearBlackOpaque(bg)) return;
+    // 已被装饰压制（含 alpha 记录）的视图交给 LGDISuppressOne 路径，不重复登记
+    if (!objc_getAssociatedObject(v, kLGDIRestoreInfoKey)) {
+        LGDIRegisterSuppressed(v, @{ @"bg": bg });  // 只记 bg → 还原时只回写背景
+        LGDILog(@"stripped near-black bg on %@ frame=%@",
+                NSStringFromClass(v.class), NSStringFromCGRect(v.frame));
+    }
+    // 直接写图层，绕过 setBackgroundColor: hook，避免被判定回路拦截
+    v.layer.backgroundColor = UIColor.clearColor.CGColor;
+}
+
+static void LGDIStripNearBlackSubtree(UIView *v, NSUInteger depth) {
+    if (!v || depth == 0 || v == sLGDIGlass) return;
+    LGDIStripNearBlackBackground(v);
+    for (UIView *sub in v.subviews) LGDIStripNearBlackSubtree(sub, depth - 1);
+}
+
 static void LGDISuppressDecorations(UIView *host) {
     // 阶段2.6.1：仅在真实活动布局（compact/expanded）才压制装饰；空闲小岛保持原样。
     if (!host || !LGDILiquidSuppressionActive()) return;
 
-    // 容器自身底色清空（由 LGDClearContentBg 控制）
-    if (LGDClearContentBg()
-        && host.backgroundColor && host.backgroundColor != UIColor.clearColor) {
-        LGDISuppressOne(host);
-    } else if (objc_getAssociatedObject(host, kLGDIRestoreInfoKey)
-               && host.backgroundColor != UIColor.clearColor) {
-        host.layer.backgroundColor = UIColor.clearColor.CGColor;
+    // 容器自身 + 整棵子树的「近黑不透明背景」剥离（由 ClearContentBg 控制）。
+    // 只清背景色、不动 alpha/hidden，实时内容原样保留；这是露出底层液态玻璃的
+    // 关键一路（内容/呈现容器的黑底原本盖在 atIndex:0 的玻璃之上）。
+    if (LGDClearContentBg()) {
+        // 从窗口根剥离：展开卡片的内容容器可能是 host 的兄弟分支，只扫 host 会漏
+        UIView *stripRoot = host.window ?: host;
+        LGDIStripNearBlackBackground(host);
+        LGDIStripNearBlackSubtree(stripRoot, 18);
     }
 
     LGDISweepView(host, 12);
@@ -676,17 +730,26 @@ static void LGDISuppressDecorations(UIView *host) {
 static void LGDIReassertSuppressed(void) {
     if (!sLGDIActive) return;
     for (UIView *v in [sLGDISuppressedViews allObjects]) {
+        NSDictionary *info = objc_getAssociatedObject(v, kLGDIRestoreInfoKey);
+        if (!info) continue;
+        BOOL bgOnly = (info[@"alpha"] == nil);  // 近黑背景剥离：只清过 bg，没动 alpha
+
         // 尊重四路开关：若某路已关闭，则对应装饰不再被重新压制
         // （并把已被压制的还原），避免"关闭开关但效果仍在"
+        BOOL gateOn;
         if (LGDIClassName(v, @"_SBGainMapView")) {
-            if (!LGDRemoveGainMap()) continue;
+            gateOn = LGDRemoveGainMap();
         } else if (LGDIClassName(v, @"_SBSystemApertureMagiciansCurtainView")) {
-            if (!LGDIHideCurtain()) continue;
-        } else if (LGDIClassName(v, @"_SBSystemApertureContainerViewContentView")) {
-            if (!LGDClearContentBg()) continue;
-        } else if (!LGDIHideOutline()) {
-            // 其余装饰/黑色材质：还原其原始状态
-            NSDictionary *info = objc_getAssociatedObject(v, kLGDIRestoreInfoKey);
+            gateOn = LGDIHideCurtain();
+        } else if (bgOnly || LGDIClassName(v, @"_SBSystemApertureContainerViewContentView")) {
+            // 内容/容器近黑背景：归 ClearContentBg 开关
+            gateOn = LGDClearContentBg();
+        } else {
+            gateOn = LGDIHideOutline();
+        }
+
+        if (!gateOn) {
+            // 该路关闭：还原原始状态
             if (info[@"alpha"])  v.alpha = [info[@"alpha"] floatValue];
             if (info[@"hidden"]) v.hidden = [info[@"hidden"] boolValue];
             if (info[@"bg"])     v.layer.backgroundColor = [info[@"bg"] CGColor];
@@ -694,7 +757,12 @@ static void LGDIReassertSuppressed(void) {
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             continue;
         }
-        if (v.alpha != 0.0) v.alpha = 0.0;
+
+        // 该路开启：重新断言。bg-only 视图绝不能动 alpha/hidden（否则连内容一起消失），
+        // 只保证背景保持透明；装饰/黑色材质视图才整视图 alpha=0。
+        if (!bgOnly) {
+            if (v.alpha != 0.0) v.alpha = 0.0;
+        }
         if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
             v.layer.backgroundColor = UIColor.clearColor.CGColor;
         }
@@ -939,7 +1007,12 @@ static void LGDIInstallGlass(UIView *curtain) {
 
     // 安装/迁移时从窗口根全树压制，防止黑色材质是宿主的兄弟分支；
     // 布局期的增量压制仍只扫容器自身
-    if (sLGDIActive) LGDISweepView(host.window ?: host, 14);
+    if (sLGDIActive) {
+        UIView *sweepRoot = host.window ?: host;
+        LGDISweepView(sweepRoot, 14);
+        // 近黑背景剥离同样需要全树覆盖：内容容器可能不在 host 子树内
+        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sweepRoot, 16);
+    }
     LGDISyncGeometryFromPresentation(NO);
     LGDIScheduleSync(0.35);
 }
