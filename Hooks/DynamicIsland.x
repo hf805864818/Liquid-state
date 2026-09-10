@@ -156,12 +156,18 @@ static const NSInteger kLGDIModeDetached = 4;
 
 static __weak UIView            *sLGDICurtain;   // 当前幕布（唯一）
 static __weak UIView            *sLGDIHost;      // 玻璃挂载容器
-static __weak LGLiveBackdropView *sLGDIGlass;    // 当前玻璃
+static __weak LGLiveBackdropView *sLGDIGlass;    // 当前主玻璃（compact=整排 / expanded=展开大卡片）
 static BOOL                      sLGDIActive;    // 已激活液态化（开关开 && 当前 compact/expanded/detached）
 static BOOL                      sLGDISyncQueued;
 static CADisplayLink            *sLGDILink;
 static CFTimeInterval            sLGDILinkDeadline;  // 驱动硬性兜底超时
 static CFTimeInterval            sLGDIMinDriverEnd;  // 几何稳定停机的“最早”时刻（弹簧进行中不提前停）
+
+// compact 排两侧附件（专辑封面 / 动态声波等）：源视图位于独立 alerting
+// 窗口，由 _UIPortalView 投影进灵动岛窗口。每帧收集：既用于剥离它们的
+// 黑底方块，也用于把玻璃几何从中央 curtain 扩展为「中央+附件」联合帧。
+static NSArray<UIView *>        *sLGDIRowAttachments;
+static NSUInteger                sLGDITickCounter;   // 逐帧节流计数（全树扫描）
 
 // 退出活动时的延迟拆除：等系统收缩弹簧跑完再硬切还原，消灭回小药丸灰闪。
 // sLGDITeardownPending 期间压制状态保持（玻璃随 curtain morph 回小药丸），
@@ -544,6 +550,25 @@ static void LGDIRequestDump(NSString *reason) {
             (unsigned long)sLGDIDumpCount, reason);
     LGDIDumpTree(win, 0, 8);
 
+    // 附件（声波/封面）本体位于各 App 独立 alerting 窗口，灵动岛窗口树里
+    // 只能看到投影它们的 _UIPortalView。这里把所有 Aperture/Alerting
+    // 窗口一并 dump，定位附件黑底方块的真实承载视图与层级。
+    NSMutableArray<UIWindow *> *diagWindows = [NSMutableArray array];
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            NSString *cn = NSStringFromClass(w.class);
+            if ([cn containsString:@"Aperture"] || [cn containsString:@"Alerting"]) {
+                if (w != win) [diagWindows addObject:w];
+            }
+        }
+    }
+    for (UIWindow *w in diagWindows) {
+        LGDILog(@"----- diag window=%@ level=%.1f -----",
+                NSStringFromClass(w.class), w.windowLevel);
+        LGDIDumpTree(w.rootViewController.view ?: (UIView *)w, 0, 10);
+    }
+
     LGLiveBackdropView *glass = sLGDIGlass;
     if (glass) {
         CALayer *l = glass.layer;
@@ -607,19 +632,34 @@ static BOOL LGDIIsBlackBodyMaterial(UIView *v) {
         || [name containsString:@"ApertureMaterial"];
 }
 
+// 灵动岛条带区域（屏幕坐标）：只处理屏幕顶部这一条带内的黑色材质，
+// 避免全树扫描误伤岛上/屏内其它位置的同名材质视图。
+// 判定宽松：y ∈ [-30, 120]（展开附件封面最高约到 y≈130 附近，按窗口扫描
+// 另有各自约束，这里仅作黑色材质 alpha 压制的安全边界）。
+static BOOL LGDIViewInIslandBand(UIView *v) {
+    if (!v || !v.window) return NO;
+    CGRect sf = [v convertRect:v.bounds toView:nil];
+    CGFloat top = sf.origin.y, bottom = sf.origin.y + sf.size.height;
+    return bottom >= -30.0 && top <= 120.0;
+}
+
 static BOOL LGDIShouldSuppressDecor(UIView *v) {
     if (!v || v == sLGDIGlass) return NO;
     if (LGDIClassName(v, @"_SBSystemApertureMagiciansCurtainView")) return NO;
     if (LGDIClassName(v, @"_SBGainMapView")) return NO;
     if (v.userInteractionEnabled || v.gestureRecognizers.count > 0) return NO;
     // 黑色材质本体由 LGDIHideOutline 控制（幕布隐藏走 HideCurtain 开关，
-    // 盖在幕布之上、随岛的黑色材质仍需跟随停止液态时还原）
-    if (LGDIIsBlackBodyMaterial(v) && !LGDIIsContentSubview(v))
-        return LGDIHideOutline();
-    if (v.subviews.count > 2) return NO;            // 内容容器一定有子视图
+    // 盖在幕布之上、随岛的黑色材质仍需跟随停止液态时还原）。
+    // 旧逻辑的 subviews.count>2 豁免已删除：iOS 17 附件（声波/封面）的黑色
+    // 材质正是带子视图的 MTMaterialView，豁免导致两侧黑方块永远剥不掉；
+    // 改由灵动岛条带区域几何约束兜底，条带外的同名材质一律不碰。
+    if (LGDIIsBlackBodyMaterial(v) && !LGDIIsContentSubview(v)) {
+        if (!LGDIHideOutline()) return NO;
+        return LGDIViewInIslandBand(v);
+    }
     if (LGDIIsContentSubview(v)) return NO;
-    // 描边/高光/阴影等装饰归入 LGDIHideOutline 开关
-    return LGDIHideOutline() && LGDIIsDecorSubview(v);
+    // 描边/高光/阴影等装饰归入 LGDIHideOutline 开关，同样限定条带区域
+    return LGDIHideOutline() && LGDIIsDecorSubview(v) && LGDIViewInIslandBand(v);
 }
 
 // 灵动岛内可能嵌套多个 SBFTouchPassThroughView，每个容器的装饰压制都要
@@ -918,6 +958,146 @@ static CGRect LGDIFindExpandedContentFrame(UIView *glass, UIView *curtain) {
     return CGRectNull;
 }
 
+// =============================================================================
+//  compact 排两侧附件（专辑封面 / 动态声波）收集
+// -----------------------------------------------------------------------------
+//  关键架构事实（日志实证）：compact 行布局为
+//    「leading 附件 | curtain 中央 | trailing 附件」
+//  附件本体并不在灵动岛窗口树内，而是各 App 独立 alerting 窗口里的源视图，
+//  由 _UIPortalView 投影进 SBSystemApertureWindow。因此：
+//   - 只扫灵动岛窗口永远剥不到附件的黑底方块（声波/封面的黑色背景）；
+//   - 玻璃只盖 curtain(125x36.7)，两侧附件区域没有玻璃。
+//  这里跨所有 Aperture/Alerting 窗口，按「屏幕顶部条带 + curtain 两侧 +
+//  尺寸合理 + 可见」几何条件收集附件源视图，供黑底剥离与联合帧几何复用。
+// =============================================================================
+
+static BOOL LGDIFrameInIslandRow(CGRect f, CGRect row, BOOL expanded) {
+    // f / row 均为屏幕（window）坐标
+    if (f.size.width < 16.0 || f.size.width > 170.0) return NO;
+    if (f.size.height < 16.0 || f.size.height > 170.0) return NO;
+    // 垂直条带：compact 附件与中央行同排；展开时附件随大卡片下移，放宽边界
+    CGFloat vBelow = expanded ? 150.0 : 104.0;
+    if (CGRectGetMaxY(f) < CGRectGetMinY(row) - 48.0) return NO;
+    if (CGRectGetMinY(f) > CGRectGetMaxY(row) + vBelow) return NO;
+    if (CGRectGetMinX(f) < -40.0 || CGRectGetMinX(f) > 420.0) return NO;
+    // 与中央 curtain 的横向重叠必须很小（排除 curtain 内部子视图）
+    CGRect horizBand = CGRectMake(row.origin.x, row.origin.y - 48.0,
+                                  row.size.width, row.size.height + vBelow + 48.0);
+    CGRect inter = CGRectIntersection(f, horizBand);
+    if (!CGRectIsNull(inter) && inter.size.width > 14.0) return NO;
+    // 必须位于 curtain 左/右两侧：
+    //  compact 附件紧贴药丸（间隙 ≤64pt）；展开态封面附件随卡片左移，
+    //  离静态药丸更远（实测可达 ~95pt），放宽到 120pt。
+    CGFloat maxGap = expanded ? 120.0 : 64.0;
+    CGFloat gap;
+    if (CGRectGetMaxX(f) <= CGRectGetMinX(row) + 12.0) {
+        gap = CGRectGetMinX(row) - CGRectGetMaxX(f);
+    } else if (CGRectGetMinX(f) >= CGRectGetMaxX(row) - 12.0) {
+        gap = CGRectGetMinX(f) - CGRectGetMaxX(row);
+    } else {
+        return NO;  // 落在中央区间内
+    }
+    return gap >= -12.0 && gap <= maxGap;
+}
+
+static BOOL LGDIViewIsDescendantOf(UIView *v, UIView *ancestor) {
+    for (UIView *p = v.superview; p; p = p.superview) {
+        if (p == ancestor) return YES;
+    }
+    return NO;
+}
+
+static NSArray<UIView *> *LGDICollectRowAttachments(UIView *curtain) {
+    if (!curtain || !curtain.window) return @[];
+    CGRect row = [curtain convertRect:curtain.bounds toView:nil];
+    BOOL expanded = (NSInteger)[DIPillStateMachine shared].currentMode
+                    >= DIPillLayoutModeExpanded;
+
+    NSMutableArray<UIWindow *> *allWindows = [NSMutableArray array];
+    // 附件 alerting 窗口可能挂在音乐 App 自己的 UIScene 下，而不是灵动岛
+    // aperture 场景，因此必须合并所有前台场景的窗口，不能只扫本场景。
+    NSMutableSet<UIWindow *> *seen = [NSMutableSet set];
+    void (^considerWindows)(NSArray<UIWindow *> *) = ^(NSArray<UIWindow *> *ws) {
+        for (UIWindow *w in ws) {
+            if (w && ![seen containsObject:w]) {
+                [seen addObject:w];
+                [allWindows addObject:w];
+            }
+        }
+    };
+    considerWindows(curtain.window.windowScene.windows);
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if ([scene isKindOfClass:UIWindowScene.class]) {
+            considerWindows(((UIWindowScene *)scene).windows);
+        }
+    }
+    considerWindows(UIApplication.sharedApplication.windows);
+
+    NSMutableArray<UIView *> *viewHits = [NSMutableArray array];
+    for (UIWindow *w in allWindows) {
+        NSString *cn = NSStringFromClass(w.class);
+        if (![cn containsString:@"Aperture"] && ![cn containsString:@"Alerting"]) continue;
+
+        // 同 LGDIFindExpandedContentFrame 的递归 block 写法：strong 局部持有 +
+        // __block __weak 弱引用自身，避免 retain cycle 与 unsafe-retained-assign。
+        __block __weak void (^weakWalk)(UIView *, NSUInteger);
+        void (^walk)(UIView *, NSUInteger) = ^(UIView *v, NSUInteger depth) {
+            if (!v || depth > 14) return;
+            NSString *cls = NSStringFromClass(v.class);
+            BOOL excluded = v == sLGDIGlass || v == curtain
+                || [cls containsString:@"PortalView"] || [cls containsString:@"PortalLayer"]
+                || [cls containsString:@"GainMap"]
+                || [cls isEqualToString:@"LGLiveBackdropView"];
+            if (!excluded && !v.hidden && v.alpha > 0.04) {
+                CGRect f = [v convertRect:v.bounds toView:nil];
+                if (LGDIFrameInIslandRow(f, row, expanded)) [viewHits addObject:v];
+            }
+            for (UIView *sub in v.subviews) weakWalk(sub, depth + 1);
+        };
+        weakWalk = walk;
+        UIView *root = w.rootViewController.view ?: (UIView *)w;
+        walk(root, 0);
+    }
+
+    // 祖先/后代同时命中时只留最外层（外层容器才是黑底承载者）
+    NSMutableArray<UIView *> *outer = [NSMutableArray array];
+    for (UIView *v in viewHits) {
+        BOOL descendant = NO;
+        for (UIView *o in viewHits) {
+            if (o != v && LGDIViewIsDescendantOf(v, o)) { descendant = YES; break; }
+        }
+        if (!descendant) [outer addObject:v];
+    }
+    return outer;
+}
+
+// 跨窗口：源视图 bounds -> 屏幕坐标 -> host 坐标
+static CGRect LGDIFrameToHost(UIView *v, UIView *host) {
+    CGRect winFrame = [v convertRect:v.bounds toView:nil];
+    return [host convertRect:winFrame fromView:nil];
+}
+
+// compact 联合帧：curtain 帧（host 坐标）并上两侧附件帧
+static CGRect LGDIUnionRowFrame(UIView *host, CGRect curtainFrame,
+                                NSArray<UIView *> *attachments) {
+    CGRect u = curtainFrame;
+    for (UIView *v in attachments) {
+        CGRect f = LGDIFrameToHost(v, host);
+        // 合理性兜底：附件已经过 LGDICollectRowAttachments 几何筛选，
+        // 这里只挡异常帧（零尺寸 / 离岛过远），左右两侧都要放行。
+        if (CGRectGetWidth(f) >= 10.0 && CGRectGetHeight(f) >= 10.0
+            && CGRectGetMaxY(f) >= -30.0 && CGRectGetMinY(f) <= 220.0) {
+            u = CGRectUnion(u, f);
+        }
+    }
+    return u;
+}
+
+// 联合帧圆角：整排高度的连续圆角，上限 26（附件方角由玻璃大圆角统一包裹）
+static CGFloat LGDIUnionCornerRadius(CGRect f) {
+    return MIN(f.size.height / 2.0, 26.0);
+}
+
 static CGFloat LGDIFallbackCornerRadius(CGRect f) {
     // 细长药丸（宽高比 > 2.2）：完全半圆角 = 高/2
     // 展开卡片：约为高度的 1/4（系统实测 40~44pt 区间）
@@ -983,14 +1163,28 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
 
     if (!LGDIIsPlausibleSize(targetFrame.size)) return;
 
+    // 主玻璃目标帧：
+    //  compact —— 「curtain + 两侧附件」联合帧（整条长岛一块连续玻璃，
+    //             附件黑底已在源窗口剥离，内容由 portal 投影在玻璃之上）；
+    //  expanded —— 展开大卡片帧（targetFrame 即展开内容帧）。展开态附件离
+    //             静态药丸很远且与大卡片重叠，不并入几何，仅做源窗口黑底剥离。
+    CGRect mainFrame = targetFrame;
+    CGFloat mainRadius = targetRadius;
+    if (!isExpanded && sLGDIRowAttachments.count) {
+        mainFrame = LGDIUnionRowFrame(host, targetFrame, sLGDIRowAttachments);
+        mainRadius = LGDIUnionCornerRadius(mainFrame);
+    }
+
+    if (!LGDIIsPlausibleSize(mainFrame.size)) return;
+
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
 
-    if (!CGRectEqualToRect(glass.frame, targetFrame)) {
-        glass.frame = targetFrame;
+    if (!CGRectEqualToRect(glass.frame, mainFrame)) {
+        glass.frame = mainFrame;
     }
-    if (fabs(glass.layer.cornerRadius - targetRadius) > 0.25) {
-        glass.layer.cornerRadius = targetRadius;
+    if (fabs(glass.layer.cornerRadius - mainRadius) > 0.25) {
+        glass.layer.cornerRadius = mainRadius;
     }
     // cornerCurve / masksToBounds 安装时已固定，逐帧同步不再重复写入
     [CATransaction commit];
@@ -1026,6 +1220,18 @@ static void LGDIDriverTick(CADisplayLink *link) {
         UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
         if (LGDRemoveGainMap() && gain && !gain.hidden) gain.hidden = YES;
         LGDIReassertSuppressed();
+
+        // 两侧附件（声波/封面）位于独立 alerting 窗口，系统对它们的布局变化
+        // 不会进入灵动岛窗口的 hook 链，必须逐帧节流轮询：重新收集 + 剥离
+        // 黑底/压制黑材质，保证附件黑方块在出现后 ~100ms 内被剥掉，
+        // 联合帧几何也随之更新。
+        if ((sLGDITickCounter++ % 6) == 0) {
+            sLGDIRowAttachments = LGDICollectRowAttachments(curtain);
+            for (UIView *attach in sLGDIRowAttachments) {
+                if (LGDClearContentBg()) LGDIStripNearBlackSubtree(attach, 10);
+                LGDISweepView(attach, 8);
+            }
+        }
         LGDISyncGeometryFromPresentation(YES);
 
         // 几何稳定判定
@@ -1110,6 +1316,19 @@ static void LGDIInstallGlass(UIView *curtain) {
     UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
     if (LGDRemoveGainMap() && gain && !gain.hidden) gain.hidden = YES;
 
+    // 先清扫、后装玻璃：保证玻璃上屏第一帧底下已经没有黑色材质/近黑底，
+    // 消灭点亮瞬间的黑/灰闪。全树压制 + 近黑底剥离 + 附件（跨窗口）压制。
+    if (sLGDIActive) {
+        UIView *sweepRoot = host.window ?: host;
+        LGDISweepView(sweepRoot, 14);
+        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sweepRoot, 16);
+        sLGDIRowAttachments = LGDICollectRowAttachments(curtain);
+        for (UIView *attach in sLGDIRowAttachments) {
+            if (LGDClearContentBg()) LGDIStripNearBlackSubtree(attach, 10);
+            LGDISweepView(attach, 8);
+        }
+    }
+
     LGLiveBackdropView *glass = sLGDIGlass;
     if (!glass || glass.superview != host) {
         if (!glass) {
@@ -1156,14 +1375,6 @@ static void LGDIInstallGlass(UIView *curtain) {
     sLGDICurtain = curtain;
     sLGDIHost = host;
 
-    // 安装/迁移时从窗口根全树压制，防止黑色材质是宿主的兄弟分支；
-    // 布局期的增量压制仍只扫容器自身
-    if (sLGDIActive) {
-        UIView *sweepRoot = host.window ?: host;
-        LGDISweepView(sweepRoot, 14);
-        // 近黑背景剥离同样需要全树覆盖：内容容器可能不在 host 子树内
-        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sweepRoot, 16);
-    }
     LGDISyncGeometryFromPresentation(NO);
     LGDIScheduleSync(0.35);
 }
@@ -1180,6 +1391,7 @@ static void LGDITeardown(BOOL featureDisabled) {
             [glass removeFromSuperview];
             sLGDIGlass = nil;
         }
+        sLGDIRowAttachments = nil;
         // 恢复所有被压制的装饰视图（可能分布在多个嵌套容器中）
         LGDIRestoreAllSuppressed();
 
@@ -1242,6 +1454,22 @@ static void LGDIScheduleDeferredTeardown(void) {
         sLGDIActive = NO;
         LGDITeardown(YES);
         LGDILog(@"deferred teardown executed — stock pill restored (hard cut, no fade)");
+    });
+
+    // 硬上限：compact↔inert 持续抖动时普通延迟会被反复重排，边缘灰闪
+    // 可能反复出现。超过 kLGDIDeferredHardCap 后无论布局状态如何都硬切，
+    // 确保系统小药丸一定被恢复（真实活动下一次出现会重新点亮）。
+    static const NSTimeInterval kLGDIDeferredHardCap = 2.5;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(kLGDIDeferredHardCap * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (gen != sLGDITeardownGeneration) return;
+        if (!sLGDITeardownPending && !sLGDIActive) return;
+        sLGDITeardownPending = NO;
+        sLGDIActive = NO;
+        LGDITeardown(YES);
+        LGDILog(@"deferred teardown HARD CAP executed after %.1fs of layout chatter",
+                kLGDIDeferredHardCap);
     });
 }
 
@@ -1372,6 +1600,13 @@ static void LGDIDoScheduledSync(void) {
         else if (!shouldHide && gain.hidden) gain.hidden = NO;
     }
     LGDISuppressDecorations(host);
+    // 附件在独立窗口，sync 路径也补一次收集+清扫，
+    // 覆盖 driver 已停转后附件才上屏的边角时序。
+    sLGDIRowAttachments = LGDICollectRowAttachments(curtain);
+    for (UIView *attach in sLGDIRowAttachments) {
+        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(attach, 10);
+        LGDISweepView(attach, 8);
+    }
     LGDISyncGeometryFromPresentation(NO);
 }
 
