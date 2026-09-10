@@ -722,7 +722,23 @@ static void LGDISuppressDecorations(UIView *host) {
         // 从窗口根剥离：展开卡片的内容容器可能是 host 的兄弟分支，只扫 host 会漏
         UIView *stripRoot = host.window ?: host;
         LGDIStripNearBlackBackground(host);
-        LGDIStripNearBlackSubtree(stripRoot, 18);
+        // 展开模式下内容更深层，增加到 22 层；compact 18 层足够
+        BOOL isExpanded = (NSInteger)[DIPillStateMachine shared].currentMode
+                          >= DIPillLayoutModeExpanded;
+        LGDIStripNearBlackSubtree(stripRoot, isExpanded ? 22 : 18);
+
+        // 展开内容可能在独立窗口，也要扫到
+        if (isExpanded && sLGDIGlass) {
+            UIWindowScene *scene = sLGDIGlass.window.windowScene;
+            for (UIWindow *w in scene.windows) {
+                if (w == host.window) continue;
+                if ([NSStringFromClass(w.class) containsString:@"Aperture"] ||
+                    [NSStringFromClass(w.class) containsString:@"Alerting"]) {
+                    UIView *root = w.rootViewController.view ?: (UIView *)w;
+                    LGDIStripNearBlackSubtree(root, 14);
+                }
+            }
+        }
     }
 
     LGDISweepView(host, 12);
@@ -790,6 +806,73 @@ static void LGDIRestoreAllSuppressed(void) {
 //  Geometry sync
 // =============================================================================
 
+// 展开模式下搜索灵动岛内容容器帧。compact curtain 不随展开改变尺寸，
+// 展开内容在另一棵子树或另一个窗口。这里在整个窗口场景中搜索一个
+// 「比 compact curtain 大、可见、非 portal/curtain/gainmap/glass、
+//  尺寸合理」的视图作为展开内容帧。
+static CGRect LGDIFindExpandedContentFrame(UIView *glass, UIView *curtain) {
+    if (!curtain || !curtain.window) return CGRectNull;
+    CGRect compactFrame = [curtain convertRect:curtain.bounds toView:curtain.window];
+    CGFloat compactW = compactFrame.size.width;
+    CGFloat compactH = compactFrame.size.height;
+
+    __block CGRect bestFrame = CGRectNull;
+    __block CGFloat bestArea = 0;
+
+    void (^checkView)(UIView *) = ^(UIView *v) {
+        if (!v || v == glass || v == curtain || v.hidden || v.alpha < 0.01) return;
+        NSString *cn = NSStringFromClass(v.class);
+        // 排除系统内部视图
+        if ([cn containsString:@"PortalView"]) return;
+        if ([cn containsString:@"GainMap"]) return;
+        if ([cn containsString:@"BackdropLayer"]) return;
+        if ([cn isEqualToString:@"LGLiveBackdropView"]) return;
+
+        CGRect f = [v convertRect:v.bounds toView:glass.window ?: v.window];
+        // 必须比 compact curtain 明显大（展开内容）
+        if (f.size.width <= compactW + 10 || f.size.height <= compactH + 5) return;
+        // 排除全屏视图（容器背景板，不是展开内容）
+        if (f.size.width > 380 || f.size.height > 200) return;
+        // 必须在灵动岛区域（屏幕顶部 1/3）
+        if (f.origin.y > 300) return;
+
+        CGFloat area = f.size.width * f.size.height;
+        if (area > bestArea) {
+            bestArea = area;
+            bestFrame = [glass.window convertRect:f toView:glass.superview ?: glass.window];
+        }
+    };
+
+    // 搜索灵动岛窗口场景的所有窗口（展开内容可能在独立窗口）
+    UIWindowScene *scene = glass.window.windowScene;
+    NSArray<UIWindow *> *windows = scene.windows;
+    if (windows.count == 0) windows = UIApplication.sharedApplication.windows;
+
+    for (UIWindow *w in windows) {
+        if ([NSStringFromClass(w.class) containsString:@"Aperture"] ||
+            [NSStringFromClass(w.class) containsString:@"Alerting"] ||
+            w == glass.window) {
+            // 深搜此窗口，找展开内容视图
+            __block void (^block)(UIView *, NSUInteger);
+            block = ^(UIView *v, NSUInteger depth) {
+                if (!v || depth > 12) return;
+                checkView(v);
+                for (UIView *sub in v.subviews) block(sub, depth + 1);
+            };
+            UIView *root = w.rootViewController.view;
+            if (!root) root = (UIView *)w;
+            block(root, 0);
+        }
+    }
+
+    if (!CGRectIsNull(bestFrame) && LGDIIsPlausibleSize(bestFrame.size)) {
+        LGDILog(@"expanded content frame found: %@ (compact was %.0fx%.0f)",
+                NSStringFromCGRect(bestFrame), compactW, compactH);
+        return bestFrame;
+    }
+    return CGRectNull;
+}
+
 static CGFloat LGDIFallbackCornerRadius(CGRect f) {
     // 细长药丸（宽高比 > 2.2）：完全半圆角 = 高/2
     // 展开卡片：约为高度的 1/4（系统实测 40~44pt 区间）
@@ -805,31 +888,52 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
     UIView *host = sLGDIHost;
     if (!glass || !curtain || !host) return;
 
-    CALayer *pl = usePresentation ? curtain.layer.presentationLayer : nil;
+    // 展开模式下，compact curtain 不改变尺寸，展开内容在另一棵子树/窗口。
+    // 优先搜索展开内容帧；找不到才回退到 curtain 帧（compact 模式仍走 curtain）。
+    BOOL isExpanded = (NSInteger)[DIPillStateMachine shared].currentMode >= DIPillLayoutModeExpanded;
+
     CGRect targetFrame;
     CGFloat targetRadius;
 
-    if (pl) {
-        // presentationLayer.frame 位于 curtain.superview 的坐标系。
-        // 注意不能用 isnormal()：原点坐标合法地可以是 0，而 isnormal(0)==false。
-        CGRect pf = pl.frame;
-        BOOL pfValid = isfinite(pf.origin.x) && isfinite(pf.origin.y)
-                    && isfinite(pf.size.width) && isfinite(pf.size.height)
-                    && !CGRectIsNull(pf) && !CGRectIsInfinite(pf)
-                    && pf.size.width > 1.0 && pf.size.height > 1.0;
-        if (pfValid) {
-            targetFrame = [curtain.superview convertRect:pf toView:host];
-            targetRadius = pl.cornerRadius > 0.5 ? pl.cornerRadius
-                                                 : LGDIFallbackCornerRadius(pf);
+    if (isExpanded) {
+        CGRect expFrame = LGDIFindExpandedContentFrame(glass, curtain);
+        if (!CGRectIsNull(expFrame)) {
+            targetFrame = expFrame;
+            targetRadius = glass.layer.cornerRadius > 0.5
+                               ? glass.layer.cornerRadius
+                               : LGDIFallbackCornerRadius(expFrame);
+            // 展开卡片：尝试从找到的内容视图取 cornerRadius
+            // (LGDIFindExpandedContentFrame 已选最佳视图，此处用 fallback 即可)
         } else {
-            pl = nil;
+            // 展开内容尚未就绪，临时回退到 curtain 帧
+            targetFrame = [curtain convertRect:curtain.bounds toView:host];
+            targetRadius = curtain.layer.cornerRadius > 0.5
+                               ? curtain.layer.cornerRadius
+                               : LGDIFallbackCornerRadius(curtain.bounds);
         }
-    }
-    if (!pl) {
-        targetFrame = [curtain convertRect:curtain.bounds toView:host];
-        targetRadius = curtain.layer.cornerRadius > 0.5
-                           ? curtain.layer.cornerRadius
-                           : LGDIFallbackCornerRadius(curtain.bounds);
+    } else {
+        CALayer *pl = usePresentation ? curtain.layer.presentationLayer : nil;
+        if (pl) {
+            // presentationLayer.frame 位于 curtain.superview 的坐标系。
+            CGRect pf = pl.frame;
+            BOOL pfValid = isfinite(pf.origin.x) && isfinite(pf.origin.y)
+                        && isfinite(pf.size.width) && isfinite(pf.size.height)
+                        && !CGRectIsNull(pf) && !CGRectIsInfinite(pf)
+                        && pf.size.width > 1.0 && pf.size.height > 1.0;
+            if (pfValid) {
+                targetFrame = [curtain.superview convertRect:pf toView:host];
+                targetRadius = pl.cornerRadius > 0.5 ? pl.cornerRadius
+                                                     : LGDIFallbackCornerRadius(pf);
+            } else {
+                pl = nil;
+            }
+        }
+        if (!pl) {
+            targetFrame = [curtain convertRect:curtain.bounds toView:host];
+            targetRadius = curtain.layer.cornerRadius > 0.5
+                               ? curtain.layer.cornerRadius
+                               : LGDIFallbackCornerRadius(curtain.bounds);
+        }
     }
 
     if (!LGDIIsPlausibleSize(targetFrame.size)) return;
@@ -1357,10 +1461,14 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 %hook SBSystemApertureSceneElement
 
 - (void)setLayoutMode:(NSInteger)layoutMode reason:(NSInteger)reason {
-    %orig(layoutMode, reason);
+    // 必须在 %orig 之前更新 element 模式表：%orig 会触发系统布局，
+    // 容器 layoutSubviews 在此刻就会查 LGDILiquidSuppressionActive()。
+    // 若 element 表还是旧模式（compact/expanded），剥离会在 minimal/inert
+    // 转换过程中误触发，造成空闲小岛灰色闪烁。
+    LGDIRecordElementMode(self, layoutMode);
     LGDILog(@"setLayoutMode=%@(%ld) reason=%ld",
             LGDIModeName(layoutMode), (long)layoutMode, (long)reason);
-    LGDIRecordElementMode(self, layoutMode);
+    %orig(layoutMode, reason);
     // 阶段2：布局模式交状态机消费（聚合多元素 + 按模式给驱动时长）
     [[DIPillStateMachine shared] updateLayoutMode:(DIPillLayoutMode)layoutMode
                                            reason:reason];
