@@ -195,7 +195,8 @@ static void LGDIDumpTree(UIView *v, NSUInteger depth, NSUInteger maxDepth) {
     // _UIPortalView 把别处的 layer 树投影到灵动岛窗口，是黑色形体的头号嫌疑
     if ([cls containsString:@"PortalView"]) {
         @try {
-            UIView *sv = [v valueForKey:@"sourceView"];
+            UIView *sv = nil;
+            sv = [v valueForKey:@"sourceView"];
             if (sv) {
                 UIWindow *srcWin = sv.window;
                 CGRect inWin = srcWin ? [sv convertRect:sv.bounds toView:srcWin] : CGRectNull;
@@ -461,6 +462,11 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
         glass.layer.cornerRadius = targetRadius;
     }
     // cornerCurve / masksToBounds 安装时已固定，逐帧同步不再重复写入
+#if LIQUIDASS_DEBUG
+    for (CALayer *sub in glass.layer.sublayers) {
+        if ([sub.name isEqualToString:@"LGDIBeacon"]) sub.frame = glass.layer.bounds;
+    }
+#endif
     [CATransaction commit];
 }
 
@@ -569,7 +575,6 @@ static void LGDIInstallGlass(UIView *curtain) {
                 beacon.backgroundColor =
                     [UIColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:0.85].CGColor;
                 beacon.frame = glass.layer.bounds;
-                beacon.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
                 [glass.layer addSublayer:beacon];
                 LGDILog(@"DIAG red beacon installed over glass: "
                         @"red pill => backdrop capture is BLACK; "
