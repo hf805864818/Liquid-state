@@ -853,12 +853,14 @@ static CGRect LGDIFindExpandedContentFrame(UIView *glass, UIView *curtain) {
             [NSStringFromClass(w.class) containsString:@"Alerting"] ||
             w == glass.window) {
             // 深搜此窗口，找展开内容视图
+            __weak void (^weakBlock)(UIView *, NSUInteger);
             __block void (^block)(UIView *, NSUInteger);
-            block = ^(UIView *v, NSUInteger depth) {
+            weakBlock = ^(UIView *v, NSUInteger depth) {
                 if (!v || depth > 12) return;
                 checkView(v);
-                for (UIView *sub in v.subviews) block(sub, depth + 1);
+                for (UIView *sub in v.subviews) weakBlock(sub, depth + 1);
             };
+            block = weakBlock;
             UIView *root = w.rootViewController.view;
             if (!root) root = (UIView *)w;
             block(root, 0);
