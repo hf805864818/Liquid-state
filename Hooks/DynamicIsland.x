@@ -139,6 +139,16 @@ static void LGDIRecordElementMode(id element, NSInteger mode) {
     [sLGDIElementModes setObject:@(mode) forKey:element];
 }
 
+static NSString *LGDIModeName(NSInteger mode) {
+    switch (mode) {
+        case kLGDIModeInert:    return @"inert";
+        case kLGDIModeMinimal:  return @"minimal";
+        case kLGDIModeCompact:  return @"compact";
+        case kLGDIModeExpanded: return @"expanded";
+        default:                return [NSString stringWithFormat:@"mode%ld", (long)mode];
+    }
+}
+
 // =============================================================================
 //  View tree helpers
 // =============================================================================
@@ -868,7 +878,8 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 
 - (void)setLayoutMode:(NSInteger)layoutMode reason:(NSInteger)reason {
     %orig(layoutMode, reason);
-    LGDILog(@"setLayoutMode=%ld reason=%ld", (long)layoutMode, (long)reason);
+    LGDILog(@"setLayoutMode=%@(%ld) reason=%ld",
+            LGDIModeName(layoutMode), (long)layoutMode, (long)reason);
     LGDIRecordElementMode(self, layoutMode);
     // compact/expanded 装配玻璃；回到 inert/minimal 还原系统黑色形体
     LGDIReconcile();
