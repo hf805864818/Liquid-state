@@ -93,13 +93,51 @@ static const CGFloat kLGDIMaxHeight = 300.0;
 
 #pragma mark - Controller state
 
+// SAUILayoutMode（真机日志实测）：
+//   0 inert     空闲默认小药丸（无任何实时活动）—— 保持系统原样，不处理
+//   1 minimal   被其他 App 抢占时的极小形态     —— 保持系统原样
+//   2 compact   有实时活动的长药丸             —— 液态化
+//   3 expanded  长按展开卡片                   —— 液态化
+//   4 detached  分离卡片                       —— 暂不处理
+static const NSInteger kLGDIModeInert    = 0;
+static const NSInteger kLGDIModeMinimal  = 1;
+static const NSInteger kLGDIModeCompact  = 2;
+static const NSInteger kLGDIModeExpanded = 3;
+
 static __weak UIView            *sLGDICurtain;   // 当前幕布（唯一）
 static __weak UIView            *sLGDIHost;      // 玻璃挂载容器
 static __weak LGLiveBackdropView *sLGDIGlass;    // 当前玻璃
-static BOOL                      sLGDIActive;    // 功能开关（本进程）
+static BOOL                      sLGDIActive;    // 已激活液态化（开关开 && 当前 compact/expanded）
 static BOOL                      sLGDISyncQueued;
 static CADisplayLink            *sLGDILink;
 static CFTimeInterval            sLGDILinkDeadline;
+
+// element(weak) -> 当前 layoutMode。仅 compact/expanded 视为“有活跃内容”
+static NSMapTable<id, NSNumber *> *sLGDIElementModes;
+
+static BOOL LGDIModeIsLiquid(NSInteger mode) {
+    return mode == kLGDIModeCompact || mode == kLGDIModeExpanded;
+}
+
+static BOOL LGDIHasActiveLayout(void) {
+    for (id element in sLGDIElementModes) {
+        NSNumber *n = [sLGDIElementModes objectForKey:element];
+        if (LGDIModeIsLiquid(n.integerValue)) return YES;
+        // 关联表可能滞后于系统内部直接改值，KVC 校正一次（失败则信任记录值）
+        @try {
+            NSInteger cur = [[element valueForKey:@"layoutMode"] integerValue];
+            if (LGDIModeIsLiquid(cur)) return YES;
+        } @catch (__unused NSException *e) {}
+    }
+    return NO;
+}
+
+static void LGDIRecordElementMode(id element, NSInteger mode) {
+    if (!sLGDIElementModes) {
+        sLGDIElementModes = [NSMapTable weakToStrongObjectsMapTable];
+    }
+    [sLGDIElementModes setObject:@(mode) forKey:element];
+}
 
 // =============================================================================
 //  View tree helpers
@@ -462,11 +500,6 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
         glass.layer.cornerRadius = targetRadius;
     }
     // cornerCurve / masksToBounds 安装时已固定，逐帧同步不再重复写入
-#if LIQUIDASS_DEBUG
-    for (CALayer *sub in glass.layer.sublayers) {
-        if ([sub.name isEqualToString:@"LGDIBeacon"]) sub.frame = glass.layer.bounds;
-    }
-#endif
     [CATransaction commit];
 }
 
@@ -564,23 +597,8 @@ static void LGDIInstallGlass(UIView *curtain) {
                 NSStringFromClass(host.class),
                 NSStringFromCGRect(glass.frame));
 
-        // 诊断：dump 真实层级 + 红色信标（DEBUG 构建专用）
+        // 诊断：安装后 dump 真实层级（仅 DEBUG，限次，无视觉影响）
 #if LIQUIDASS_DEBUG
-        {
-            static BOOL sLGDIBeaconAdded;
-            if (!sLGDIBeaconAdded) {
-                sLGDIBeaconAdded = YES;
-                CALayer *beacon = [CALayer layer];
-                beacon.name = @"LGDIBeacon";
-                beacon.backgroundColor =
-                    [UIColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:0.85].CGColor;
-                beacon.frame = glass.layer.bounds;
-                [glass.layer addSublayer:beacon];
-                LGDILog(@"DIAG red beacon installed over glass: "
-                        @"red pill => backdrop capture is BLACK; "
-                        @"still-black pill => an occluder sits ABOVE the glass");
-            }
-        }
         dispatch_async(dispatch_get_main_queue(), ^{
             LGDIRequestDump(@"install");
         });
@@ -695,12 +713,15 @@ static void LGDIScheduleSync(NSTimeInterval driverDuration) {
 
 static void LGDIReconcile(void) {
     BOOL enabled = lgHostEnabled(kLGDIFilterPrefix);
+    // 只在 compact 长药丸 / expanded 展开卡片上液态化；
+    // inert 空闲小药丸与 minimal 极小形态保持系统原样
+    BOOL want = enabled && LGDIHasActiveLayout();
 
-    if (!enabled) {
+    if (!want) {
         if (sLGDIActive || sLGDIGlass) {
             sLGDIActive = NO;
             LGDITeardown(YES);
-            LGDILog(@"feature disabled, stock island restored");
+            LGDILog(@"inert/minimal or disabled: stock island restored");
         }
         return;
     }
@@ -710,7 +731,7 @@ static void LGDIReconcile(void) {
     if (curtain && curtain.window) {
         LGDIInstallGlass(curtain);
     } else {
-        LGDILog(@"reconcile: no on-screen curtain yet");
+        LGDILog(@"reconcile: active layout but no on-screen curtain yet");
     }
 }
 
@@ -848,6 +869,9 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 - (void)setLayoutMode:(NSInteger)layoutMode reason:(NSInteger)reason {
     %orig(layoutMode, reason);
     LGDILog(@"setLayoutMode=%ld reason=%ld", (long)layoutMode, (long)reason);
+    LGDIRecordElementMode(self, layoutMode);
+    // compact/expanded 装配玻璃；回到 inert/minimal 还原系统黑色形体
+    LGDIReconcile();
     if (sLGDIActive) {
         // 弹簧形变约 0.5~0.7s，驱动逐帧跟随
         LGDIScheduleSync(0.85);
@@ -949,15 +973,19 @@ static void LGDynamicIslandInit(void) {
         %init(LGDIApertureWindowHook);
     }
 
-    sLGDIActive = lgHostEnabled(kLGDIFilterPrefix);
-    LGDILog(@"initialized enabled=%d", sLGDIActive);
+    // 初始一律视为 inert：空闲小药丸不处理，等系统发出 compact/expanded
+    // 的 setLayoutMode: 后再装配（此时 element 表才会有记录）
+    sLGDIActive = NO;
+    LGDILog(@"initialized enabled=%d (waits for compact/expanded layout)",
+            lgHostEnabled(kLGDIFilterPrefix));
 
-    // SpringBoard 启动时灵动岛已存在，didMoveToWindow 早于注入发生
+    // SpringBoard 启动时若已有实时活动（音乐/导航等），系统通常会补发
+    // setLayoutMode:；这里的延迟 reconcile 仅作兜底
     for (NSNumber *delay in @[ @0.8, @2.5, @5.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            if (sLGDIActive && !sLGDIGlass) LGDIReconcile();
+            LGDIReconcile();
         });
     }
 }
