@@ -100,6 +100,10 @@ typedef struct {
     float       centerTintFactor;
     simd_float4 tintColor;
     simd_float2 maskResolution;
+    // 跨窗口 backdrop 采样为空时的兜底策略（灵动岛独立合成域可能捕获不到
+    // 下方窗口画面）：0=整像素透明（旧行为）；1=深色玻璃底色 + 边缘高光；
+    // 2=洋红色调试渲染，用于设备上一锤定音确认"空捕获"。
+    float       captureFallbackMode;
 } LGUniforms;
 
 typedef void (*Render13Fn)(void*,
@@ -150,6 +154,7 @@ static bool             g_useHookPath = false;
 static bool             g_legacyRenderABI = false;
 static bool             g_clockFrostedMode = false;  // Clock 磨砂模式开关
 static bool             g_clockMaskDebug = false;    // Clock mask 调试模式（渲染灰度 mask）
+static bool             g_diEmptyCaptureDebug = false; // 灵动岛空捕获诊断：空采样渲染洋红
 
 // 磨砂时钟独立参数（浅色/深色两套 + 着色），对应设置页 Clock.Frosted.* 键
 typedef struct {
@@ -251,6 +256,8 @@ struct Uniforms {
     float  centerTintFactor;
     float4 tintColor;
     float2 maskResolution;
+    // 0=空采样透明（旧行为）；1=深色玻璃底色兜底；2=洋红调试
+    float  captureFallbackMode;
 };
 
 float surfaceConvexSquircle(float x) {
@@ -542,6 +549,15 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
 
     if (R < shortest * 0.45 && distFromSide >= bezel) {
         float4 flat = src.sample(s, captureUV);
+        if (flat.a < 0.01 && u.captureFallbackMode > 0.5) {
+            // 跨窗口 backdrop 捕获为空（灵动岛独立合成域兜底）：不返回全透明，
+            // 用深色玻璃材质底色替代；边缘着色/菲涅尔在调用方仍会叠加。
+            // mode 2 为洋红诊断色，设备上看到实心洋红即证实"空捕获"。
+            float3 fb = u.captureFallbackMode > 1.5
+                        ? float3(1.0, 0.0, 1.0)
+                        : float3(0.045, 0.045, 0.055);
+            flat = float4(fb, 1.0);
+        }
         float centerTintAlpha = u.tintColor.a * u.centerTintFactor;
         flat.rgb = mix(flat.rgb, u.tintColor.rgb, centerTintAlpha);
         return flat;
@@ -573,15 +589,30 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
 
     float4 fallback = float4(0.0);
     bool loadedFallback = false;
+    bool captureEmpty = false;
     if (greenSample.a < 0.01) {
         fallback = src.sample(s, captureUV);
         loadedFallback = true;
         greenSample = fallback;
     }
-    if (greenSample.a < 0.01) return float4(0.0);
+    if (greenSample.a < 0.01) {
+        if (u.captureFallbackMode > 0.5) {
+            // 折射采样与原位采样都为空：灵动岛跨窗口捕获失败兜底。
+            // 用深色玻璃底色（或洋红诊断色）替代，跳过色散（没有可色散的
+            // 内容），后续边缘着色渐变 + 菲涅尔眩光仍正常叠加，
+            // 保证边缘有液态高光而不是整块纯透明。
+            captureEmpty = true;
+            float3 fb = u.captureFallbackMode > 1.5
+                        ? float3(1.0, 0.0, 1.0)
+                        : float3(0.045, 0.045, 0.055);
+            greenSample = float4(fb, 1.0);
+        } else {
+            return float4(0.0);
+        }
+    }
 
     float4 bg = greenSample;
-    if (dispersion > 0.001 && dot(dispPx, dispPx) > 0.0001) {
+    if (!captureEmpty && dispersion > 0.001 && dot(dispPx, dispPx) > 0.0001) {
         float redScale = dispersionOffsetScale(kDispersionRedIndex, dispersion);
         float blueScale = dispersionOffsetScale(kDispersionBlueIndex, dispersion);
 
@@ -805,6 +836,7 @@ static void ensureUniforms(__unsafe_unretained id<MTLDevice> device, uint64_t w,
     u->fresnelGlareStrength    = 0.5f;
     u->centerTintFactor        = 1.0f;
     u->maskResolution          = simd_make_float2(0.f, 0.f);
+    u->captureFallbackMode     = 0.f;
 
     lglog("uniforms buffer allocated (geometry refreshed per-frame)");
 }
@@ -974,6 +1006,12 @@ static void lgReloadHostPrefs(void) {
     NSNumber *maskDebugNum = prefs[@"Clock.MaskDebug"];
     g_clockMaskDebug = (maskDebugNum && [maskDebugNum isKindOfClass:[NSNumber class]] && maskDebugNum.boolValue);
     if (g_clockMaskDebug) lglog("Clock mask debug mode: ON (rendering grayscale mask)");
+
+    // 灵动岛空捕获诊断：DynamicIsland.EmptyCaptureDebug=1 时，backdrop 采样
+    // 为空的像素渲染洋红色，用于设备上确认"跨窗口捕获为空"这一根因。
+    NSNumber *diEmptyDbg = prefs[@"DynamicIsland.EmptyCaptureDebug"];
+    g_diEmptyCaptureDebug = (diEmptyDbg && [diEmptyDbg isKindOfClass:[NSNumber class]] && diEmptyDbg.boolValue);
+    if (g_diEmptyCaptureDebug) lglog("DynamicIsland empty-capture debug: ON (magenta fallback)");
     {
         static int sPrefsPathDiagCount = 0;
         if (sPrefsPathDiagCount < 5) {
@@ -1577,6 +1615,24 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
                   state.originXRatio, state.originYRatio, state.pixelsPerPoint,
                   w, h, lu.useGlyphMask, lu.lensOrigin.x, lu.lensOrigin.y,
                   lu.radius);
+        }
+    }
+
+    // 灵动岛玻璃挂在 SBSystemApertureWindow 独立合成域：黑窗帘已隐藏、近黑底
+    // 已剥光，同窗口玻璃下方没有不透明内容，液态效果全靠跨窗口 backdrop 捕获。
+    // 若该窗口捕获域拿不到下方画面，着色器采样 alpha≈0 —— 旧逻辑直接输出全
+    // 透明（"玻璃变纯透明、毫无液态效果"）。这里对灵动岛启用兜底：
+    //   mode 1：空采样回退深色玻璃底色 + 边缘菲涅尔高光，保持玻璃质感；
+    //   mode 2（DynamicIsland.EmptyCaptureDebug=1）：空采样渲染洋红，用于确诊。
+    // 其它 host 捕获域始终有壁纸/内容，保持 mode 0 旧行为，零影响。
+    lu.captureFallbackMode = 0.f;
+    if (!strcmp(hp->prefPrefix, "DynamicIsland")) {
+        lu.captureFallbackMode = g_diEmptyCaptureDebug ? 2.f : 1.f;
+        static int sDIFallbackLog = 0;
+        if (sDIFallbackLog < 3) {
+            sDIFallbackLog++;
+            lglog("[DI] capture fallback mode=%.0f atom=0x%x dims=%llux%llu",
+                  lu.captureFallbackMode, ftype, w, h);
         }
     }
 

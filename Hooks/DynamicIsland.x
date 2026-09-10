@@ -163,6 +163,12 @@ static CADisplayLink            *sLGDILink;
 static CFTimeInterval            sLGDILinkDeadline;  // 驱动硬性兜底超时
 static CFTimeInterval            sLGDIMinDriverEnd;  // 几何稳定停机的“最早”时刻（弹簧进行中不提前停）
 
+// 退出活动时的延迟拆除：等系统收缩弹簧跑完再硬切还原，消灭回小药丸灰闪。
+// sLGDITeardownPending 期间压制状态保持（玻璃随 curtain morph 回小药丸），
+// generation 用于在活动复活时让已排队的拆除回调自动作废。
+static BOOL                      sLGDITeardownPending;
+static NSUInteger                sLGDITeardownGeneration;
+
 // element(weak) -> 当前 layoutMode。仅 compact/expanded 视为“有活跃内容”
 static NSMapTable<id, NSNumber *> *sLGDIElementModes;
 
@@ -389,7 +395,10 @@ static BOOL LGDIHasActiveLayout(void) {
 }
 
 static BOOL LGDILiquidSuppressionActive(void) {
-    return LGDIFeatureEnabled() && LGDIHasActiveLayout();
+    // 延迟拆除窗口内（活动刚退出、玻璃正随收缩弹簧 morph 回小药丸）仍视为
+    // 压制活跃：防止系统 setHidden:NO 穿透让黑色小药丸提前露出与玻璃重叠。
+    return LGDIFeatureEnabled()
+        && (LGDIHasActiveLayout() || sLGDITeardownPending);
 }
 
 // =============================================================================
@@ -626,6 +635,20 @@ static void LGDIRegisterSuppressed(UIView *v, NSDictionary *info) {
     [sLGDISuppressedViews addObject:v];
 }
 
+// 所有对 alpha / backgroundColor / hidden 的压制与恢复写入都必须关闭
+// CoreAnimation 隐式动作。我们的 hook 经常在系统弹簧动画事务内被调用
+//（layoutSubviews / setHidden: 穿行于系统动画），裸赋值会被并入正在进行的
+// 动画事务，活动退出时边框"灰闪"就是恢复写入的淡入与收缩弹簧叠加所致。
+static void LGDIWithoutImplicitAnimations(dispatch_block_t block) {
+    if (!block) return;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [UIView performWithoutAnimation:^{
+        block();
+    }];
+    [CATransaction commit];
+}
+
 // 记录并压制单个视图（幂等）
 static void LGDISuppressOne(UIView *v) {
     if (!v || v == sLGDIGlass) return;
@@ -638,11 +661,14 @@ static void LGDISuppressOne(UIView *v) {
         LGDILog(@"suppressed decor %@ frame=%@",
                 NSStringFromClass(v.class), NSStringFromCGRect(v.frame));
     }
-    // 系统可能在布局中把状态改回来；等值时不重复写
-    if (v.alpha != 0.0) v.alpha = 0.0;
-    if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
-        v.backgroundColor = UIColor.clearColor;
-    }
+    // 系统可能在布局中把状态改回来；等值时不重复写。
+    // 必须瞬时生效：关闭隐式动画，避免在系统动画事务内淡出。
+    LGDIWithoutImplicitAnimations(^{
+        if (v.alpha != 0.0) v.alpha = 0.0;
+        if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
+            v.backgroundColor = UIColor.clearColor;
+        }
+    });
 }
 
 // 递归全子树压制（深度受限）。iOS 17 的黑色形体是嵌套在容器深处的
@@ -701,8 +727,11 @@ static void LGDIStripNearBlackBackground(UIView *v) {
         LGDILog(@"stripped near-black bg on %@ frame=%@",
                 NSStringFromClass(v.class), NSStringFromCGRect(v.frame));
     }
-    // 直接写图层，绕过 setBackgroundColor: hook，避免被判定回路拦截
-    v.layer.backgroundColor = UIColor.clearColor.CGColor;
+    // 直接写图层，绕过 setBackgroundColor: hook，避免被判定回路拦截。
+    // 同样关闭隐式动画，防止剥离在系统动画事务内淡出。
+    LGDIWithoutImplicitAnimations(^{
+        v.layer.backgroundColor = UIColor.clearColor.CGColor;
+    });
 }
 
 static void LGDIStripNearBlackSubtree(UIView *v, NSUInteger depth) {
@@ -767,10 +796,13 @@ static void LGDIReassertSuppressed(void) {
         }
 
         if (!gateOn) {
-            // 该路关闭：还原原始状态
-            if (info[@"alpha"])  v.alpha = [info[@"alpha"] floatValue];
-            if (info[@"hidden"]) v.hidden = [info[@"hidden"] boolValue];
-            if (info[@"bg"])     v.layer.backgroundColor = [info[@"bg"] CGColor];
+            // 该路关闭：还原原始状态（无隐式动画，先清掉可能挂着的动画）
+            [v.layer removeAllAnimations];
+            LGDIWithoutImplicitAnimations(^{
+                if (info[@"alpha"])  v.alpha = [info[@"alpha"] floatValue];
+                if (info[@"hidden"]) v.hidden = [info[@"hidden"] boolValue];
+                if (info[@"bg"])     v.layer.backgroundColor = [info[@"bg"] CGColor];
+            });
             objc_setAssociatedObject(v, kLGDIRestoreInfoKey, nil,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             continue;
@@ -778,12 +810,14 @@ static void LGDIReassertSuppressed(void) {
 
         // 该路开启：重新断言。bg-only 视图绝不能动 alpha/hidden（否则连内容一起消失），
         // 只保证背景保持透明；装饰/黑色材质视图才整视图 alpha=0。
-        if (!bgOnly) {
-            if (v.alpha != 0.0) v.alpha = 0.0;
-        }
-        if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
-            v.layer.backgroundColor = UIColor.clearColor.CGColor;
-        }
+        LGDIWithoutImplicitAnimations(^{
+            if (!bgOnly) {
+                if (v.alpha != 0.0) v.alpha = 0.0;
+            }
+            if (v.backgroundColor && v.backgroundColor != UIColor.clearColor) {
+                v.layer.backgroundColor = UIColor.clearColor.CGColor;
+            }
+        });
     }
 }
 
@@ -791,10 +825,15 @@ static void LGDIRestoreAllSuppressed(void) {
     for (UIView *v in [sLGDISuppressedViews allObjects]) {
         NSDictionary *info = objc_getAssociatedObject(v, kLGDIRestoreInfoKey);
         if (!info) continue;
-        if (info[@"alpha"])  v.alpha = [info[@"alpha"] floatValue];
-        if (info[@"hidden"]) v.hidden = [info[@"hidden"] boolValue];
-        // 直接写图层，绕过 setBackgroundColor: hook（热切换宿主时开关仍为开启状态）
-        if (info[@"bg"])     v.layer.backgroundColor = [info[@"bg"] CGColor];
+        // 先移除残留动画，再在无隐式动画事务里瞬时还原，
+        // 杜绝退出活动时装饰边框 0.25s 淡入造成的灰闪。
+        [v.layer removeAllAnimations];
+        LGDIWithoutImplicitAnimations(^{
+            if (info[@"alpha"])  v.alpha = [info[@"alpha"] floatValue];
+            if (info[@"hidden"]) v.hidden = [info[@"hidden"] boolValue];
+            // 直接写图层，绕过 setBackgroundColor: hook（热切换宿主时开关仍为开启状态）
+            if (info[@"bg"])     v.layer.backgroundColor = [info[@"bg"] CGColor];
+        });
         objc_setAssociatedObject(v, kLGDIRestoreInfoKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         LGDILog(@"restored decor %@", NSStringFromClass(v.class));
@@ -1134,26 +1173,76 @@ static void LGDITeardown(BOOL featureDisabled) {
 
     LGDIStopDriver();
 
-    if (glass) {
-        [glass removeFromSuperview];
-        sLGDIGlass = nil;
-    }
-    // 恢复所有被压制的装饰视图（可能分布在多个嵌套容器中）
-    LGDIRestoreAllSuppressed();
-
-    if (featureDisabled) {
-        // 恢复系统黑色形体（setHidden: hook 在 sLGDIActive=NO 时放行）
-        UIView *curtain = sLGDICurtain;
-        if (!curtain) curtain = LGDIFindCurtainInWindows();
-        if (curtain) {
-            UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
-            if (gain) gain.hidden = NO;
-            curtain.hidden = NO;
+    // 整个拆除过程（拆玻璃 / 恢复装饰 / 放回黑色形体）在无隐式动画事务内
+    // 硬切完成。延迟拆除回调到达时系统收缩弹簧已结束，这里不会产生任何淡变。
+    LGDIWithoutImplicitAnimations(^{
+        if (glass) {
+            [glass removeFromSuperview];
+            sLGDIGlass = nil;
         }
-    }
+        // 恢复所有被压制的装饰视图（可能分布在多个嵌套容器中）
+        LGDIRestoreAllSuppressed();
+
+        if (featureDisabled) {
+            // 恢复系统黑色形体（setHidden: hook 在 sLGDIActive=NO 时放行）
+            UIView *curtain = sLGDICurtain;
+            if (!curtain) curtain = LGDIFindCurtainInWindows();
+            if (curtain) {
+                UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
+                if (gain) gain.hidden = NO;
+                curtain.hidden = NO;
+            }
+        }
+    });
 
     sLGDICurtain = nil;
     sLGDIHost = nil;
+}
+
+// =============================================================================
+//  延迟拆除（修复回小药丸灰闪）
+// -----------------------------------------------------------------------------
+//  活动退出时事件路径检测到 !LGDIHasActiveLayout()。旧逻辑立刻 teardown：
+//  恢复装饰的淡变 × 系统收缩弹簧 = 灰色边框跟着闪一下。
+//  现在：保持玻璃与压制状态，driver 逐帧跟随 curtain 从长药丸 morph 回
+//  小药丸；延迟 kLGDIDeferredTeardownDelay 待弹簧到位后，在关闭隐式动画的
+//  事务里一次性硬切回系统黑色小药丸。延迟窗口内活动复活则取消拆除。
+// =============================================================================
+static const NSTimeInterval kLGDIDeferredTeardownDelay = 0.5;
+
+static void LGDICancelDeferredTeardown(NSString *reason) {
+    if (!sLGDITeardownPending) return;
+    sLGDITeardownPending = NO;
+    sLGDITeardownGeneration++;
+    LGDILog(@"deferred teardown cancelled: %@", reason);
+}
+
+static void LGDIScheduleDeferredTeardown(void) {
+    if (sLGDITeardownPending) return;
+    sLGDITeardownPending = YES;
+    NSUInteger gen = sLGDITeardownGeneration;
+
+    // 收缩期间继续逐帧跟随弹簧（玻璃随 curtain 收缩回小药丸尺寸）。
+    // sLGDIActive 保持 YES，driver tick 才不会自行停机。
+    LGDIStartDriverReal(kLGDIDeferredTeardownDelay + 0.15);
+    LGDILog(@"idle layout — defer teardown %.2fs for shrink spring",
+            kLGDIDeferredTeardownDelay);
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(kLGDIDeferredTeardownDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        // 窗口内活动复活（generation 已自增）：本次拆除自动作废
+        if (gen != sLGDITeardownGeneration) return;
+        sLGDITeardownPending = NO;
+        // 兜底：事件先于取消逻辑到达时，若布局已重新活跃则不拆
+        if (LGDIFeatureEnabled() && LGDIHasActiveLayout()) {
+            LGDILog(@"deferred teardown skipped — layout active again");
+            return;
+        }
+        sLGDIActive = NO;
+        LGDITeardown(YES);
+        LGDILog(@"deferred teardown executed — stock pill restored (hard cut, no fade)");
+    });
 }
 
 // =============================================================================
@@ -1184,6 +1273,7 @@ static BOOL LGDICurtainReady(UIView *curtain) {
 static void LGDIEngage(UIView *curtain) {
     if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"feature turned off");
             sLGDIActive = NO;
             LGDITeardown(YES);
             LGDILog(@"disengage: feature turned off, stock island restored");
@@ -1191,17 +1281,19 @@ static void LGDIEngage(UIView *curtain) {
         return;
     }
     // 阶段2.6.1：空闲 inert/minimal 小药丸不液态化。活动结束回到空闲时，
-    // 主动拆除玻璃并还原系统黑色形体，避免空闲岛残留/闪烁。
+    // 不立即拆除：延迟到收缩弹簧结束后硬切还原，避免边框淡入灰闪。
     if (!LGDIHasActiveLayout()) {
         if (sLGDIActive || sLGDIGlass) {
-            sLGDIActive = NO;
-            LGDITeardown(YES);
-            LGDILog(@"disengage: idle/inert island — keep stock, liquid removed");
+            LGDIScheduleDeferredTeardown();
+            LGDILog(@"disengage: idle/inert island — deferring liquid removal");
         }
         return;
     }
     if (!curtain) curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     if (!LGDICurtainReady(curtain)) return;   // 布局未完成/已下屏：等下一个事件重试
+
+    // 活动在延迟拆除窗口内复活：取消拆除，无缝继续液态态
+    LGDICancelDeferredTeardown(@"layout active again");
 
     if (!sLGDIActive) {
         sLGDIActive = YES;
@@ -1221,21 +1313,25 @@ static void LGDIDoScheduledSync(void) {
     sLGDISyncQueued = NO;
     if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"feature disabled (sync)");
             sLGDIActive = NO;
             LGDITeardown(YES);
         }
         return;
     }
 
-    // 阶段2.6.1：空闲小岛不液态化（兜底，正常路径由状态机 reconcile 拆除）
+    // 阶段2.6.1：空闲小岛不液态化（兜底，正常路径由状态机 reconcile 拆除）。
+    // 退出瞬间不拆：延迟到收缩弹簧结束后硬切，防止回小药丸灰闪。
     if (!LGDIHasActiveLayout()) {
         if (sLGDIActive || sLGDIGlass) {
-            sLGDIActive = NO;
-            LGDITeardown(YES);
-            LGDILog(@"scheduled sync: idle layout — liquid removed");
+            LGDIScheduleDeferredTeardown();
+            LGDILog(@"scheduled sync: idle layout — defer liquid removal");
         }
         return;
     }
+
+    // 延迟拆除窗口内活动复活：取消拆除，继续液态态
+    LGDICancelDeferredTeardown(@"active layout (sync)");
 
     UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     if (!curtain || !curtain.window) return;
@@ -1307,6 +1403,7 @@ static void LGDIReconcile(void) {
     // LGDIEngage 内部先判布局再找 curtain，空闲态即使 curtain 暂未取到也会拆除。
     if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"feature disabled (reconcile)");
             sLGDIActive = NO;
             LGDITeardown(YES);
             LGDILog(@"disabled: stock island restored");
