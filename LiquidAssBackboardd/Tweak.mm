@@ -206,7 +206,6 @@ static uint64_t                    g_clockMaskUploadedGeneration = 0;
 // 当 CABackdropLayer 跨窗口捕获失败时作为折射源
 static id<MTLTexture>             g_wallpaperTex = nil;
 static IOSurfaceRef               g_wallpaperSurface = NULL;
-static uint32_t                   g_wallpaperSurfaceID = 0;
 static uint32_t                   g_lastWallpaperSurfaceID = 0;
 static os_unfair_lock             g_wallpaperLock = OS_UNFAIR_LOCK_INIT;
 // 通知到达时置位，渲染线程下一帧强制重新加载 plist
