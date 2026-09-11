@@ -1031,11 +1031,15 @@ static void lgReloadHostPrefs(void) {
         bool stdExists = [[NSFileManager defaultManager] fileExistsAtPath:
             @"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist"];
         lglog("[DI] EmptyCaptureDebug raw=%s(%s) -> on=%d mode=%.0f | "
-              "plist=%s mtime=%s stdPathExists=%d",
+              "plist=%s inode=%llu size=%lld mtime=%s stdPathExists=%d keys=%lu",
               diEmptyDbg ? NSStringFromClass([diEmptyDbg class]).UTF8String : "nil",
               diEmptyDbg ? [diEmptyDbg description].UTF8String : "-",
               diDbgOn, diDbgOn ? 2.0 : 1.0,
-              prefsPath.UTF8String, mtime.UTF8String, stdExists ? 1 : 0);
+              prefsPath.UTF8String,
+              (unsigned long long)[attrs fileSystemFileNumber],
+              (long long)[attrs fileSize],
+              mtime.UTF8String, stdExists ? 1 : 0,
+              (unsigned long)[prefs count]);
     }
     {
         static int sPrefsPathDiagCount = 0;

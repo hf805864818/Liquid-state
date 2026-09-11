@@ -1731,12 +1731,103 @@ static void LGDIProbeFullReset(NSString *reason) {
     if (reason) LGDILog(@"[probe] reset — %@", reason);
 }
 
+// ---- prefs 链路诊断：不依赖开关，DEBUG 包常驻（DI 活动期限速打印）---------
+// 目的：定位"设置里开了开关，但某进程读到的 plist 里没有该键"——
+// 直接 stat 多个候选路径并绕缓存直读，比对 inode/大小/mtime/键数/原始值。
+static NSString *sLGDIProbePrefsSig;
+
+static void LGDIProbeLogFileAt(NSString *p) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    BOOL dir = NO;
+    BOOL exists = [fm fileExistsAtPath:p isDirectory:&dir];
+    if (!exists || dir) {
+        LGDILog(@"[probe-prefs] %@ -> %@", p, exists ? @"DIR" : @"missing");
+        return;
+    }
+    NSDictionary *attrs = [fm attributesOfItemAtPath:p error:nil];
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
+    id raw = d[@"DynamicIsland.EmptyCaptureDebug"];
+    LGDILog(@"[probe-prefs] %@", p);
+    LGDILog(@"[probe-prefs]   inode=%llu size=%lld mtime=%@ keys=%lu "
+            @"EmptyCaptureDebug=%@(%@)",
+            (unsigned long long)[attrs fileSystemFileNumber],
+            (long long)[attrs fileSize],
+            attrs.fileModificationDate,
+            (unsigned long)d.count,
+            raw ? NSStringFromClass([raw class]) : @"nil",
+            raw ? [raw description] : @"-");
+}
+
+static void LGDIProbePrefsDiag(void) {
+    NSMutableArray<NSString *> *cands = [NSMutableArray arrayWithObject:
+        @"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist"];
+    // roothide 容器实体路径（本进程被重定向时，直开字面路径会被改写，
+    // 故再枚举 .jbroot-* 容器里的同名文件，用于和 backboardd 日志对照 inode）
+    NSArray<NSString *> *jbRoots =
+        [[NSFileManager.defaultManager contentsOfDirectoryAtPath:
+            @"/var/containers/Bundle/Application" error:nil]
+            filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:
+                ^BOOL(NSString *name, NSDictionary *bindings) {
+            (void)bindings;
+            return [name hasPrefix:@".jbroot"];
+        }]];
+    for (NSString *jr in jbRoots) {
+        [cands addObject:[NSString stringWithFormat:
+            @"/var/containers/Bundle/Application/%@/var/mobile/Library/"
+            @"Preferences/dylv.liquidassprefs.plist", jr]];
+    }
+    // 签名变化（任一文件 inode/size/mtime/键值变化）才打印，避免刷屏
+    NSMutableString *sig = [NSMutableString string];
+    for (NSString *p in cands) {
+        NSDictionary *a = [NSFileManager.defaultManager
+            attributesOfItemAtPath:p error:nil];
+        [sig appendFormat:@"%@|%llu|%lld|%@;", p,
+            (unsigned long long)[a fileSystemFileNumber],
+            (long long)[a fileSize], a.fileModificationDate];
+    }
+    id cached = LGGlassPreferenceValue(@"DynamicIsland.EmptyCaptureDebug");
+    [sig appendFormat:@"cached=%@(%@)", cached ? NSStringFromClass([cached class]) : @"nil",
+     cached ? [cached description] : @"-"];
+    if ([sig isEqualToString:sLGDIProbePrefsSig]) return;
+    sLGDIProbePrefsSig = sig;
+
+    LGDILog(@"----- [probe-prefs] SpringBoard file view -----");
+    for (NSString *p in cands) LGDIProbeLogFileAt(p);
+    // Preferences 目录下所有 dylv.liquidass* 文件，排查域写错文件
+    NSMutableArray<NSString *> *dirs = [NSMutableArray arrayWithObject:
+        @"/var/mobile/Library/Preferences"];
+    for (NSString *jr in jbRoots) {
+        [dirs addObject:[NSString stringWithFormat:
+            @"/var/containers/Bundle/Application/%@/var/mobile/Library/Preferences", jr]];
+    }
+    for (NSString *d in dirs) {
+        NSArray *items = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:d
+                                                                             error:nil]
+            filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:
+                ^BOOL(NSString *name, NSDictionary *bindings) {
+            (void)bindings;
+            return [name hasPrefix:@"dylv.liquidass"];
+        }]];
+        LGDILog(@"[probe-prefs] dir %@ -> %@", d,
+                items.count ? [items componentsJoinedByString:@", "] : @"(none)");
+    }
+    LGDILog(@"[probe-prefs] cached LGGlassPreferenceValue=%@(%@)",
+            cached ? NSStringFromClass([cached class]) : @"nil",
+            cached ? [cached description] : @"-");
+    LGDILog(@"----- [probe-prefs] end -----");
+}
+
 static void LGDIProbeTick(NSTimer *timer) {
     (void)timer;
+    // prefs 链路诊断不依赖开关：DI 活动期限速运行
+    if (sLGDIActive && LGDIFeatureEnabled() && (sLGDIProbeTickCount % 10) == 0) {
+        LGDIProbePrefsDiag();
+    }
     if (!sLGDIActive || !LGDIFeatureEnabled() || !LGDIProbeEnabled()) {
         if (sLGDIProbeGlass || sLGDIProbeBadge || sLGDIProbePhase >= 0) {
             LGDIProbeFullReset(@"switch OFF / DI inactive — all restored");
         }
+        sLGDIProbeTickCount++;
         return;
     }
 
