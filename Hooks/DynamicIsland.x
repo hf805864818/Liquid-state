@@ -1040,10 +1040,11 @@ static void LGDISuppressDecorations(UIView *host) {
         // 从窗口根剥离：展开卡片的内容容器可能是 host 的兄弟分支，只扫 host 会漏
         UIView *stripRoot = host.window ?: host;
         LGDIStripNearBlackBackground(host);
-        // 展开模式下内容更深层，增加到 22 层；compact 18 层足够
+        // [声波修复] compact 也用 22 层（声波/波形视图常嵌套在 18+ 层），
+        // 不再区分 compact/expanded，统一深度
         BOOL isExpanded = (NSInteger)[DIPillStateMachine shared].currentMode
                           >= DIPillLayoutModeExpanded;
-        LGDIStripNearBlackSubtree(stripRoot, isExpanded ? 22 : 18);
+        LGDIStripNearBlackSubtree(stripRoot, 22);
 
         // 展开内容可能在独立窗口，也要扫到
         if (isExpanded && sLGDIGlass) {
@@ -1422,21 +1423,28 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
     // 5) 展开窗口内同样要扫掉黑材质/剥黑底，否则盖在展开玻璃之上。
     //    全窗口递归代价高，绝不能逐帧执行：仅创建/换宿主时立即扫一次，
     //    稳态下按 0.3s 节流补扫（捕获系统 layoutSubviews 重建的装饰）。
+    //    [外框修复] strip 深度从 16 提到 22（与 LGDISuppressDecorations 一致），
+    //    覆盖展开内容深层容器（视频/音乐内容黑底常在 18+ 层）。
     CFTimeInterval now = CACurrentMediaTime();
     if (created || hostChanged || now - sLGDIExpLastSweep > 0.3) {
         sLGDIExpLastSweep = now;
         UIView *sweepRoot = host.window ?: host;
-        LGDISweepView(sweepRoot, 14);
-        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sweepRoot, 16);
+        LGDISweepView(sweepRoot, 16);
+        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sweepRoot, 22);
         if (created || hostChanged) {
+            // [外框修复] 内容常在展开后 0.3~1.5s 才加载完，多次延迟再扫
             __weak UIView *weakHost = host;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (sLGDIActive && weakHost) {
-                    UIView *r = weakHost.window ?: weakHost;
-                    LGDISweepView(r, 14);
-                    if (LGDClearContentBg()) LGDIStripNearBlackSubtree(r, 16);
-                }
-            });
+            for (NSNumber *delay in @[ @0.2, @0.5, @1.0, @1.5 ]) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                             (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    if (sLGDIActive && weakHost) {
+                        UIView *r = weakHost.window ?: weakHost;
+                        LGDISweepView(r, 16);
+                        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(r, 22);
+                    }
+                });
+            }
         }
     }
 }
@@ -1453,8 +1461,8 @@ static BOOL LGDISyncExpandedGeometry(void) {
     CGRect f = LGDIFindExpandedTarget(curtain, &host, NULL, &radius, &provider);
 
     if (CGRectIsNull(f) || !host) {
-        // 已建玻璃时保持旧帧等待目标恢复，避免动画途中闪回 pill
-        return sLGDIExpGlass != nil;
+        // 展开玻璃可见时保持旧帧等待目标恢复；隐藏时（compact 过渡期）回退 pill 同步
+        return (sLGDIExpGlass && !sLGDIExpGlass.hidden) ? YES : NO;
     }
 
     LGDIEnsureExpandedGlass(f, host, radius,
@@ -1536,7 +1544,20 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
     if (isExpanded) {
         if (LGDISyncExpandedGeometry()) return;
     } else if (sLGDIExpGlass || sLGDIExpBlur) {
-        LGDIDestroyExpandedGlass(@"compact layout");
+        // [闪烁修复] 系统弹簧途中会快速 expanded→compact→expanded 循环。
+        // 每次 compact 都销毁展开玻璃会导致 create/destroy 循环 = 边框闪烁。
+        // compact 模式仅隐藏展开玻璃并恢复 pill 玻璃，不销毁实例。
+        // 仅 inert（真正空闲）才销毁。
+        if ([DIPillStateMachine shared].currentMode == DIPillLayoutModeInert) {
+            LGDIDestroyExpandedGlass(@"inert (idle)");
+        } else {
+            if (sLGDIExpGlass && !sLGDIExpGlass.hidden) sLGDIExpGlass.hidden = YES;
+            if (sLGDIExpBlur && !sLGDIExpBlur.hidden) sLGDIExpBlur.hidden = YES;
+            if (sLGDIPillHiddenForExpanded && sLGDIGlass) {
+                sLGDIGlass.hidden = NO;
+                sLGDIPillHiddenForExpanded = NO;
+            }
+        }
     }
 
     CGRect targetFrame;
@@ -1640,6 +1661,18 @@ static void LGDIDriverTick(CADisplayLink *link) {
             UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
             if (LGDRemoveGainMap() && gain && !gain.hidden) gain.hidden = YES;
             LGDIReassertSuppressed();
+        }
+
+        // [声波修复] 稳态后仍定期全扫一次，捕获 layoutSubviews 后晚加载
+        // 的内容视图（声波/波形/频谱等），0.5s 一次，O(被压制数量) 级
+        static CFTimeInterval sLGDILastPeriodicSweep = 0;
+        CFTimeInterval sweepNow = CACurrentMediaTime();
+        if (sweepNow - sLGDILastPeriodicSweep > 0.5) {
+            sLGDILastPeriodicSweep = sweepNow;
+            UIView *sweepHost = sLGDIHost;
+            if (sweepHost && LGDILiquidSuppressionActive()) {
+                LGDISuppressDecorations(sweepHost);
+            }
         }
 
         CFTimeInterval now = CACurrentMediaTime();
