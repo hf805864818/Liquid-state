@@ -1486,7 +1486,7 @@ static BOOL LGDISyncExpandedGeometry(void) {
     } else if (sLGDIExpFramePending
                && sLGDIExpRetries < kLGDIExpMaxRetries
                && now - sLGDIExpLastCapture > kLGDIExpCaptureThrottle
-               && ![sLGDIExpGlass lgFilterUpdateSuspended]) {
+               && ![sLGDIExpGlass lgFilterTypeLocked]) {
         // [闪烁修复] 动画期间不重建捕获组：清空滤镜会导致灰/黑闪烁。
         // sLGDIExpFramePending 保持 YES，动画结束后下一帧会重试。
         sLGDIExpFramePending = NO;
@@ -1747,18 +1747,19 @@ static void LGDIStartDriverReal(NSTimeInterval duration) {
     sLGDIMinDriverEnd = now + duration * 0.6;    // 弹簧进行中不提前停
     sLGDISteadyFrameCount = 0;
     sLGDILastPresentationFrame = CGRectNull;
-    // [闪烁根因修复] 弹簧动画期间挂起滤镜替换：动态半径步进（.r0~.r16）
+    // [闪烁根因修复] 弹簧动画期间锁定滤镜类型：动态半径步进（.r0~.r16）
     // 随尺寸变化反复跨步 → layer.filters 数组替换 → render server 短暂无滤镜 =
-    // 灰/黑闪烁 2-3 次。挂起后 layoutSubviews 只更新 specular，不调 applyFilters。
-    if (sLGDIGlass) [sLGDIGlass lgSuspendFilterUpdates];
-    if (sLGDIExpGlass) [sLGDIExpGlass lgSuspendFilterUpdates];
+    // 灰/黑闪烁 2-3 次。锁定后 applyFilters 仍每帧调用（更新 scale 等），
+    // 但跳过 layer.filters 数组替换，避免闪烁。
+    if (sLGDIGlass) [sLGDIGlass lgLockFilterType];
+    if (sLGDIExpGlass) [sLGDIExpGlass lgLockFilterType];
 }
 
 static void LGDIStopDriver(void) {
     sLGDILink.paused = YES;
-    // [闪烁根因修复] 动画结束，恢复滤镜更新：用最终尺寸一次性 evaluate 滤镜类型
-    if (sLGDIGlass) [sLGDIGlass lgResumeFilterUpdates];
-    if (sLGDIExpGlass) [sLGDIExpGlass lgResumeFilterUpdates];
+    // [闪烁根因修复] 动画结束，解锁滤镜类型：下一帧用最终尺寸一次性切换到正确类型
+    if (sLGDIGlass) [sLGDIGlass lgUnlockFilterType];
+    if (sLGDIExpGlass) [sLGDIExpGlass lgUnlockFilterType];
 }
 
 #pragma mark - Forward declarations
@@ -2718,7 +2719,7 @@ static void LGDIProbeStopTimer(void) {
 
 // [闪烁根因修复] 延迟刷新 backdrop 的安全版本：动画进行中自动推迟。
 // lgForceRefreshBackdrop 会清空滤镜并重建捕获组，在弹簧动画进行中触发
-// 会造成一次灰/黑闪烁。此函数检查 lgFilterUpdateSuspended，挂起时
+// 会造成一次灰/黑闪烁。此函数检查 lgFilterTypeLocked，锁定时
 // 每 0.2s 重试，直到动画结束后再执行。
 // 前向声明已在前部（LGDIFallbackCornerRadius 旁）给出。
 static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval delay) {
@@ -2728,7 +2729,7 @@ static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval
                    dispatch_get_main_queue(), ^{
         LGLiveBackdropView *g = weakGlass;
         if (!g || !g.window) return;
-        if ([g lgFilterUpdateSuspended]) {
+        if ([g lgFilterTypeLocked]) {
             // 动画进行中，0.2s 后重试
             LGDIDelayedRefreshBackdrop(g, 0.2);
         } else {

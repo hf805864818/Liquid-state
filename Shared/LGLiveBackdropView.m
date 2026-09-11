@@ -778,7 +778,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
     BOOL             _parameterRefreshVariant;
     CGSize           _lastLayoutSize;       // layoutSubviews throttling
     CGFloat          _lastLayoutCornerRadius; // layoutSubviews throttling
-    BOOL             _lgFilterUpdateSuspended; // [闪烁修复] 动画期间挂起滤镜替换
+    BOOL             _lgFilterTypeLocked; // [闪烁修复] 动画期间锁定滤镜类型，阻止数组替换
 }
 
 - (NSString *)lgEffectiveFilterType {
@@ -932,13 +932,8 @@ static void LGReportMemoryUsageIfNeeded(void) {
     }
     _lastLayoutSize = currentSize;
     _lastLayoutCornerRadius = currentRadius;
-    // [闪烁根因修复] 动画期间挂起 applyFilters：动态半径步进变化导致
-    // layer.filters 数组替换，render server 短暂无滤镜 = 灰/黑闪烁。
-    // specular 只更新 frame/radius（无滤镜替换），安全保留。
+    [self applyFilters];
     [self updateSpecular];
-    if (!_lgFilterUpdateSuspended) {
-        [self applyFilters];
-    }
 }
 
 - (void)updateNativeBlurOverlayWithRadius:(CGFloat)radius filterClass:(Class)filterCls {
@@ -1115,6 +1110,14 @@ static void LGReportMemoryUsageIfNeeded(void) {
             if ([type isEqualToString:wantType]) {
                 return;
             }
+            // [闪烁根因修复] 类型变化时如果滤镜已锁定（动画进行中），
+            // 不执行 layer.filters 数组替换——替换会导致 render server
+            // 短暂无滤镜 = 灰色（小岛）/黑边（展开岛）闪烁。
+            // 保持旧类型渲染（尺寸略有偏差但不会闪），动画结束后
+            // 解锁时下一帧 applyFilters 会用最终尺寸一次性切换到正确类型。
+            if (_lgFilterTypeLocked) {
+                return;
+            }
         }
         if (!filterCls) { sblog("CAFilter class not found"); return; }
 
@@ -1126,7 +1129,12 @@ static void LGReportMemoryUsageIfNeeded(void) {
             return;
         }
 
+        // [闪烁修复] 用 CATransaction 禁用隐式动画，使滤镜替换在
+        // render server 中原子提交，避免替换瞬间短暂无滤镜的灰/黑闪烁。
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
         layer.filters = @[glassFilter];
+        [CATransaction commit];
         _filterAttached = YES;
     } @catch (NSException *e) {
         sblog("applyFilters exception: %s", e.reason.UTF8String);
@@ -1177,27 +1185,25 @@ static void LGReportMemoryUsageIfNeeded(void) {
     [layer setNeedsDisplay];
 }
 
-// [闪烁根因修复] 滤镜更新挂起/恢复机制
-- (void)lgSuspendFilterUpdates {
-    if (_lgFilterUpdateSuspended) return;
-    _lgFilterUpdateSuspended = YES;
+// [闪烁根因修复] 滤镜类型锁定/解锁机制
+// 动画期间锁定滤镜类型：applyFilters 仍每帧调用更新 scale 等参数，
+// 但跳过 layer.filters 数组替换（类型变化时），避免 render server
+// 短暂无滤镜导致的灰/黑闪烁。
+- (void)lgLockFilterType {
+    _lgFilterTypeLocked = YES;
 }
 
-- (void)lgResumeFilterUpdates {
-    if (!_lgFilterUpdateSuspended) return;
-    _lgFilterUpdateSuspended = NO;
-    // 不直接调 applyFilters — 调用方（lgForceRefreshBackdrop 或下一帧
-    // layoutSubviews）会用最终尺寸一次性 evaluate 滤镜类型。
-    // 直接调 applyFilters 会和紧随其后的 lgForceRefreshBackdrop 产生
-    // 双重滤镜替换，可能在动画尾帧造成一次微闪。
-    // 作废节流缓存，让下次 layoutSubviews 一定会重 evaluate。
+- (void)lgUnlockFilterType {
+    if (!_lgFilterTypeLocked) return;
+    _lgFilterTypeLocked = NO;
+    // 作废节流缓存，让下一帧 layoutSubviews 一定会重新 evaluate 滤镜类型
     _lastLayoutSize = CGSizeMake(-1, -1);
     _lastLayoutCornerRadius = -1.0;
     [self setNeedsLayout];
 }
 
-- (BOOL)lgFilterUpdateSuspended {
-    return _lgFilterUpdateSuspended;
+- (BOOL)lgFilterTypeLocked {
+    return _lgFilterTypeLocked;
 }
 
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer {
