@@ -1367,32 +1367,34 @@ static void LGDIScheduleSync(NSTimeInterval driverDuration);
 static void LGDIReconcile(void);
 
 // =============================================================================
-//  阶段 3.2 / 3.3 探针（仅 LIQUIDASS_DEBUG；由设置里的
-//  DynamicIsland.EmptyCaptureDebug 开关运行时启用，关闭即完全还原）
+//  阶段 3.2/3.3/3.4 探针 v2（仅 LIQUIDASS_DEBUG）
+//  开关 DynamicIsland.EmptyCaptureDebug 运行时启用，关闭即完全还原。
 // -----------------------------------------------------------------------------
-//  三件事：
-//   P-ivar : dump SBSystemApertureSceneElementAccessoryPortalView 及其
-//            CAPortalLayer 的 ivar 列表（KVC 不接受 sourceView，改走 ivar），
-//            同时记录容器/底栈各层 cornerRadius，为重承载与几何做准备。
-//   P-glass: 在「内容窗口」(SystemAperture scene 的 SBSystemApertureWindow，
-//            下称 win#5) 的内容容器之下、系统底栈之上插一块测试玻璃，
-//            逐帧跟随 SBSystemApertureContainerView。用于一次性判定：
-//            该窗口的 CABackdropLayer 能否抓到壁纸实时画面（液态 or 黑/空）。
-//   P-hide : 每 4 秒轮换隐藏一个黑底候选层，人工观察黑方块在哪一相消失，
-//            判定黑的归属（系统胶囊底 vs App 远程场景自绘）：
-//              相0 baseline  相1 全屏 MTMaterial
-//              相2 胶囊底栈(_UILumaTrackingBackdropView 所在卡片底)
-//              相3 win#5 curtain+GainMap   相4 相2+相3 合并
+//  6 相自动轮换（每相 3 秒），岛下方有蓝底白字相号角标 P0..P5，
+//  对相号拍照即可，无需数秒：
+//    P0 baseline      全部原样（含我们 curtain 窗口里的主玻璃）
+//    P1 our-glass-off 临时隐藏我们的主玻璃 → 判定灰闪/黑丸/细边框是否我方造成
+//    P2 hide-bgcard   隐藏内容窗口系统胶囊底栈(luma 卡片) → 两侧黑方块归属
+//    P3 hide-curtain  隐藏内容窗口 curtain + gainMap
+//    P4 win31-glass   内容窗口插测试玻璃(亮绿描边标出真实 frame) → 液态 or 黑
+//    P5 glass+hidebg  测试玻璃 + 隐藏底栈（最终方案预览）
+//
+//  另有一次性结构 dump：compact 态 wrapper 三层子树（找附件黑底归属层）、
+//  全部 AccessoryPortalView 及其 ivar（沿父类链）。
 // =============================================================================
 #if LIQUIDASS_DEBUG
 
 static NSTimer    *sLGDIProbeTimer;
 static LGLiveBackdropView *sLGDIProbeGlass;
+static UILabel    *sLGDIProbeBadge;
 static NSInteger   sLGDIProbePhase = -1;
 static CFTimeInterval sLGDIProbePhaseAt = 0;
 static NSInteger   sLGDIProbeTickCount = 0;
 static NSString   *sLGDIProbeIvarIdentity;
+static NSString   *sLGDIProbeTreeIdentity;
 static NSMutableDictionary<NSValue *, NSNumber *> *sLGDIProbeHiddenOrig;
+
+static const NSTimeInterval kLGDIProbePhaseSecs = 3.0;
 
 static BOOL LGDIProbeEnabled(void) {
     return LGDIReadBool(@"DynamicIsland.EmptyCaptureDebug", NO);
@@ -1414,7 +1416,24 @@ static UIView *LGDIProbeFindView(UIView *root, BOOL (^match)(NSString *),
     return hit;
 }
 
-// 找到承载内容的 SBSystemApertureWindow（win#5：SystemAperture scene，
+// 深度受限的类名收集（全部匹配）
+static NSArray<UIView *> *LGDIProbeFindViews(UIView *root,
+                                             BOOL (^match)(NSString *),
+                                             NSUInteger maxDepth) {
+    if (!root || maxDepth > 18) maxDepth = 18;
+    NSMutableArray *hits = [NSMutableArray array];
+    __block __weak void (^weakWalk)(UIView *, NSUInteger);
+    void (^walk)(UIView *, NSUInteger) = ^(UIView *v, NSUInteger d) {
+        if (!v || d > maxDepth) return;
+        if (match(NSStringFromClass(v.class))) [hits addObject:v];
+        for (UIView *s in v.subviews) weakWalk(s, d + 1);
+    };
+    weakWalk = walk;
+    walk(root, 0);
+    return hits;
+}
+
+// 找到承载内容的 SBSystemApertureWindow（SystemAperture scene，
 // 不是 curtain 窗口），及其内部的内容容器。
 static UIWindow *LGDIProbeFindContentWindow(void) {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -1422,7 +1441,7 @@ static UIWindow *LGDIProbeFindContentWindow(void) {
         for (UIWindow *w in ((UIWindowScene *)scene).windows) {
             if (![NSStringFromClass(w.class)
                     isEqualToString:@"SBSystemApertureWindow"]) continue;
-            if (w == sLGDIHost.window) continue;  // win#0（curtain 窗口）
+            if (w == sLGDIHost.window) continue;  // curtain 窗口
             UIView *c = LGDIProbeFindView(w, ^BOOL(NSString *cn) {
                 return [cn isEqualToString:@"SBSystemApertureContainerView"];
             }, 14);
@@ -1432,103 +1451,145 @@ static UIWindow *LGDIProbeFindContentWindow(void) {
     return nil;
 }
 
-// 在 content 窗口内定位关键视图，全部坐标基于 depth-1 wrapper
+// container(tree3) -> PT(tree2) -> depth1 wrapper(tree1)
 static UIView *LGDIProbeDepth1Wrapper(UIView *container) {
-    // container(tree3) -> PT(tree2) -> depth1 PT(tree1)
     UIView *p2 = container.superview;
     UIView *p1 = p2.superview;
     if (!p1) return nil;
     if (![NSStringFromClass(p1.class) isEqualToString:@"SBFTouchPassThroughView"]) {
-        // 结构变化时兜底：再上一层
         p1 = p1.superview;
     }
     return p1;
 }
 
-// ---- P-ivar：附件 portal ivar / 底栈圆角（容器指针变化时跑一次）------------
+// ---- 一次性结构 dump：compact 态 wrapper 三层子树 --------------------------
+static void LGDIProbeDumpTreeOnce(UIView *wrapper, UIView *container) {
+    BOOL compact = container.bounds.size.width < 250.0;
+    NSString *ident = [NSString stringWithFormat:@"%p/%@/w%@/%d",
+                       wrapper, NSStringFromClass(wrapper.class),
+                       NSStringFromCGSize(wrapper.bounds.size), compact];
+    if ([ident isEqualToString:sLGDIProbeTreeIdentity]) return;
+    sLGDIProbeTreeIdentity = ident;
+
+    LGDILog(@"----- [probe-tree] identity=%@ compact=%d -----", ident, compact);
+    __block __weak void (^weakWalk)(UIView *, NSUInteger, UIView *);
+    void (^walk)(UIView *, NSUInteger, UIView *) =
+        ^(UIView *v, NSUInteger d, UIView *win) {
+        if (!v || d > 3) return;
+        CGRect fw = [v convertRect:v.bounds toView:win];
+        UIColor *bg = v.backgroundColor;
+        CGFloat br = 0, bg2 = 0, bb = 0, ba = 0;
+        [bg getRed:&br green:&bg2 blue:&bb alpha:&ba];
+        NSMutableString *pad = [NSMutableString string];
+        for (NSUInteger i = 0; i < d; i++) [pad appendString:@"  "];
+        LGDILog(@"[probe-tree]%@%@ frameInWin=%@ hidden=%d alpha=%.2f "
+                @"clip=%d corner=%.1f bg=(%.2f,%.2f,%.2f,%.2f) subs=%lu",
+                pad, NSStringFromClass(v.class),
+                NSStringFromCGRect(fw), (int)v.hidden, v.alpha,
+                (int)v.clipsToBounds, v.layer.cornerRadius,
+                br, bg2, bb, ba, (unsigned long)v.subviews.count);
+        for (UIView *s in v.subviews) weakWalk(s, d + 1, win);
+    };
+    weakWalk = walk;
+    walk(wrapper, 0, wrapper.window);
+    LGDILog(@"----- [probe-tree] end -----");
+}
+
+// ---- 一次性 ivar dump：全部 PortalView，view/layer 均沿父类链 --------------
 static void LGDIProbeDumpIvarsOnce(UIView *win5, UIView *container,
-                                   UIView *bgCard, UIView *clipCard) {
+                                   UIView *bgCard) {
     (void)win5;
-    NSString *ident = [NSString stringWithFormat:@"%p/%@",
-                       container, NSStringFromClass(container.class)];
+    NSString *ident = [NSString stringWithFormat:@"%p/%@/%@",
+                       container, NSStringFromClass(container.class),
+                       NSStringFromCGSize(container.bounds.size)];
     if ([ident isEqualToString:sLGDIProbeIvarIdentity]) return;
     sLGDIProbeIvarIdentity = ident;
 
     LGDILog(@"----- [probe-ivar] identity=%@ -----", ident);
-    LGDILog(@"[probe-ivar] geometry: container=%@ bgCard=%@ r=%.2f clip=%@ "
-            @"r=%.2f masks=%d containerR=%.2f",
+    LGDILog(@"[probe-ivar] container=%@ bgCard=%@ r=%.2f containerR=%.2f",
             NSStringFromCGRect(container.frame),
             NSStringFromClass(bgCard.class), bgCard.layer.cornerRadius,
-            NSStringFromClass(clipCard.class), clipCard.layer.cornerRadius,
-            (int)clipCard.layer.masksToBounds, container.layer.cornerRadius);
+            container.layer.cornerRadius);
 
-    UIView *portal = LGDIProbeFindView(container, ^BOOL(NSString *cn) {
-        return [cn containsString:@"AccessoryPortalView"];
-    }, 10);
-    if (!portal) {
-        LGDILog(@"[probe-ivar] no AccessoryPortalView in container subtree");
-        return;
-    }
-    LGDILog(@"[probe-ivar] portal view=%@ frame=%@",
-            NSStringFromClass(portal.class),
-            NSStringFromCGRect(portal.frame));
+    NSArray<UIView *> *portals = LGDIProbeFindViews(container, ^BOOL(NSString *cn) {
+        return [cn containsString:@"PortalView"];
+    }, 12);
+    LGDILog(@"[probe-ivar] portal count=%lu", (unsigned long)portals.count);
 
-    // view 侧 ivar
-    unsigned int n = 0;
-    Ivar *ivars = class_copyIvarList(portal.class, &n);
-    for (unsigned int i = 0; i < n; i++) {
-        const char *iname = ivar_getName(ivars[i]);
-        const char *itype = ivar_getTypeEncoding(ivars[i]);
-        LGDILog(@"[probe-ivar] viewIvar %s type=%s", iname, itype ?: "?");
-        if (itype && itype[0] == '@') {
-            id val = object_getIvar(portal, ivars[i]);
-            if (val) {
-                NSString *desc = [[val description] substringToIndex:
-                    MIN((NSUInteger)140, [val description].length)];
-                if ([val isKindOfClass:UIView.class]) {
-                    LGDILog(@"[probe-ivar]   value(view)=%@ frame=%@ win=%@",
-                            desc, NSStringFromCGRect([(UIView *)val frame]),
-                            NSStringFromClass([(UIView *)val window].class));
-                } else if ([val isKindOfClass:CALayer.class]) {
-                    LGDILog(@"[probe-ivar]   value(layer)=%@ frame=%@ hidden=%d",
-                            desc, NSStringFromCGRect([(CALayer *)val frame]),
-                            (int)[(CALayer *)val isHidden]);
-                } else {
-                    LGDILog(@"[probe-ivar]   value=%@", desc);
+    [portals enumerateObjectsUsingBlock:^(UIView *portal, NSUInteger pi, BOOL *stop) {
+        LGDILog(@"[probe-ivar] portal#%lu class=%@ frame=%@ clips=%d",
+                (unsigned long)pi, NSStringFromClass(portal.class),
+                NSStringFromCGRect(portal.frame), (int)portal.clipsToBounds);
+
+        // view 侧 ivar：沿父类链走到 UIView
+        Class vc = portal.class;
+        while (vc && vc != NSObject.class) {
+            unsigned int n = 0;
+            Ivar *ivars = class_copyIvarList(vc, &n);
+            if (n > 0)
+                LGDILog(@"[probe-ivar]   viewClass=%@ ivarCount=%u",
+                        NSStringFromClass(vc), n);
+            for (unsigned int i = 0; i < n; i++) {
+                const char *iname = ivar_getName(ivars[i]);
+                const char *itype = ivar_getTypeEncoding(ivars[i]);
+                LGDILog(@"[probe-ivar]     %s type=%s", iname, itype ?: "?");
+                if (itype && itype[0] == '@') {
+                    id val = object_getIvar(portal, ivars[i]);
+                    if (val) {
+                        NSString *desc = [[val description] substringToIndex:
+                            MIN((NSUInteger)120, [val description].length)];
+                        if ([val isKindOfClass:UIView.class]) {
+                            UIView *vv = (UIView *)val;
+                            LGDILog(@"[probe-ivar]       view=%@ frame=%@ win=%@",
+                                    desc, NSStringFromCGRect(vv.frame),
+                                    NSStringFromClass(vv.window.class));
+                        } else if ([val isKindOfClass:CALayer.class]) {
+                            CALayer *ll = (CALayer *)val;
+                            LGDILog(@"[probe-ivar]       layer=%@ frame=%@ hidden=%d",
+                                    desc, NSStringFromCGRect(ll.frame),
+                                    (int)ll.hidden);
+                        } else {
+                            LGDILog(@"[probe-ivar]       value=%@", desc);
+                        }
+                    }
                 }
             }
+            free(ivars);
+            if (vc == UIView.class) break;
+            vc = class_getSuperclass(vc);
         }
-    }
-    free(ivars);
 
-    // layer 侧 ivar（CAPortalLayer 及其父类链）
-    CALayer *layer = portal.layer;
-    Class lc = layer.class;
-    while (lc && lc != CALayer.class && lc != NSObject.class) {
-        unsigned int ln = 0;
-        Ivar *livars = class_copyIvarList(lc, &ln);
-        LGDILog(@"[probe-ivar] layer class=%@ ivarCount=%u",
-                NSStringFromClass(lc), ln);
-        for (unsigned int i = 0; i < ln; i++) {
-            const char *iname = ivar_getName(livars[i]);
-            const char *itype = ivar_getTypeEncoding(livars[i]);
-            LGDILog(@"[probe-ivar]   layerIvar %s type=%s", iname, itype ?: "?");
-            if (itype && itype[0] == '@') {
-                id val = object_getIvar(layer, livars[i]);
-                if (val) {
-                    LGDILog(@"[probe-ivar]     value=%@",
-                            [[val description] substringToIndex:
-                                MIN((NSUInteger)140, [val description].length)]);
+        // layer 侧 ivar：沿父类链走到 CALayer
+        CALayer *layer = portal.layer;
+        Class lc = layer.class;
+        while (lc && lc != NSObject.class) {
+            unsigned int ln = 0;
+            Ivar *livars = class_copyIvarList(lc, &ln);
+            if (ln > 0)
+                LGDILog(@"[probe-ivar]   layerClass=%@ ivarCount=%u",
+                        NSStringFromClass(lc), ln);
+            for (unsigned int i = 0; i < ln; i++) {
+                const char *iname = ivar_getName(livars[i]);
+                const char *itype = ivar_getTypeEncoding(livars[i]);
+                LGDILog(@"[probe-ivar]     %s type=%s", iname, itype ?: "?");
+                if (itype && itype[0] == '@') {
+                    id val = object_getIvar(layer, livars[i]);
+                    if (val) {
+                        LGDILog(@"[probe-ivar]       value=%@",
+                                [[val description] substringToIndex:
+                                    MIN((NSUInteger)120, [val description].length)]);
+                    }
                 }
             }
+            free(livars);
+            if (lc == CALayer.class) break;
+            lc = class_getSuperclass(lc);
         }
-        free(livars);
-        lc = class_getSuperclass(lc);
-    }
+    }];
     LGDILog(@"----- [probe-ivar] end -----");
 }
 
-// ---- P-hide：候选黑底层轮换隐藏 -------------------------------------------
+// ---- hidden 记账（恢复用）--------------------------------------------------
 static void LGDIProbeSetHidden(UIView *v, BOOL hidden) {
     if (!v) return;
     NSValue *key = [NSValue valueWithNonretainedObject:v];
@@ -1544,26 +1605,52 @@ static void LGDIProbeRestoreHides(void) {
         if (v && v.hidden != orig.boolValue) v.hidden = orig.boolValue;
     }];
     [sLGDIProbeHiddenOrig removeAllObjects];
+    // 主玻璃恢复可见（P1 只是临时隐藏）
+    if (sLGDIGlass) sLGDIGlass.hidden = NO;
 }
 
+// ---- 相号角标（普通 UIView，不经过 shader，保证可见）-----------------------
+static UILabel *LGDIProbeEnsureBadge(UIView *wrapper) {
+    if (sLGDIProbeBadge && sLGDIProbeBadge.superview == wrapper) return sLGDIProbeBadge;
+    UILabel *b = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 118, 24)];
+    b.backgroundColor = [UIColor colorWithRed:0.05 green:0.35 blue:0.95 alpha:0.85];
+    b.textColor = UIColor.whiteColor;
+    b.font = [UIFont boldSystemFontOfSize:15];
+    b.textAlignment = NSTextAlignmentCenter;
+    b.layer.cornerRadius = 12;
+    b.layer.masksToBounds = YES;
+    b.userInteractionEnabled = NO;
+    [wrapper addSubview:b];
+    sLGDIProbeBadge = b;
+    return b;
+}
+
+static void LGDIProbeUpdateBadge(UIView *wrapper, UIView *container,
+                                 NSInteger phase) {
+    UILabel *b = LGDIProbeEnsureBadge(wrapper);
+    static const char *names[] = {
+        "P0 BASE", "P1 GLASS-OFF", "P2 HIDE-BG",
+        "P3 HIDE-CURTAIN", "P4 TEST-GLASS", "P5 GLASS+NOBG"
+    };
+    b.text = [NSString stringWithUTF8String:names[phase % 6]];
+    CGRect cf = [container convertRect:container.bounds toView:wrapper];
+    CGFloat w = 132;
+    b.frame = CGRectMake(CGRectGetMidX(cf) - w / 2.0,
+                         CGRectGetMaxY(cf) + 8.0, w, 24);
+    b.hidden = NO;
+}
+
+// ---- 相位应用（每 tick 重放，抵消正式代码/系统对状态的回写）----------------
 static void LGDIProbeApplyPhase(NSInteger phase, UIView *wrapper,
-                                UIView *bgCard, UIWindow *win5) {
+                                UIView *bgCard) {
     LGDIProbeRestoreHides();
-    if (phase == 0) {
-        LGDILog(@"[probe-hide] PHASE=0 BASELINE（全部原样）");
-        return;
-    }
     LGDIWithoutImplicitAnimations(^{
-        if (phase == 1 || phase == 4) {
-            UIView *mt = LGDIProbeFindView(win5, ^BOOL(NSString *cn) {
-                return [cn isEqualToString:@"MTMaterialView"];
-            }, 4);
-            LGDIProbeSetHidden(mt, YES);
-        }
-        if (phase == 2 || phase == 4) {
-            LGDIProbeSetHidden(bgCard, YES);
-        }
-        if (phase == 3 || phase == 4) {
+        // P1：临时隐藏我们 curtain 窗口的主玻璃
+        if (phase == 1 && sLGDIGlass) sLGDIGlass.hidden = YES;
+        // P2 / P5：隐藏系统胶囊底栈
+        if (phase == 2 || phase == 5) LGDIProbeSetHidden(bgCard, YES);
+        // P3：隐藏内容窗口 curtain + gainMap
+        if (phase == 3) {
             UIView *c2 = LGDIProbeFindView(wrapper, ^BOOL(NSString *cn) {
                 return [cn isEqualToString:@"_SBSystemApertureMagiciansCurtainView"];
             }, 4);
@@ -1572,14 +1659,21 @@ static void LGDIProbeApplyPhase(NSInteger phase, UIView *wrapper,
             LGDIProbeSetHidden(gm, YES);
         }
     });
-    LGDILog(@"[probe-hide] PHASE=%ld（保持 4 秒，观察黑方块是否消失/内容是否还在）",
-            (long)phase);
+    LGDILog(@"[probe] PHASE=%ld active", (long)phase);
 }
 
-// ---- P-glass：win#5 内容容器下测试玻璃 ------------------------------------
+// ---- P4/P5：内容窗口测试玻璃（亮绿描边标出真实 frame）----------------------
 static void LGDIProbeSyncGlass(UIView *container, UIView *contentSib,
-                               UIView *bgCard) {
+                               UIView *bgCard, BOOL wanted) {
     UIView *wrapper = contentSib.superview;
+    if (!wanted) {
+        if (sLGDIProbeGlass) {
+            [sLGDIProbeGlass removeFromSuperview];
+            sLGDIProbeGlass = nil;
+            LGDILog(@"[probe-glass] removed (this phase has no test glass)");
+        }
+        return;
+    }
     CGRect f = [container convertRect:container.bounds toView:wrapper];
     if (!LGDIIsPlausibleSize(f.size)) return;
 
@@ -1592,14 +1686,17 @@ static void LGDIProbeSyncGlass(UIView *container, UIView *contentSib,
         }
         sLGDIProbeGlass.layer.cornerCurve   = kCACornerCurveContinuous;
         sLGDIProbeGlass.layer.masksToBounds = YES;
+        // 亮绿描边：普通 CALayer 属性，不经过 backdrop shader，
+        // 无论捕获结果如何都能看到玻璃的实际覆盖范围
+        sLGDIProbeGlass.layer.borderWidth  = 1.5;
+        sLGDIProbeGlass.layer.borderColor  =
+            [UIColor colorWithRed:0.1 green:0.95 blue:0.2 alpha:0.95].CGColor;
         [wrapper insertSubview:sLGDIProbeGlass belowSubview:contentSib];
-        LGDILog(@"[probe-glass] INSERTED below=%@ in wrapper=%@ frame=%@ —— "
-                @"观察：液态实时模糊(成功) / 黑 / 透明空",
-                NSStringFromClass(contentSib.class),
-                NSStringFromClass(wrapper.class),
+        LGDILog(@"[probe-glass] INSERTED frame=%@ —— 观察框内："
+                @"液态实时模糊(成功) / 黑 / 透明空",
                 NSStringFromCGRect(f));
         __weak LGLiveBackdropView *wg = sLGDIProbeGlass;
-        for (NSNumber *d in @[ @0.3, @0.9, @1.8, @3.0 ]) {
+        for (NSNumber *d in @[ @0.2, @0.6, @1.2, @2.4 ]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                (int64_t)(d.doubleValue * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -1618,18 +1715,27 @@ static void LGDIProbeSyncGlass(UIView *container, UIView *contentSib,
     }
 }
 
+static void LGDIProbeFullReset(NSString *reason) {
+    LGDIProbeRestoreHides();
+    if (sLGDIProbeGlass) {
+        [sLGDIProbeGlass removeFromSuperview];
+        sLGDIProbeGlass = nil;
+    }
+    if (sLGDIProbeBadge) {
+        [sLGDIProbeBadge removeFromSuperview];
+        sLGDIProbeBadge = nil;
+    }
+    sLGDIProbePhase = -1;
+    sLGDIProbeIvarIdentity = nil;
+    sLGDIProbeTreeIdentity = nil;
+    if (reason) LGDILog(@"[probe] reset — %@", reason);
+}
+
 static void LGDIProbeTick(NSTimer *timer) {
     (void)timer;
     if (!sLGDIActive || !LGDIFeatureEnabled() || !LGDIProbeEnabled()) {
-        if (sLGDIProbeGlass || sLGDIProbePhase >= 0) {
-            LGDIProbeRestoreHides();
-            if (sLGDIProbeGlass) {
-                [sLGDIProbeGlass removeFromSuperview];
-                sLGDIProbeGlass = nil;
-            }
-            sLGDIProbePhase = -1;
-            sLGDIProbeIvarIdentity = nil;
-            LGDILog(@"[probe] disabled — probe glass removed, hidden restored");
+        if (sLGDIProbeGlass || sLGDIProbeBadge || sLGDIProbePhase >= 0) {
+            LGDIProbeFullReset(@"switch OFF / DI inactive — all restored");
         }
         return;
     }
@@ -1639,55 +1745,43 @@ static void LGDIProbeTick(NSTimer *timer) {
         return [cn isEqualToString:@"SBSystemApertureContainerView"];
     }, 14) : nil;
     if (!win5 || !container) return;  // 过渡中，保持现状
-    UIView *contentSib = container.superview;       // depth-2 PT（sib4）
+    UIView *contentSib = container.superview;
     UIView *wrapper    = LGDIProbeDepth1Wrapper(container);
     if (!contentSib || !wrapper) return;
 
-    // 底栈卡片：_UILumaTrackingBackdropView 的父视图（胶囊/卡片形底板）
     UIView *luma = LGDIProbeFindView(wrapper, ^BOOL(NSString *cn) {
         return [cn isEqualToString:@"_UILumaTrackingBackdropView"];
     }, 5);
-    UIView *bgCard = luma.superview;
-    // 含 curtain 的兄弟卡片（sib3，clipsToBounds 的裁剪层），用于圆角记录
-    UIView *clipCard = nil;
-    for (UIView *s in wrapper.subviews) {
-        if (s == contentSib) continue;
-        UIView *inner = LGDIProbeFindView(s, ^BOOL(NSString *cn) {
-            return [cn isEqualToString:@"_SBSystemApertureMagiciansCurtainView"];
-        }, 2);
-        if (inner) { clipCard = s; break; }
-    }
+    UIView *bgCard = luma.superview ?: luma;
 
-    LGDIProbeDumpIvarsOnce(win5, container, bgCard ?: luma,
-                           clipCard ?: container);
+    LGDIProbeDumpTreeOnce(wrapper, container);
+    LGDIProbeDumpIvarsOnce(win5, container, bgCard);
 
-    // 相轮换（每 4 秒）
+    // 相轮换（每 3 秒，6 相）
     CFTimeInterval now = CACurrentMediaTime();
     if (sLGDIProbePhase < 0) {
         sLGDIProbePhase = 0;
         sLGDIProbePhaseAt = now;
-        LGDIProbeApplyPhase(0, wrapper, bgCard, win5);
-    } else if (now - sLGDIProbePhaseAt >= 4.0) {
-        sLGDIProbePhase = (sLGDIProbePhase + 1) % 5;
+    } else if (now - sLGDIProbePhaseAt >= kLGDIProbePhaseSecs) {
+        sLGDIProbePhase = (sLGDIProbePhase + 1) % 6;
         sLGDIProbePhaseAt = now;
-        LGDIProbeApplyPhase(sLGDIProbePhase, wrapper, bgCard, win5);
     }
+    LGDIProbeApplyPhase(sLGDIProbePhase, wrapper, bgCard);
+    LGDIProbeSyncGlass(container, contentSib, bgCard,
+                       sLGDIProbePhase == 4 || sLGDIProbePhase == 5);
+    LGDIProbeUpdateBadge(wrapper, container, sLGDIProbePhase);
 
-    LGDIProbeSyncGlass(container, contentSib, bgCard ?: luma);
-
-    // 每 ~2 秒记录一次玻璃几何，便于日志对照
-    if ((sLGDIProbeTickCount++ % 8) == 0 && sLGDIProbeGlass) {
-        LGDILog(@"[probe-glass] frame=%@ r=%.2f phase=%ld win=%@",
-                NSStringFromCGRect(sLGDIProbeGlass.frame),
-                sLGDIProbeGlass.layer.cornerRadius, (long)sLGDIProbePhase,
-                NSStringFromClass(sLGDIProbeGlass.window.class));
+    if ((sLGDIProbeTickCount++ % 12) == 0) {
+        LGDILog(@"[probe] tick phase=%ld glass=%@ mainGlassHidden=%d",
+                (long)sLGDIProbePhase,
+                sLGDIProbeGlass ? NSStringFromCGRect(sLGDIProbeGlass.frame) : @"-",
+                sLGDIGlass ? (int)sLGDIGlass.hidden : -1);
     }
 }
 
 static void LGDIProbeEnsureTimer(void) {
-    // block timer：无 target，weak 化在 tick 内通过全局状态完成
     if (!sLGDIProbeTimer) {
-        sLGDIProbeTimer = [NSTimer timerWithTimeInterval:0.25 repeats:YES
+        sLGDIProbeTimer = [NSTimer timerWithTimeInterval:0.2 repeats:YES
                                                     block:^(NSTimer *t) {
             LGDIProbeTick(t);
         }];
@@ -1701,13 +1795,7 @@ static void LGDIProbeEnsureTimer(void) {
 static void LGDIProbeStopTimer(void) {
     [sLGDIProbeTimer invalidate];
     sLGDIProbeTimer = nil;
-    LGDIProbeRestoreHides();
-    if (sLGDIProbeGlass) {
-        [sLGDIProbeGlass removeFromSuperview];
-        sLGDIProbeGlass = nil;
-    }
-    sLGDIProbePhase = -1;
-    sLGDIProbeIvarIdentity = nil;
+    LGDIProbeFullReset(nil);
 }
 
 #endif // LIQUIDASS_DEBUG

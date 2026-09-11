@@ -1009,9 +1009,34 @@ static void lgReloadHostPrefs(void) {
 
     // 灵动岛空捕获诊断：DynamicIsland.EmptyCaptureDebug=1 时，backdrop 采样
     // 为空的像素渲染洋红色，用于设备上确认"跨窗口捕获为空"这一根因。
-    NSNumber *diEmptyDbg = prefs[@"DynamicIsland.EmptyCaptureDebug"];
-    g_diEmptyCaptureDebug = (diEmptyDbg && [diEmptyDbg isKindOfClass:[NSNumber class]] && diEmptyDbg.boolValue);
-    if (g_diEmptyCaptureDebug) lglog("DynamicIsland empty-capture debug: ON (magenta fallback)");
+    // 注意：与 SpringBoard 侧 LGDIReadBool 行为对齐，接受 NSNumber 及
+    // NSString("1"/"YES"/"true")，避免两端类型判定不一致。
+    id diEmptyDbg = prefs[@"DynamicIsland.EmptyCaptureDebug"];
+    bool diDbgOn = false;
+    if ([diEmptyDbg isKindOfClass:[NSNumber class]]) {
+        diDbgOn = [(NSNumber *)diEmptyDbg boolValue];
+    } else if ([diEmptyDbg isKindOfClass:[NSString class]]) {
+        NSString *s = [(NSString *)diEmptyDbg lowercaseString];
+        diDbgOn = [s isEqualToString:@"1"] || [s isEqualToString:@"yes"]
+               || [s isEqualToString:@"true"] || [s isEqualToString:@"on"];
+    }
+    g_diEmptyCaptureDebug = diDbgOn;
+    {
+        // 诊断：每次 reload 打印该键的原始形态与两个候选路径状态，
+        // 用于定位"SpringBoard 探针已激活但 backboardd mode 仍为 1"的分叉。
+        NSDictionary *attrs = [[NSFileManager defaultManager]
+            attributesOfItemAtPath:prefsPath error:nil];
+        NSString *mtime = attrs.fileModificationDate
+            ? [attrs.fileModificationDate descriptionWithLocale:nil] : @"-";
+        bool stdExists = [[NSFileManager defaultManager] fileExistsAtPath:
+            @"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist"];
+        lglog("[DI] EmptyCaptureDebug raw=%@(%@) -> on=%d mode=%.0f | "
+              "plist=%s mtime=%s stdPathExists=%d",
+              diEmptyDbg ? NSStringFromClass([diEmptyDbg class]).UTF8String : "nil",
+              diEmptyDbg ? [diEmptyDbg description].UTF8String : "-",
+              diDbgOn, diDbgOn ? 2.0 : 1.0,
+              prefsPath.UTF8String, mtime.UTF8String, stdExists ? 1 : 0);
+    }
     {
         static int sPrefsPathDiagCount = 0;
         if (sPrefsPathDiagCount < 5) {
