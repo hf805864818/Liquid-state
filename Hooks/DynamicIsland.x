@@ -323,13 +323,11 @@ typedef NS_ENUM(NSInteger, DIPillLayoutMode) {
 
 - (void)updateLayoutMode:(DIPillLayoutMode)mode reason:(NSInteger)reason {
     // [P4 修复] 验证 mode 值：日志中观察到 mode=-1（mode-1）无效枚举值，
-    // 系统在弹簧动画途中反复传入 -1（expanded→-1→expanded 循环）。
-    // [闪烁修复] 不再 clamp 到 inert（会导致展开玻璃被误拆除），
-    // 而是直接忽略无效值——保持上一次有效模式不变。
+    // 系统在特定时序下可能传入越界值。无效值回退到 inert，防止状态机
+    // 进入未定义状态导致点亮/拆除逻辑异常。
     if (mode < 0 || mode > DIPillLayoutModeDetached) {
-        LGDILog(@"stateMachine: ignoring INVALID mode=%ld (keeping %@)",
-                (long)mode, LGDIModeName(sLGDIMode));
-        return;
+        LGDILog(@"stateMachine: INVALID mode=%ld, clamping to inert", (long)mode);
+        mode = DIPillLayoutModeInert;
     }
     if (mode != (DIPillLayoutMode)sLGDIMode) {
         LGDILog(@"stateMachine: mode changed %@ -> %@ reason=%ld",
@@ -1192,20 +1190,19 @@ static NSString *LGDICurrentContentBundleID(void) {
 
 // 在命中视图向上的祖先链中找展开玻璃宿主：
 // 优先「卡片作用域内最高的不裁剪祖先」（玻璃正好覆盖整张展开卡片），
-// 退化到最高不裁剪祖先 / 窗口（与 pill 宿主同策略）。
-// [外框修复] 不再退化到 TouchPassThrough——它是系统承载壳，
-// 玻璃挂在它上面会出现在外框架而非内容卡片上。
+// 退化到 TouchPassThrough / 最高不裁剪祖先 / 窗口（与 pill 宿主同策略）。
 static UIView *LGDIExpandedHostForView(UIView *view) {
     UIWindow *win = view.window;
     if (!win) return nil;
-    UIView *card = nil, *top = nil;
+    UIView *card = nil, *touch = nil, *top = nil;
     for (UIView *a = view.superview; a && a != win; a = a.superview) {
         if (a.clipsToBounds) continue;
         CGRect af = [a convertRect:a.bounds toView:win];
         if (af.size.width <= 430.0 && af.size.height <= 280.0) card = a;  // 循环上移→保留最高者
+        if ([NSStringFromClass(a.class) containsString:@"TouchPassThrough"]) touch = a;
         top = a;
     }
-    return card ?: top ?: win;
+    return card ?: touch ?: top ?: win;
 }
 
 // 沿祖先链取第一个有效圆角（展开卡片圆角常设在外层容器上）
@@ -1242,13 +1239,6 @@ static CGRect LGDIFindExpandedTarget(UIView *curtain,
         if ([cn containsString:@"BackdropLayer"]) return;
         if ([cn containsString:@"VisualEffect"]) return;  // 含我们注入的模糊底板及其 contentView
         if ([cn isEqualToString:@"LGLiveBackdropView"]) return;
-        // [闪烁/外框修复] 排除系统框架容器：ScenePresenter / ScalingContent /
-        // ApertureContainer 等是承载壳，不是内容卡片本身。玻璃挂在它们上面
-        // 会导致液态效果出现在「外框架」而非内容卡片上（红果视频现象）。
-        if ([cn containsString:@"ScenePresenter"]) return;
-        if ([cn containsString:@"ScalingContentView"]) return;
-        if ([cn containsString:@"ApertureContainer"]) return;
-        if ([cn containsString:@"TouchPassThrough"]) return;
         // 祖先链上若有我们注入的玻璃/模糊视图，同样排除（防止把底板子树当内容）
         for (UIView *a = v.superview; a; a = a.superview) {
             NSString *acn = NSStringFromClass(a.class);
@@ -1261,9 +1251,9 @@ static CGRect LGDIFindExpandedTarget(UIView *curtain,
         // 必须比 compact curtain 明显大（展开内容）
         if (f.size.width <= compactFrame.size.width + 10 ||
             f.size.height <= compactFrame.size.height + 5) return;
-        // 排除全屏视图（容器背景板，不是展开内容）。
-        // 放宽到 430x280 以覆盖视频类大卡片（红果视频展开宽度可达 430pt）。
-        if (f.size.width > 430 || f.size.height > 280) return;
+        // 排除全屏视图（容器背景板，不是展开内容）。放宽到 400x240
+        // 以覆盖音量/音乐大卡片（旧 380x200 阈值实测漏检）。
+        if (f.size.width > 400 || f.size.height > 240) return;
         // 必须在屏幕顶部灵动岛区域
         if (f.origin.y > 320) return;
 
@@ -1345,7 +1335,6 @@ static CGRect LGDIFindExpandedTarget(UIView *curtain,
 }
 
 static CFTimeInterval sLGDIExpLastSweep;  // 展开窗口装饰压制节流
-static CFTimeInterval sLGDIExpGraceDeadline;  // 展开态宽限期截止时刻（0=无宽限）
 
 // 创建/挂载/同步展开玻璃（幂等）。frame/radius 均在 host 坐标系。
 static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
@@ -1514,7 +1503,6 @@ static void LGDIDestroyExpandedGlass(NSString *reason) {
     sLGDIExpRetries = 0;
     sLGDIExpFramePending = NO;
     sLGDIExpLastSweep = 0;
-    sLGDIExpGraceDeadline = 0;
     sLGDIExpProviderID = nil;
     if (sLGDIPillHiddenForExpanded && sLGDIGlass) {
         sLGDIGlass.hidden = NO;
@@ -1546,26 +1534,9 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
     BOOL isExpanded = (NSInteger)[DIPillStateMachine shared].currentMode >= DIPillLayoutModeExpanded;
 
     if (isExpanded) {
-        if (LGDISyncExpandedGeometry()) {
-            sLGDIExpGraceDeadline = 0;  // 展开态正常 → 取消宽限
-            return;
-        }
+        if (LGDISyncExpandedGeometry()) return;
     } else if (sLGDIExpGlass || sLGDIExpBlur) {
-        // [闪烁修复] 系统在展开弹簧途中会反复上报 compact/inert/mode-1，
-        // 然后又回到 expanded（日志证实 expanded→compact→expanded→inert 快速循环）。
-        // 直接销毁会导致玻璃反复创建/销毁 = 边框闪烁。
-        // 宽限 0.5s：仅在持续离开展开态超过 0.5s 后才真正拆除。
-        CFTimeInterval now = CACurrentMediaTime();
-        if (sLGDIExpGraceDeadline == 0) {
-            sLGDIExpGraceDeadline = now + 0.5;
-            LGDILog(@"expanded grace period started (mode→%@), keeping glass for 0.5s",
-                    LGDIModeName((NSInteger)[DIPillStateMachine shared].currentMode));
-        }
-        if (now < sLGDIExpGraceDeadline) {
-            // 宽限期内：保持当前展开玻璃不动，pill 玻璃继续让位
-            return;
-        }
-        LGDIDestroyExpandedGlass(@"compact layout (grace expired)");
+        LGDIDestroyExpandedGlass(@"compact layout");
     }
 
     CGRect targetFrame;

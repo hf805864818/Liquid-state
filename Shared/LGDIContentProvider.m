@@ -154,10 +154,6 @@
             @"element", @"presenter", @"content", @"scene", @"compact",
             @"expanded", @"leading", @"trailing", @"hero", @"attachment",
             @"custom", @"activity", @"viewcontroller",
-            // [声波修复] 声波/频谱/波形相关关键词，让 generic fallback 也能
-            // 通过子树扫描命中包含这些视图的内容容器
-            @"waveform", @"waveview", @"audiovisualizer", @"equalizer",
-            @"spectrum", @"nowplaying", @"artwork",
         ];
     });
     return kw;
@@ -165,18 +161,7 @@
 
 - (NSInteger)scoreExpandedCandidate:(UIView *)view {
     if ([view isKindOfClass:UIImageView.class]) return 0;
-    // 查自身类名命中
-    NSInteger selfHits = [self keywordHitCountForClassName:NSStringFromClass(view.class)];
-    // [声波修复] 通用 provider 也检查子视图类名：声波/频谱/波形视图
-    // 常嵌套在内容容器内，容器自身类名不含关键词但子视图命中。
-    // 子树命中给 +1（弱信号），让有内容子视图的容器优先于空框架壳。
-    NSInteger childHits = 0;
-    for (UIView *sub in view.subviews) {
-        childHits += [self keywordHitCountForClassName:NSStringFromClass(sub.class)];
-        if (childHits > 0) break;  // 有一个命中即可
-    }
-    if (selfHits == 0 && childHits == 0) return 0;
-    return (selfHits > 0 ? 1 : 0) + (childHits > 0 ? 1 : 0);
+    return [self keywordHitCountForClassName:NSStringFromClass(view.class)] > 0 ? 1 : 0;
 }
 
 @end
