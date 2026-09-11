@@ -932,6 +932,21 @@ static NSString *lgPrefsPath(void) {
     NSString *jbPath = jbroot(@"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist");
     return jbPath ?: standardPath;
 }
+// 经 cfprefsd 读取单个偏好键。roothide 环境下设置进程经 CFPreferences
+// 写入的值可能只驻留在 cfprefsd 守护进程内存里、从未 flush 成容器内
+// plist 文件；本进程（backboardd）直读文件会永久读到 nil（诊断洋红
+// 因此从不出现）。CFPreferencesAppSynchronize 先与守护进程对账，
+// 再取当前用户/任意 host 的值，与设置进程看到的保持一致。
+static id lgCFPrefsValue(NSString *key) {
+    if (!key.length) return nil;
+    @autoreleasepool {
+        CFStringRef domain = CFSTR("dylv.liquidassprefs");
+        CFPreferencesAppSynchronize(domain);
+        return CFBridgingRelease(
+            CFPreferencesCopyAppValue((CFStringRef)key, domain));
+    }
+}
+
 static NSString * const kLGPrefsReloadNote = @"dylv.liquidassprefs/Reload";
 static CFStringRef const kLGParametersReloadedNote =
     CFSTR("dylv.liquidglass/ParametersReloaded");
@@ -1011,7 +1026,9 @@ static void lgReloadHostPrefs(void) {
     // 为空的像素渲染洋红色，用于设备上确认"跨窗口捕获为空"这一根因。
     // 注意：与 SpringBoard 侧 LGDIReadBool 行为对齐，接受 NSNumber 及
     // NSString("1"/"YES"/"true")，避免两端类型判定不一致。
-    id diEmptyDbg = prefs[@"DynamicIsland.EmptyCaptureDebug"];
+    // 优先 cfprefsd（含未落盘内存值），文件值仅作对照/兜底
+    id diEmptyDbgCF = lgCFPrefsValue(@"DynamicIsland.EmptyCaptureDebug");
+    id diEmptyDbg = diEmptyDbgCF ?: prefs[@"DynamicIsland.EmptyCaptureDebug"];
     bool diDbgOn = false;
     if ([diEmptyDbg isKindOfClass:[NSNumber class]]) {
         diDbgOn = [(NSNumber *)diEmptyDbg boolValue];
@@ -1030,10 +1047,13 @@ static void lgReloadHostPrefs(void) {
             ? [attrs.fileModificationDate descriptionWithLocale:nil] : @"-";
         bool stdExists = [[NSFileManager defaultManager] fileExistsAtPath:
             @"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist"];
-        lglog("[DI] EmptyCaptureDebug raw=%s(%s) -> on=%d mode=%.0f | "
+        id diFileDbg = prefs[@"DynamicIsland.EmptyCaptureDebug"];
+        lglog("[DI] EmptyCaptureDebug cf=%s(%s) file=%s(%s) -> on=%d mode=%.0f | "
               "plist=%s inode=%llu size=%lld mtime=%s stdPathExists=%d keys=%lu",
-              diEmptyDbg ? NSStringFromClass([diEmptyDbg class]).UTF8String : "nil",
-              diEmptyDbg ? [diEmptyDbg description].UTF8String : "-",
+              diEmptyDbgCF ? NSStringFromClass([diEmptyDbgCF class]).UTF8String : "nil",
+              diEmptyDbgCF ? [diEmptyDbgCF description].UTF8String : "-",
+              diFileDbg ? NSStringFromClass([diFileDbg class]).UTF8String : "nil",
+              diFileDbg ? [diFileDbg description].UTF8String : "-",
               diDbgOn, diDbgOn ? 2.0 : 1.0,
               prefsPath.UTF8String,
               (unsigned long long)[attrs fileSystemFileNumber],

@@ -1378,6 +1378,10 @@ static void LGDIReconcile(void);
 //    P3 hide-curtain  隐藏内容窗口 curtain + gainMap
 //    P4 win31-glass   内容窗口插测试玻璃(亮绿描边标出真实 frame) → 液态 or 黑
 //    P5 glass+hidebg  测试玻璃 + 隐藏底栈（最终方案预览）
+//    M0..Mn           挂载窗口探测：同一块玻璃每 3 秒换一个全屏窗口
+//                     （含 3 个自建窗口 normal/statusBar/alert+1200），
+//                     角标 M序号/总数 + 窗口类名/层级；框内呈液态即代表
+//                     该合成域可作为正式挂载点，黑/透明则为隔离域。
 //
 //  另有一次性结构 dump：compact 态 wrapper 三层子树（找附件黑底归属层）、
 //  全部 AccessoryPortalView 及其 ivar（沿父类链）。
@@ -1393,6 +1397,11 @@ static NSInteger   sLGDIProbeTickCount = 0;
 static NSString   *sLGDIProbeIvarIdentity;
 static NSString   *sLGDIProbeTreeIdentity;
 static NSMutableDictionary<NSValue *, NSNumber *> *sLGDIProbeHiddenOrig;
+// M 相（挂载窗口探测）状态，前置声明供 LGDIProbeFullReset 使用
+static NSMutableArray<UIWindow *> *sLGDIProbeOwnWindows;
+static NSArray<UIWindow *> *sLGDIProbeMountCandidates;
+static NSString   *sLGDIProbeMountSig;
+static NSValue    *sLGDIProbeMountHostKey;
 
 static const NSTimeInterval kLGDIProbePhaseSecs = 3.0;
 
@@ -1611,18 +1620,23 @@ static void LGDIProbeRestoreHides(void) {
 
 // ---- 相号角标（普通 UIView，不经过 shader，保证可见）-----------------------
 static UILabel *LGDIProbeEnsureBadge(UIView *wrapper) {
-    if (sLGDIProbeBadge && sLGDIProbeBadge.superview == wrapper) return sLGDIProbeBadge;
-    UILabel *b = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 118, 24)];
-    b.backgroundColor = [UIColor colorWithRed:0.05 green:0.35 blue:0.95 alpha:0.85];
-    b.textColor = UIColor.whiteColor;
-    b.font = [UIFont boldSystemFontOfSize:15];
-    b.textAlignment = NSTextAlignmentCenter;
-    b.layer.cornerRadius = 12;
-    b.layer.masksToBounds = YES;
-    b.userInteractionEnabled = NO;
-    [wrapper addSubview:b];
-    sLGDIProbeBadge = b;
-    return b;
+    if (!sLGDIProbeBadge) {
+        UILabel *b = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 118, 24)];
+        b.backgroundColor = [UIColor colorWithRed:0.05 green:0.35 blue:0.95 alpha:0.85];
+        b.textColor = UIColor.whiteColor;
+        b.font = [UIFont boldSystemFontOfSize:13];
+        b.textAlignment = NSTextAlignmentCenter;
+        b.layer.cornerRadius = 12;
+        b.layer.masksToBounds = YES;
+        b.userInteractionEnabled = NO;
+        sLGDIProbeBadge = b;
+    }
+    // M 相需要在不同窗口间重挂
+    if (sLGDIProbeBadge.superview != wrapper) {
+        [sLGDIProbeBadge removeFromSuperview];
+        [wrapper addSubview:sLGDIProbeBadge];
+    }
+    return sLGDIProbeBadge;
 }
 
 static void LGDIProbeUpdateBadge(UIView *wrapper, UIView *container,
@@ -1725,10 +1739,170 @@ static void LGDIProbeFullReset(NSString *reason) {
         [sLGDIProbeBadge removeFromSuperview];
         sLGDIProbeBadge = nil;
     }
+    for (UIWindow *w in sLGDIProbeOwnWindows) w.hidden = YES;
+    sLGDIProbeOwnWindows = nil;
+    sLGDIProbeMountCandidates = nil;
+    sLGDIProbeMountSig = nil;
+    sLGDIProbeMountHostKey = nil;
     sLGDIProbePhase = -1;
     sLGDIProbeIvarIdentity = nil;
     sLGDIProbeTreeIdentity = nil;
     if (reason) LGDILog(@"[probe] reset — %@", reason);
+}
+
+// =============================================================================
+//  挂载窗口探测（M 相，P0..P5 之后自动接 M0..Mn）
+// -----------------------------------------------------------------------------
+//  回答闸门问题：哪个合成域窗口里的 CABackdropLayer 能在灵动岛区域抓到
+//  壁纸实时画面（液态），哪些和两个 SBSystemApertureWindow 一样只能抓到
+//  空/同窗灰。同一块亮绿描边测试玻璃每 3 秒换一个候选窗口，角标显示
+//  M序号/总数 + 窗口类名/层级，对号拍照即可。
+//  M 相期间统一去污染：隐藏我方主玻璃、系统 luma 底卡、内容窗口
+//  curtain/gainMap，保证亮绿框内只剩"该窗口玻璃自己的捕获结果"。
+//  候选 = 所有全屏非灵动岛窗口（按 windowLevel 排序）+ 3 个自建窗口
+//  （normal / statusBar / alert+1200，验证自建高层级窗口是否可行）。
+// =============================================================================
+static UIWindowScene *LGDIProbeMainScene(void) {
+    UIWindowScene *fallback = nil;
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if (![s isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *ws = (UIWindowScene *)s;
+        if (ws.activationState == UISceneActivationStateForegroundActive) return ws;
+        if (!fallback) fallback = ws;
+    }
+    return fallback;
+}
+
+static UIWindow *LGDIProbeMakeOwnWindow(CGFloat level) {
+    UIWindowScene *scene = LGDIProbeMainScene();
+    if (!scene) return nil;
+    UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
+    w.frame = UIScreen.mainScreen.bounds;
+    w.windowLevel = level;
+    w.backgroundColor = UIColor.clearColor;
+    w.rootViewController = [[UIViewController alloc] init];
+    w.rootViewController.view.backgroundColor = UIColor.clearColor;
+    w.userInteractionEnabled = NO;
+    w.hidden = NO;
+    return w;
+}
+
+static NSString *LGDIProbeShortClassName(NSString *cn) {
+    static NSDictionary<NSString *, NSString *> *map;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = @{
+            @"SBSystemApertureWindow": @"ApertureWin",
+            @"SBFTouchPassThroughWindow": @"TouchPassWin",
+        };
+    });
+    NSString *m = map[cn];
+    return m ?: cn;
+}
+
+// 候选窗口清单（窗口清单变化时重建；自建窗口持久复用）
+static NSArray<UIWindow *> *LGDIProbeMountCandidatesList(void) {
+    NSMutableString *sig = [NSMutableString string];
+    NSMutableArray<UIWindow *> *out = [NSMutableArray array];
+    NSMutableSet<NSValue *> *seen = [NSMutableSet set];
+    CGSize ss = UIScreen.mainScreen.bounds.size;
+    // 先确保自建窗口存在：它们随后会被场景枚举自然收录（类名 UIWindow），
+    // 无需手动追加，否则会重复成两个候选。
+    if (!sLGDIProbeOwnWindows) {
+        sLGDIProbeOwnWindows = [NSMutableArray array];
+        for (NSNumber *lv in @[ @(UIWindowLevelNormal),
+                               @(UIWindowLevelStatusBar),
+                               @(UIWindowLevelAlert + 1200) ]) {
+            UIWindow *w = LGDIProbeMakeOwnWindow(lv.doubleValue);
+            if (w) [sLGDIProbeOwnWindows addObject:w];
+        }
+    }
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            NSString *cn = NSStringFromClass(w.class);
+            // 两个灵动岛窗口 P4/P5 已验证抓不到壁纸，排除出候选
+            if ([cn isEqualToString:@"SBSystemApertureWindow"]) continue;
+            if (w.hidden || w.alpha < 0.15) continue;
+            if (w.bounds.size.width < ss.width * 0.9 ||
+                w.bounds.size.height < ss.height * 0.9) continue;
+            NSValue *k = [NSValue valueWithNonretainedObject:w];
+            if ([seen containsObject:k]) continue;
+            [seen addObject:k];
+            [out addObject:w];
+            [sig appendFormat:@"%p:%@:%.0f;", w, cn, w.windowLevel];
+        }
+    }
+    [out sortUsingComparator:^NSComparisonResult(UIWindow *a, UIWindow *b) {
+        if (a.windowLevel < b.windowLevel) return NSOrderedAscending;
+        if (a.windowLevel > b.windowLevel) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    if ([sig isEqualToString:sLGDIProbeMountSig] && sLGDIProbeMountCandidates)
+        return sLGDIProbeMountCandidates;
+    sLGDIProbeMountSig = sig;
+    sLGDIProbeMountCandidates = out;
+    LGDILog(@"[probe-mount] candidate inventory (%lu):", (unsigned long)out.count);
+    [out enumerateObjectsUsingBlock:^(UIWindow *w, NSUInteger i, BOOL *stop) {
+        (void)stop;
+        LGDILog(@"[probe-mount]   M%lu host=%@ level=%.1f frame=%@ alpha=%.2f",
+                (unsigned long)i, NSStringFromClass(w.class), w.windowLevel,
+                NSStringFromCGRect(w.frame), w.alpha);
+    }];
+    return out;
+}
+
+static void LGDIProbeMountSync(UIWindow *host, CGRect screenFrame,
+                               NSInteger idx, NSInteger total) {
+    if (!host) return;
+    CGRect f = [host convertRect:screenFrame fromWindow:nil];
+    if (!LGDIIsPlausibleSize(f.size)) return;
+
+    if (!sLGDIProbeGlass) {
+        sLGDIProbeGlass = LGCreateRegisteredGlass(f, kLGDIBackdropGroup,
+                                                  kLGDIFilterPrefix);
+        if (!sLGDIProbeGlass) { LGDILog(@"[probe-mount] glass create failed"); return; }
+        sLGDIProbeGlass.layer.cornerCurve   = kCACornerCurveContinuous;
+        sLGDIProbeGlass.layer.masksToBounds = YES;
+        sLGDIProbeGlass.layer.borderWidth  = 2.0;
+        sLGDIProbeGlass.layer.borderColor  =
+            [UIColor colorWithRed:0.1 green:0.95 blue:0.2 alpha:0.95].CGColor;
+    }
+    NSValue *hk = [NSValue valueWithNonretainedObject:host];
+    if (sLGDIProbeGlass.superview != host) {
+        [host addSubview:sLGDIProbeGlass];
+        sLGDIProbeMountHostKey = hk;
+        LGDILog(@"[probe-mount] M%ld/%ld host=%@ level=%.1f frame=%@ —— "
+                @"框内液态(该窗口可用) / 黑 / 透明(隔离域)",
+                (long)idx, (long)total, NSStringFromClass(host.class),
+                host.windowLevel, NSStringFromCGRect(f));
+        __weak LGLiveBackdropView *wg = sLGDIProbeGlass;
+        [wg lgForceRefreshBackdrop];
+        for (NSNumber *d in @[ @0.2, @0.6, @1.2, @2.2 ]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               (int64_t)(d.doubleValue * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [wg lgForceRefreshBackdrop];
+            });
+        }
+    } else if (![sLGDIProbeMountHostKey isEqual:hk]) {
+        sLGDIProbeMountHostKey = hk;
+    }
+    if (!CGRectEqualToRect(sLGDIProbeGlass.frame, f)) sLGDIProbeGlass.frame = f;
+    if (fabs(sLGDIProbeGlass.layer.cornerRadius - 43.7) > 0.25)
+        sLGDIProbeGlass.layer.cornerRadius = 43.7;
+
+    UILabel *b = LGDIProbeEnsureBadge(host);
+    NSString *name = [sLGDIProbeOwnWindows containsObject:host]
+        ? [NSString stringWithFormat:@"OWN L%.0f", host.windowLevel]
+        : [NSString stringWithFormat:@"%@ L%.0f",
+           LGDIProbeShortClassName(NSStringFromClass(host.class)), host.windowLevel];
+    b.text = [NSString stringWithFormat:@"M%ld/%ld %@",
+              (long)idx, (long)total, name];
+    CGFloat w = MIN(260, name.length * 7.0 + 70);
+    b.frame = CGRectMake(CGRectGetMidX(f) - w / 2.0,
+                         CGRectGetMaxY(f) + 8.0, w, 24);
+    b.hidden = NO;
 }
 
 // ---- prefs 链路诊断：不依赖开关，DEBUG 包常驻（DI 活动期限速打印）---------
@@ -1848,24 +2022,50 @@ static void LGDIProbeTick(NSTimer *timer) {
     LGDIProbeDumpTreeOnce(wrapper, container);
     LGDIProbeDumpIvarsOnce(win5, container, bgCard);
 
-    // 相轮换（每 3 秒，6 相）
+    // 相轮换（每相 3 秒）：P0..P5 内容窗口实验，随后 M0..Mn 挂载窗口探测
+    NSArray<UIWindow *> *mounts = LGDIProbeMountCandidatesList();
+    NSInteger mountCount = (NSInteger)mounts.count;
+    NSInteger phaseCount = 6 + mountCount;
     CFTimeInterval now = CACurrentMediaTime();
     if (sLGDIProbePhase < 0) {
         sLGDIProbePhase = 0;
         sLGDIProbePhaseAt = now;
     } else if (now - sLGDIProbePhaseAt >= kLGDIProbePhaseSecs) {
-        sLGDIProbePhase = (sLGDIProbePhase + 1) % 6;
+        sLGDIProbePhase = (sLGDIProbePhase + 1) % phaseCount;
         sLGDIProbePhaseAt = now;
     }
-    LGDIProbeApplyPhase(sLGDIProbePhase, wrapper, bgCard);
-    LGDIProbeSyncGlass(container, contentSib, bgCard,
-                       sLGDIProbePhase == 4 || sLGDIProbePhase == 5);
-    LGDIProbeUpdateBadge(wrapper, container, sLGDIProbePhase);
+    if (sLGDIProbePhase >= phaseCount) sLGDIProbePhase = 0;
+
+    if (sLGDIProbePhase < 6) {
+        LGDIProbeApplyPhase(sLGDIProbePhase, wrapper, bgCard);
+        LGDIProbeSyncGlass(container, contentSib, bgCard,
+                           sLGDIProbePhase == 4 || sLGDIProbePhase == 5);
+        LGDIProbeUpdateBadge(wrapper, container, sLGDIProbePhase);
+    } else {
+        // M 相：先恢复 P 相状态再统一去污染，随后把测试玻璃迁到候选窗口
+        LGDIProbeRestoreHides();
+        LGDIWithoutImplicitAnimations(^{
+            if (sLGDIGlass) LGDIProbeSetHidden(sLGDIGlass, YES);
+            LGDIProbeSetHidden(bgCard, YES);
+            UIView *c2 = LGDIProbeFindView(wrapper, ^BOOL(NSString *cn) {
+                return [cn isEqualToString:@"_SBSystemApertureMagiciansCurtainView"];
+            }, 4);
+            LGDIProbeSetHidden(c2, YES);
+            LGDIProbeSetHidden(LGDIFindSubviewOfClass(c2, @"_SBGainMapView"), YES);
+        });
+        CGRect sf = [bgCard convertRect:bgCard.bounds toView:nil];
+        if (!LGDIIsPlausibleSize(sf.size))
+            sf = [container convertRect:container.bounds toView:nil];
+        NSInteger mi = sLGDIProbePhase - 6;
+        if (mi >= 0 && mi < mountCount)
+            LGDIProbeMountSync(mounts[mi], sf, mi, mountCount);
+    }
 
     if ((sLGDIProbeTickCount++ % 12) == 0) {
-        LGDILog(@"[probe] tick phase=%ld glass=%@ mainGlassHidden=%d",
-                (long)sLGDIProbePhase,
-                sLGDIProbeGlass ? NSStringFromCGRect(sLGDIProbeGlass.frame) : @"-",
+        LGDILog(@"[probe] tick phase=%ld/%ld glassHost=%@ mainGlassHidden=%d",
+                (long)sLGDIProbePhase, (long)phaseCount,
+                sLGDIProbeGlass.superview
+                    ? NSStringFromClass(sLGDIProbeGlass.superview.class) : @"-",
                 sLGDIGlass ? (int)sLGDIGlass.hidden : -1);
     }
 }
