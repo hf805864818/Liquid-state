@@ -979,7 +979,7 @@ static BOOL LGDIColorIsNearBlackOpaque(UIColor *c) {
     // [P3 修复] 放宽阈值：原 0.25 漏掉灰色背景（r=g=b=0.3，系统常见），
     // 导致灰色盖在玻璃之上。提高到 0.35 捕获更多深灰背景。
     // alpha 从 0.4 降到 0.3：半透明深灰也需剥离。
-    if (!(a > 0.3)) return;                  // 半透明底也需剥离
+    if (!(a > 0.3)) return NO;                  // 半透明底也需剥离
     return (r < 0.35 && g < 0.35 && b < 0.35); // 近黑/深灰
 }
 
@@ -1447,10 +1447,10 @@ void LGDIEnsureWallpaperSurface(CGSize size) {
     }
 
     NSDictionary *options = @{
-        (id)kIOSurfaceWidth: @(w),
-        (id)kIOSurfaceHeight: @(h),
-        (id)kIOSurfacePixelFormat: @(LG_IOSURFACE_PF_BGRA8),
-        (id)kIOSurfaceBytesPerElement: @(4),
+        (__bridge id)kIOSurfaceWidth: @(w),
+        (__bridge id)kIOSurfaceHeight: @(h),
+        (__bridge id)kIOSurfacePixelFormat: @(LG_IOSURFACE_PF_BGRA8),
+        (__bridge id)kIOSurfaceBytesPerElement: @(4),
     };
     sLGDIWallpaperSurface = IOSurfaceCreate((CFDictionaryRef)options);
     if (!sLGDIWallpaperSurface) {
