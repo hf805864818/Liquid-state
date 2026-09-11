@@ -1729,6 +1729,7 @@ static void LGDIStopDriver(void) {
 
 static void LGDIScheduleSync(NSTimeInterval driverDuration);
 static void LGDIReconcile(void);
+static BOOL LGDICurtainReady(UIView *curtain);
 
 // =============================================================================
 //  [路线B] 壁纸跨进程捕获 — SpringBoard 端
