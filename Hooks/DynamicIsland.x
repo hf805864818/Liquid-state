@@ -402,11 +402,12 @@ typedef NS_ENUM(NSInteger, DIPillLayoutMode) {
 //      避免在空闲空上下文建玻璃导致采样为空（黑）。
 // =============================================================================
 static BOOL LGDIModeIsLiquid(NSInteger mode) {
-    // [设计调整] 小灵动岛（compact）保持系统原样，不做液态效果。
-    // 仅 expanded / detached 形态才启用液态玻璃与黑幕压制。
-    // compact 模式下闪烁的根因：此前误将 compact 算作液态，装了 pill 玻璃，
-    // 弹簧动画中滤镜类型反复切换 → 灰色闪烁 2-3 次。
-    return mode == kLGDIModeExpanded || mode == kLGDIModeDetached;
+    // [设计调整] 默认小灵动岛（inert/minimal）保持系统原样，不做液态效果。
+    // compact（长药丸，有活动内容）/ expanded / detached 才启用液态玻璃与黑幕压制。
+    // inert/minimal 下闪烁的根因：此前 P4 修复路径以「curtain 在屏」为点亮信号，
+    // 但默认小灵动岛 curtain 始终在屏 → 误装 pill 玻璃 → 弹簧动画中滤镜切换闪烁。
+    return mode == kLGDIModeCompact || mode == kLGDIModeExpanded
+        || mode == kLGDIModeDetached;
 }
 
 static BOOL LGDIHasActiveLayout(void) {
@@ -1039,7 +1040,7 @@ static void LGDIStripNearBlackSubtree(UIView *v, NSUInteger depth) {
 }
 
 static void LGDISuppressDecorations(UIView *host) {
-    // [设计调整] 仅 expanded/detached 才压制装饰；compact/minimal/inert 保持系统原样。
+    // [设计调整] 仅 compact/expanded/detached 才压制装饰；inert/minimal 保持系统原样。
     if (!host || !LGDILiquidSuppressionActive()) return;
 
     // 容器自身 + 整棵子树的「近黑不透明背景」剥离（由 ClearContentBg 控制）。
@@ -2926,15 +2927,15 @@ static void LGDIScheduleDeferredTeardown(void) {
             return;
         }
         // [设计调整] 判断拆除后是否会立即重新点亮：
-        // 旧逻辑用「curtain 在屏」判断，但 compact 模式 curtain 本来就在屏
-        // （系统默认小药丸），会导致无限延迟拆除循环。
-        // 新逻辑：用状态机模式判断——如果模式仍是 expanded/detached，
+        // 旧逻辑用「curtain 在屏」判断，但 inert 模式 curtain 本来就在屏
+        // （默认小药丸），会导致无限延迟拆除循环。
+        // 新逻辑：用状态机模式判断——如果模式仍是 compact/expanded/detached，
         // 说明 LGDIEngage 会立即重新点亮 → 不拆（避免闪烁循环）；
-        // 如果模式已降到 compact/minimal/inert → 不会重亮 → 可以拆。
+        // 如果模式已降到 inert/minimal → 不会重亮 → 可以拆。
         DIPillLayoutMode mode = [DIPillStateMachine shared].currentMode;
-        if (LGDIFeatureEnabled() && mode >= DIPillLayoutModeExpanded) {
-            LGDILog(@"deferred teardown skipped — expanded mode still active");
-            // 重新排队一次延迟拆除检查（可能很快回到 compact）
+        if (LGDIFeatureEnabled() && mode >= DIPillLayoutModeCompact) {
+            LGDILog(@"deferred teardown skipped — compact/expanded mode still active");
+            // 重新排队一次延迟拆除检查（可能很快回到 inert）
             LGDIScheduleDeferredTeardown();
             return;
         }
@@ -2988,20 +2989,20 @@ static void LGDIEngage(UIView *curtain) {
 
     if (!LGDIHasActiveLayout()) {
         if (curtainReady) {
-            // [设计调整] compact 模式保持系统原样，不做液态效果。
+            // [设计调整] inert/minimal 模式保持系统原样，不做液态效果。
             // 区分两种情况：
-            //   1. 状态机已到 expanded/detached：element 表延迟填充 → 点亮（原 P4 修复路径）
-            //   2. 状态机仍在 compact/minimal/inert：真正的小灵动岛 → 不点亮
+            //   1. 状态机已到 compact/expanded：element 表延迟填充 → 点亮（原 P4 修复路径）
+            //   2. 状态机仍在 inert/minimal：真正的默认小灵动岛 → 不点亮
             DIPillLayoutMode mode = [DIPillStateMachine shared].currentMode;
-            if (mode >= DIPillLayoutModeExpanded) {
-                LGDILog(@"engage: expanded mode, element table delayed — engaging anyway");
+            if (mode >= DIPillLayoutModeCompact) {
+                LGDILog(@"engage: compact/expanded mode, element table delayed — engaging anyway");
                 // 落入下方正常点亮路径（不 return）
             } else {
-                // 非 expanded 模式：保持系统原样。如果此前有液态（拆除过渡期），
+                // inert/minimal：保持系统原样。如果此前有液态（拆除过渡期），
                 // 走延迟拆除逻辑。
                 if (sLGDIActive || sLGDIGlass) {
                     LGDIScheduleDeferredTeardown();
-                    LGDILog(@"disengage: compact/minimal island — deferring liquid removal");
+                    LGDILog(@"disengage: inert/minimal island — deferring liquid removal");
                 }
                 return;
             }
@@ -3136,10 +3137,10 @@ static void LGDIScheduleSync(NSTimeInterval driverDuration) {
 
 static void LGDIReconcile(void) {
     // 点亮/拆除统一由 LGDIEngage 裁决——
-    //   总开关关              -> 拆除还原
-    //   inert/minimal/compact -> 拆除还原（默认小岛保持系统原样）
-    //   expanded/detached     -> 找到在屏幕布即装玻璃
-    // LGDIEngage 内部先判布局再找 curtain，非 expanded 态即使 curtain 在屏也不点亮。
+    //   总开关关          -> 拆除还原
+    //   inert/minimal      -> 拆除还原（默认小岛保持系统原样）
+    //   compact/expanded   -> 找到在屏幕布即装玻璃
+    // LGDIEngage 内部先判布局再找 curtain，inert/minimal 态即使 curtain 在屏也不点亮。
     if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
             LGDICancelDeferredTeardown(@"feature disabled (reconcile)");
@@ -3183,8 +3184,8 @@ static void LGDIHandleCurtainAttached(UIView *curtain) {
 }
 
 static BOOL LGDIShouldForceHidden(UIView *view) {
-    // [设计调整] 仅 expanded/detached 才强制隐藏黑色形体；
-    // compact/minimal/inert 小岛放行，保持系统原样。
+    // [设计调整] 仅 compact/expanded/detached 才强制隐藏黑色形体；
+    // inert/minimal 小岛放行，保持系统原样。
     if (LGDILiquidSuppressionActive() && view.window != nil && LGDIInApertureWindow(view)) {
         // 按类名把强制隐藏分派到四路开关：
         //   curtain -> HideCurtain
