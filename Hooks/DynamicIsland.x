@@ -39,9 +39,11 @@
 #import <QuartzCore/QuartzCore.h>
 #import "../Shared/LGLiveBackdropView.h"
 #import "../Shared/LGGlassKit.h"
+#import "../Shared/LGDIContentProvider.h"
 #import "../Shared/LGDIWallpaperCapture.h"
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import "../Shared/LGIOSurface.h"
 #import <notify.h>
 #import <math.h>
@@ -159,8 +161,16 @@ static const NSInteger kLGDIModeDetached = 4;
 
 static __weak UIView            *sLGDICurtain;   // 当前幕布（唯一）
 static __weak UIView            *sLGDIHost;      // 玻璃挂载容器
-static __weak LGLiveBackdropView *sLGDIGlass;    // 当前玻璃
+static __weak LGLiveBackdropView *sLGDIGlass;    // 当前玻璃（compact pill）
 static BOOL                      sLGDIActive;    // 已激活液态化（开关开 && 当前 compact/expanded/detached）
+
+// [阶段4] 展开态独立玻璃（对标 Mango expandedLiquidGlassView + blurBackgroundView）：
+// 展开卡片不复用 pill 玻璃，而在展开内容所在窗口创建第二块玻璃，
+// 配一块系统 UIVisualEffectView 原生模糊底板，解决展开态透明/纯黑问题。
+static __weak UIView             *sLGDIExpHost;   // 展开玻璃挂载容器
+static __weak LGLiveBackdropView *sLGDIExpGlass;  // 展开态独立玻璃
+static __weak UIVisualEffectView *sLGDIExpBlur;   // 原生模糊底板
+static BOOL                       sLGDIPillHiddenForExpanded; // pill 玻璃是否因展开态让位隐藏
 static BOOL                      sLGDISyncQueued;
 static CADisplayLink            *sLGDILink;
 static CFTimeInterval            sLGDILinkDeadline;  // 驱动硬性兜底超时
@@ -427,6 +437,12 @@ static inline BOOL LGDIIsSpringBoardProcess(void) {
 
 static BOOL LGDIClassName(UIView *v, NSString *name) {
     return v && [NSStringFromClass(v.class) isEqualToString:name];
+}
+
+// [阶段4] 我方注入的所有玻璃/模糊底板：递归扫描、装饰压制、近黑剥离
+// 一律整棵跳过（UIVisualEffectView 内部子视图也绝不能被动到）。
+static inline BOOL LGDIIsOwnGlassView(UIView *v) {
+    return v == sLGDIGlass || v == sLGDIExpGlass || v == sLGDIExpBlur;
 }
 
 static BOOL LGDIInApertureWindow(UIView *v) {
@@ -875,7 +891,7 @@ static BOOL LGDIIsBlackBodyMaterial(UIView *v) {
 }
 
 static BOOL LGDIShouldSuppressDecor(UIView *v) {
-    if (!v || v == sLGDIGlass) return NO;
+    if (!v || LGDIIsOwnGlassView(v)) return NO;
     if (LGDIClassName(v, @"_SBSystemApertureMagiciansCurtainView")) return NO;
     if (LGDIClassName(v, @"_SBGainMapView")) return NO;
     if (v.userInteractionEnabled || v.gestureRecognizers.count > 0) return NO;
@@ -918,7 +934,7 @@ static void LGDIWithoutImplicitAnimations(dispatch_block_t block) {
 
 // 记录并压制单个视图（幂等）
 static void LGDISuppressOne(UIView *v) {
-    if (!v || v == sLGDIGlass) return;
+    if (!v || LGDIIsOwnGlassView(v)) return;
     if (!objc_getAssociatedObject(v, kLGDIRestoreInfoKey)) {
         NSMutableDictionary *info = [NSMutableDictionary dictionary];
         info[@"alpha"]  = @(v.alpha);
@@ -941,7 +957,7 @@ static void LGDISuppressOne(UIView *v) {
 // 递归全子树压制（深度受限）。iOS 17 的黑色形体是嵌套在容器深处的
 // MTMaterialView，只扫宿主直接子视图必然漏掉；换宿主时也不能还原。
 static void LGDISweepView(UIView *v, NSUInteger depth) {
-    if (!v || depth == 0 || v == sLGDIGlass) return;
+    if (!v || depth == 0 || LGDIIsOwnGlassView(v)) return;
     // GainMap 在部分版本上不是 curtain 子视图，全树兜底隐藏
     if (LGDIClassName(v, @"_SBGainMapView")) {
         if (LGDRemoveGainMap() && !v.hidden) v.hidden = YES;
@@ -985,10 +1001,13 @@ static BOOL LGDIColorIsNearBlackOpaque(UIColor *c) {
 
 // 仅清背景色（bg-only）。记录到同一压制集合，停用/回空闲时由 restore 统一还原。
 static void LGDIStripNearBlackBackground(UIView *v) {
-    if (!v || v == sLGDIGlass) return;
+    if (!v || LGDIIsOwnGlassView(v)) return;
     // curtain / gainMap 由各自的隐藏 hook 管理，这里不重复动
     if (LGDIClassName(v, @"_SBSystemApertureMagiciansCurtainView")) return;
     if (LGDIClassName(v, @"_SBGainMapView")) return;
+    // [阶段3] 内容 Provider 策略：专辑封面等内容本体受保护，不剥离
+    if (![[DIContentProviderRegistry shared] shouldStripNearBlackBackgroundForView:v])
+        return;
     UIColor *bg = v.backgroundColor;
     if (!LGDIColorIsNearBlackOpaque(bg)) return;
     // 已被装饰压制（含 alpha 记录）的视图交给 LGDISuppressOne 路径，不重复登记
@@ -1005,7 +1024,7 @@ static void LGDIStripNearBlackBackground(UIView *v) {
 }
 
 static void LGDIStripNearBlackSubtree(UIView *v, NSUInteger depth) {
-    if (!v || depth == 0 || v == sLGDIGlass) return;
+    if (!v || depth == 0 || LGDIIsOwnGlassView(v)) return;
     LGDIStripNearBlackBackground(v);
     for (UIView *sub in v.subviews) LGDIStripNearBlackSubtree(sub, depth - 1);
 }
@@ -1119,58 +1138,146 @@ static void LGDIRestoreAllSuppressed(void) {
 // 展开内容在另一棵子树或另一个窗口。这里在整个窗口场景中搜索一个
 // 「比 compact curtain 大、可见、非 portal/curtain/gainmap/glass、
 //  尺寸合理」的视图作为展开内容帧。
-static CGRect LGDIFindExpandedContentFrame(UIView *glass, UIView *curtain) {
+// =============================================================================
+//  [阶段 3/4] 展开目标定位（Provider 打分） + 展开独立玻璃生命周期
+// -----------------------------------------------------------------------------
+//  对标 Mango：
+//    ensureExpandedBackgroundGlassCreated / destroyExpandedBackgroundGlass
+//    refreshExpandedBackgroundGlassBackdrop / cleanupExpandedBackgroundGlassLiveCapture
+//    mangoStartExpandedGlassLiveRefresh / mangoStopExpandedGlassLiveRefresh
+//    mangoExpandedGlassDisplayLinkTick: / mangoExpandedGlassTargetFrame
+//    _expandedLiquidGlassView / _blurBackgroundView / _expandedGlassHostView
+//    _lastExpandedGlassFrame / _lastExpandedGlassCaptureTime / expandedGlassRetryCount
+//
+//  compact pill 玻璃（sLGDIGlass）追踪 curtain；一旦 Provider 辅助定位到
+//  展开内容容器，就在其窗口创建独立的第二块玻璃 + 系统原生模糊底板，
+//  pill 玻璃让位隐藏；回到 compact 时拆除展开玻璃、恢复 pill 玻璃。
+// =============================================================================
+
+static CGFloat LGDIFallbackCornerRadius(CGRect f);  // 前向声明
+
+static NSString * const kLGDIExpFilterType = @"dylv.liquidglass.dynamicisland.expanded";
+static NSString * const kLGDIExpGroupTag   = @"dylv.liquidglass.island.expanded";
+
+static CGRect        sLGDIExpLastFrame = CGRectNull;
+static CFTimeInterval sLGDIExpLastCapture;
+static NSInteger      sLGDIExpRetries;
+static BOOL           sLGDIExpFramePending;  // 帧变化后等待稳定再重捕
+static NSString      *sLGDIExpProviderID;
+
+static const NSInteger      kLGDIExpMaxRetries      = 6;
+static const NSTimeInterval kLGDIExpCaptureThrottle = 0.4;
+// 原生模糊底板透明度：systemThinMaterial 本身较轻，0.5 保证通透明亮而不重新压暗
+static const CGFloat        kLGDIExpBlurAlpha       = 0.5;
+
+// best-effort 从存活 element 上取内容来源 bundle/client 标识。
+// 全部 respondsToSelector 保护，类名/版本不匹配时返回 nil（回退纯视图签名匹配）。
+static NSString *LGDICurrentContentBundleID(void) {
+    for (id e in sLGDIElementModes) {
+        if ([e respondsToSelector:@selector(clientIdentifier)]) {
+            id s = ((id (*)(id, SEL))objc_msgSend)(e, @selector(clientIdentifier));
+            if ([s isKindOfClass:NSString.class] && ((NSString *)s).length) return s;
+        }
+        if ([e respondsToSelector:@selector(bundleIdentifier)]) {
+            id s = ((id (*)(id, SEL))objc_msgSend)(e, @selector(bundleIdentifier));
+            if ([s isKindOfClass:NSString.class] && ((NSString *)s).length) return s;
+        }
+    }
+    return nil;
+}
+
+// 在命中视图向上的祖先链中找展开玻璃宿主：
+// 优先「卡片作用域内最高的不裁剪祖先」（玻璃正好覆盖整张展开卡片），
+// 退化到 TouchPassThrough / 最高不裁剪祖先 / 窗口（与 pill 宿主同策略）。
+static UIView *LGDIExpandedHostForView(UIView *view) {
+    UIWindow *win = view.window;
+    if (!win) return nil;
+    UIView *card = nil, *touch = nil, *top = nil;
+    for (UIView *a = view.superview; a && a != win; a = a.superview) {
+        if (a.clipsToBounds) continue;
+        CGRect af = [a convertRect:a.bounds toView:win];
+        if (af.size.width <= 430.0 && af.size.height <= 280.0) card = a;  // 循环上移→保留最高者
+        if ([NSStringFromClass(a.class) containsString:@"TouchPassThrough"]) touch = a;
+        top = a;
+    }
+    return card ?: touch ?: top ?: win;
+}
+
+// 沿祖先链取第一个有效圆角（展开卡片圆角常设在外层容器上）
+static CGFloat LGDIInheritedCornerRadius(UIView *view) {
+    for (UIView *a = view; a; a = a.superview) {
+        if (a.layer.cornerRadius > 1.0) return a.layer.cornerRadius;
+    }
+    return 0;
+}
+
+// Provider 辅助的展开目标搜索。返回 host 坐标系下的帧；
+// outHost/outView/outRadius/outProvider 回传宿主、命中视图与圆角。
+static CGRect LGDIFindExpandedTarget(UIView *curtain,
+                                     UIView * __autoreleasing *outHost,
+                                     UIView * __autoreleasing *outView,
+                                     CGFloat *outRadius,
+                                     id<DIContentProviding> __autoreleasing *outProvider) {
     if (!curtain || !curtain.window) return CGRectNull;
     CGRect compactFrame = [curtain convertRect:curtain.bounds toView:curtain.window];
-    CGFloat compactW = compactFrame.size.width;
-    CGFloat compactH = compactFrame.size.height;
 
-    __block CGRect bestFrame = CGRectNull;
-    __block CGFloat bestArea = 0;
+    __block CGRect bestFrameWin = CGRectNull;
     __block UIView *bestView = nil;
+    __block NSInteger bestScore = 0;
+    __block CGFloat bestArea = 0;
     __block NSUInteger candidateCount = 0;
+    NSString *bundleHint = LGDICurrentContentBundleID();
 
     void (^checkView)(UIView *) = ^(UIView *v) {
-        if (!v || v == glass || v == curtain || v.hidden || v.alpha < 0.01) return;
+        if (!v || LGDIIsOwnGlassView(v) || v == curtain || v.hidden || v.alpha < 0.01)
+            return;
         NSString *cn = NSStringFromClass(v.class);
-        // 排除系统内部视图
         if ([cn containsString:@"PortalView"]) return;
         if ([cn containsString:@"GainMap"]) return;
         if ([cn containsString:@"BackdropLayer"]) return;
+        if ([cn containsString:@"VisualEffect"]) return;  // 含我们注入的模糊底板及其 contentView
         if ([cn isEqualToString:@"LGLiveBackdropView"]) return;
+        // 祖先链上若有我们注入的玻璃/模糊视图，同样排除（防止把底板子树当内容）
+        for (UIView *a = v.superview; a; a = a.superview) {
+            NSString *acn = NSStringFromClass(a.class);
+            if ([acn isEqualToString:@"UIVisualEffectView"] ||
+                [acn isEqualToString:@"LGLiveBackdropView"]) return;
+        }
 
-        CGRect f = [v convertRect:v.bounds toView:glass.window ?: v.window];
+        UIWindow *win = v.window ?: curtain.window;
+        CGRect f = [v convertRect:v.bounds toView:win];
         // 必须比 compact curtain 明显大（展开内容）
-        if (f.size.width <= compactW + 10 || f.size.height <= compactH + 5) return;
-        // 排除全屏视图（容器背景板，不是展开内容）
-        if (f.size.width > 380 || f.size.height > 200) return;
-        // 必须在灵动岛区域（屏幕顶部 1/3）
-        if (f.origin.y > 300) return;
+        if (f.size.width <= compactFrame.size.width + 10 ||
+            f.size.height <= compactFrame.size.height + 5) return;
+        // 排除全屏视图（容器背景板，不是展开内容）。放宽到 400x240
+        // 以覆盖音量/音乐大卡片（旧 380x200 阈值实测漏检）。
+        if (f.size.width > 400 || f.size.height > 240) return;
+        // 必须在屏幕顶部灵动岛区域
+        if (f.origin.y > 320) return;
 
         candidateCount++;
+        id<DIContentProviding> p =
+            [[DIContentProviderRegistry shared] providerForView:v hintBundleID:bundleHint];
+        NSInteger score = [p scoreExpandedCandidate:v];
         CGFloat area = f.size.width * f.size.height;
-        if (area > bestArea) {
+        // 专用 Provider 命中优先；同分时取面积最大（等价旧启发式）
+        if (score > bestScore || (score == bestScore && area > bestArea)) {
+            bestScore = score;
             bestArea = area;
             bestView = v;
-            bestFrame = [glass.window convertRect:f toView:glass.superview ?: glass.window];
+            bestFrameWin = f;
         }
     };
 
     // 搜索灵动岛窗口场景的所有窗口（展开内容可能在独立窗口）
-    UIWindowScene *scene = glass.window.windowScene;
+    UIWindowScene *scene = curtain.window.windowScene;
     NSArray<UIWindow *> *windows = scene.windows;
     if (windows.count == 0) windows = UIApplication.sharedApplication.windows;
 
     for (UIWindow *w in windows) {
         if ([NSStringFromClass(w.class) containsString:@"Aperture"] ||
             [NSStringFromClass(w.class) containsString:@"Alerting"] ||
-            w == glass.window) {
-            // 深搜此窗口，找展开内容视图
-            // 递归 block 的正确 ARC 写法：walk 由 strong 局部变量持有
-            //（block literal 不能直接赋给 __weak，否则赋完即被释放，
-            // 触发 -Warc-unsafe-retained-assign）；weakWalk 同时用
-            // __block（让 block 按引用捕获、递归时读到赋值后的值）和
-            // __weak（block 不强持有自身，避免 retain cycle）修饰。
+            w == curtain.window) {
             __block __weak void (^weakWalk)(UIView *, NSUInteger);
             void (^walk)(UIView *, NSUInteger) = ^(UIView *v, NSUInteger depth) {
                 if (!v || depth > 12) return;
@@ -1184,31 +1291,220 @@ static CGRect LGDIFindExpandedContentFrame(UIView *glass, UIView *curtain) {
         }
     }
 
-    // 阶段 3.1 诊断：展开帧搜索逐帧执行，按 ~60 帧（约 1s）节流输出一次
-    // 命中/未命中状态与命中者类名，确认几何启发式到底选中了谁。
 #if LIQUIDASS_DEBUG
     {
         static NSUInteger sLGDIExpScanTick = 0;
         if ((sLGDIExpScanTick++ % 60) == 0) {
-            if (!CGRectIsNull(bestFrame) && LGDIIsPlausibleSize(bestFrame.size)) {
-                LGDILog(@"expanded scan: HIT view=%@ win=%@ frame=%@ candidates=%lu "
+            if (bestView) {
+                LGDILog(@"expanded scan: HIT view=%@ win=%@ score=%ld candidates=%lu "
                         @"(compact %.0fx%.0f)",
                         NSStringFromClass(bestView.class),
                         NSStringFromClass(bestView.window.class),
-                        NSStringFromCGRect(bestFrame),
-                        (unsigned long)candidateCount, compactW, compactH);
+                        (long)bestScore, (unsigned long)candidateCount,
+                        compactFrame.size.width, compactFrame.size.height);
             } else {
                 LGDILog(@"expanded scan: MISS candidates=%lu (compact %.0fx%.0f)",
-                        (unsigned long)candidateCount, compactW, compactH);
+                        (unsigned long)candidateCount,
+                        compactFrame.size.width, compactFrame.size.height);
             }
         }
     }
 #endif
 
-    if (!CGRectIsNull(bestFrame) && LGDIIsPlausibleSize(bestFrame.size)) {
-        return bestFrame;
+    if (!bestView) return CGRectNull;
+
+    UIView *host = LGDIExpandedHostForView(bestView);
+    if (!host) return CGRectNull;
+    UIWindow *win = bestView.window;
+    CGRect hostFrame = [win convertRect:bestFrameWin toView:host];
+    if (!LGDIIsPlausibleSize(hostFrame.size)) return CGRectNull;
+
+    CGFloat radius = LGDIInheritedCornerRadius(bestView);
+    if (radius <= 0.5) radius = LGDIFallbackCornerRadius(hostFrame);
+
+    if (outHost)     *outHost = host;
+    if (outView)     *outView = bestView;
+    if (outRadius)   *outRadius = radius;
+    if (outProvider) {
+        *outProvider = [[DIContentProviderRegistry shared]
+            providerForView:bestView hintBundleID:bundleHint];
     }
-    return CGRectNull;
+    return hostFrame;
+}
+
+static CFTimeInterval sLGDIExpLastSweep;  // 展开窗口装饰压制节流
+
+// 创建/挂载/同步展开玻璃（幂等）。frame/radius 均在 host 坐标系。
+static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
+                                    CGFloat radius, id<DIContentProviding> provider) {
+    if (!host) return;
+
+    BOOL created = NO, hostChanged = NO;
+
+    // 1) 原生模糊底板（系统 UIVisualEffectView，对标 Mango blurBackgroundView）
+    UIVisualEffectView *blur = sLGDIExpBlur;
+    if (!blur) {
+        UIBlurEffect *eff = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+        blur = [[UIVisualEffectView alloc] initWithEffect:eff];
+        blur.userInteractionEnabled = NO;
+        blur.backgroundColor = UIColor.clearColor;
+        blur.contentView.backgroundColor = UIColor.clearColor;
+        blur.layer.cornerCurve = kCACornerCurveContinuous;
+        blur.layer.masksToBounds = YES;
+        blur.alpha = kLGDIExpBlurAlpha;
+        sLGDIExpBlur = blur;
+        LGDILog(@"expanded: native blur base created");
+    }
+    if (blur.superview != host) {
+        hostChanged = YES;
+        [host insertSubview:blur atIndex:0];
+    } else if (host.subviews.firstObject != blur) {
+        // 系统布局可能重排子视图，持续把模糊底板压到最底（无动画）
+        [host insertSubview:blur atIndex:0];
+    }
+
+    // 2) 独立液态玻璃（backboardd 按 filterType 前缀匹配，自动复用 DynamicIsland
+    //    参数与壁纸 fallback 纹理；独立捕获组避免与 pill 玻璃几何/滤镜串扰）
+    LGLiveBackdropView *glass = sLGDIExpGlass;
+    if (!glass) {
+        created = YES;
+        glass = [[LGLiveBackdropView alloc] initWithFrame:frame
+                                                 groupName:kLGDIExpGroupTag
+                                                filterType:kLGDIExpFilterType];
+        glass.layer.cornerCurve = kCACornerCurveContinuous;
+        glass.layer.masksToBounds = YES;
+        sLGDIExpGlass = glass;
+        sLGDIExpRetries = 0;
+        LGDILog(@"expanded: independent glass created provider=%@ frame=%@",
+                provider.identifier, NSStringFromCGRect(frame));
+        // 首捕可能为空（内容/背景未就绪），多时间点强制重建捕获组
+        __weak LGLiveBackdropView *weakGlass = glass;
+        for (NSNumber *delay in @[ @0.2, @0.5, @1.0, @1.8 ]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                         (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [weakGlass lgForceRefreshBackdrop];
+            });
+        }
+    }
+    if (glass.superview != host) {
+        hostChanged = YES;
+        [host insertSubview:glass aboveSubview:blur];
+    } else {
+        NSUInteger bi = [host.subviews indexOfObject:blur];
+        NSUInteger gi = [host.subviews indexOfObject:glass];
+        if (bi != NSNotFound && (gi == NSNotFound || gi != bi + 1)) {
+            [host insertSubview:glass aboveSubview:blur];
+        }
+    }
+    sLGDIExpHost = host;
+    sLGDIExpProviderID = provider.identifier;
+
+    // 3) 逐帧几何（无隐式动画，避免与系统弹簧事务叠加闪框）
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    if (!CGRectEqualToRect(blur.frame, frame)) blur.frame = frame;
+    if (!CGRectEqualToRect(glass.frame, frame)) glass.frame = frame;
+    if (fabs(blur.layer.cornerRadius - radius) > 0.25) blur.layer.cornerRadius = radius;
+    if (fabs(glass.layer.cornerRadius - radius) > 0.25) glass.layer.cornerRadius = radius;
+    if (blur.hidden) blur.hidden = NO;
+    if (glass.hidden) glass.hidden = NO;
+    [CATransaction commit];
+
+    // 4) pill 玻璃让位（hidden 即停止可见合成；展开玻璃拆除时恢复）
+    if (!sLGDIPillHiddenForExpanded && sLGDIGlass) {
+        sLGDIGlass.hidden = YES;
+        sLGDIPillHiddenForExpanded = YES;
+    }
+
+    // 5) 展开窗口内同样要扫掉黑材质/剥黑底，否则盖在展开玻璃之上。
+    //    全窗口递归代价高，绝不能逐帧执行：仅创建/换宿主时立即扫一次，
+    //    稳态下按 0.3s 节流补扫（捕获系统 layoutSubviews 重建的装饰）。
+    CFTimeInterval now = CACurrentMediaTime();
+    if (created || hostChanged || now - sLGDIExpLastSweep > 0.3) {
+        sLGDIExpLastSweep = now;
+        UIView *sweepRoot = host.window ?: host;
+        LGDISweepView(sweepRoot, 14);
+        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sweepRoot, 16);
+        if (created || hostChanged) {
+            __weak UIView *weakHost = host;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (sLGDIActive && weakHost) {
+                    UIView *r = weakHost.window ?: weakHost;
+                    LGDISweepView(r, 14);
+                    if (LGDClearContentBg()) LGDIStripNearBlackSubtree(r, 16);
+                }
+            });
+        }
+    }
+}
+
+// 每帧同步展开玻璃。返回 YES 表示展开玻璃在管（调用方跳过 pill 几何）；
+// 返回 NO 表示展开内容尚未就绪且还没有展开玻璃（调用方临时回退 pill 追踪）。
+static BOOL LGDISyncExpandedGeometry(void) {
+    UIView *curtain = sLGDICurtain;
+    if (!curtain) return sLGDIExpGlass != nil;
+
+    UIView *host = nil;
+    CGFloat radius = 0;
+    id<DIContentProviding> provider = nil;
+    CGRect f = LGDIFindExpandedTarget(curtain, &host, NULL, &radius, &provider);
+
+    if (CGRectIsNull(f) || !host) {
+        // 已建玻璃时保持旧帧等待目标恢复，避免动画途中闪回 pill
+        return sLGDIExpGlass != nil;
+    }
+
+    LGDIEnsureExpandedGlass(f, host, radius,
+                            provider ?: [[DIContentProviderRegistry shared] fallbackProvider]);
+
+    // 帧稳定后节流强刷 backdrop（对标 Mango lastExpandedGlassCaptureTime +
+    // expandedGlassRetryCount：只在形变收敛后重采，避免弹簧途中频繁重建捕获组）
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL sameFrame = !CGRectIsNull(sLGDIExpLastFrame)
+        && fabs(f.origin.x - sLGDIExpLastFrame.origin.x) < 0.5
+        && fabs(f.origin.y - sLGDIExpLastFrame.origin.y) < 0.5
+        && fabs(f.size.width  - sLGDIExpLastFrame.size.width)  < 0.5
+        && fabs(f.size.height - sLGDIExpLastFrame.size.height) < 0.5;
+    if (!sameFrame) {
+        sLGDIExpFramePending = YES;
+    } else if (sLGDIExpFramePending
+               && sLGDIExpRetries < kLGDIExpMaxRetries
+               && now - sLGDIExpLastCapture > kLGDIExpCaptureThrottle) {
+        sLGDIExpFramePending = NO;
+        sLGDIExpRetries++;
+        sLGDIExpLastCapture = now;
+        [sLGDIExpGlass lgForceRefreshBackdrop];
+    }
+    sLGDIExpLastFrame = f;
+    return YES;
+}
+
+// 拆除展开玻璃（回 compact / 功能关闭 / teardown）。无动画硬切，不产生淡变。
+static void LGDIDestroyExpandedGlass(NSString *reason) {
+    LGLiveBackdropView *glass = sLGDIExpGlass;
+    UIVisualEffectView *blur = sLGDIExpBlur;
+    if (!glass && !blur) {
+        sLGDIPillHiddenForExpanded = NO;
+        return;
+    }
+    LGDIWithoutImplicitAnimations(^{
+        [glass removeFromSuperview];
+        [blur removeFromSuperview];
+    });
+    sLGDIExpGlass = nil;
+    sLGDIExpBlur = nil;
+    sLGDIExpHost = nil;
+    sLGDIExpLastFrame = CGRectNull;
+    sLGDIExpRetries = 0;
+    sLGDIExpFramePending = NO;
+    sLGDIExpLastSweep = 0;
+    sLGDIExpProviderID = nil;
+    if (sLGDIPillHiddenForExpanded && sLGDIGlass) {
+        sLGDIGlass.hidden = NO;
+        sLGDIPillHiddenForExpanded = NO;
+    }
+    LGDILog(@"expanded glass destroyed: %@", reason);
 }
 
 static CGFloat LGDIFallbackCornerRadius(CGRect f) {
@@ -1226,30 +1522,23 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
     UIView *host = sLGDIHost;
     if (!glass || !curtain || !host) return;
 
-    // 展开模式下，compact curtain 不改变尺寸，展开内容在另一棵子树/窗口。
-    // 优先搜索展开内容帧；找不到才回退到 curtain 帧（compact 模式仍走 curtain）。
+    // [阶段4] 展开模式下 compact curtain 保持 compact 尺寸，展开内容在另一棵
+    // 子树/窗口：交给独立展开玻璃（Provider 辅助定位 + 原生模糊底板）。
+    //   - 展开玻璃在管 → 本帧不再动 pill 玻璃；
+    //   - 展开内容尚未就绪且展开玻璃还没建 → 临时回退 pill 追踪 curtain morph；
+    //   - 回到 compact → 拆除展开玻璃、恢复 pill 玻璃。
     BOOL isExpanded = (NSInteger)[DIPillStateMachine shared].currentMode >= DIPillLayoutModeExpanded;
+
+    if (isExpanded) {
+        if (LGDISyncExpandedGeometry()) return;
+    } else if (sLGDIExpGlass || sLGDIExpBlur) {
+        LGDIDestroyExpandedGlass(@"compact layout");
+    }
 
     CGRect targetFrame;
     CGFloat targetRadius;
 
-    if (isExpanded) {
-        CGRect expFrame = LGDIFindExpandedContentFrame(glass, curtain);
-        if (!CGRectIsNull(expFrame)) {
-            targetFrame = expFrame;
-            targetRadius = glass.layer.cornerRadius > 0.5
-                               ? glass.layer.cornerRadius
-                               : LGDIFallbackCornerRadius(expFrame);
-            // 展开卡片：尝试从找到的内容视图取 cornerRadius
-            // (LGDIFindExpandedContentFrame 已选最佳视图，此处用 fallback 即可)
-        } else {
-            // 展开内容尚未就绪，临时回退到 curtain 帧
-            targetFrame = [curtain convertRect:curtain.bounds toView:host];
-            targetRadius = curtain.layer.cornerRadius > 0.5
-                               ? curtain.layer.cornerRadius
-                               : LGDIFallbackCornerRadius(curtain.bounds);
-        }
-    } else {
+    {
         CALayer *pl = usePresentation ? curtain.layer.presentationLayer : nil;
         if (pl) {
             // presentationLayer.frame 位于 curtain.superview 的坐标系。
@@ -1316,9 +1605,21 @@ static void LGDIDriverTick(CADisplayLink *link) {
             LGDIStopDriver();
             return;
         }
-        // 几何稳定判定
-        CALayer *present = curtain.layer.presentationLayer;
-        CGRect f = present ? present.frame : curtain.frame;
+        // 先逐帧同步几何（内部按状态决定 pill 玻璃还是展开玻璃在管）
+        LGDISyncGeometryFromPresentation(YES);
+
+        // 几何稳定判定。[阶段4] 展开态 compact curtain 保持 compact 尺寸不动，
+        // 形变发生在展开卡片窗口，必须改以展开玻璃帧为判稳源，否则展开弹簧
+        // 还没跑完 driver 就会因 curtain「静止」而提前停机、玻璃帧冻在中途。
+        CALayer *present;
+        CGRect f;
+        if (sLGDIExpGlass) {
+            present = sLGDIExpGlass.layer.presentationLayer;
+            f = present ? present.frame : sLGDIExpGlass.frame;
+        } else {
+            present = curtain.layer.presentationLayer;
+            f = present ? present.frame : curtain.frame;
+        }
         BOOL stable = CGRectEqualToRect(f, CGRectNull) ? NO :
             (fabs(f.origin.x - sLGDILastPresentationFrame.origin.x) < kLGDISteadyDelta
              && fabs(f.origin.y - sLGDILastPresentationFrame.origin.y) < kLGDISteadyDelta
@@ -1336,7 +1637,6 @@ static void LGDIDriverTick(CADisplayLink *link) {
             if (LGDRemoveGainMap() && gain && !gain.hidden) gain.hidden = YES;
             LGDIReassertSuppressed();
         }
-        LGDISyncGeometryFromPresentation(YES);
 
         CFTimeInterval now = CACurrentMediaTime();
         if (sLGDISteadyFrameCount >= kLGDISteadyFrameThreshold + kLGDISteadySettleFrames
@@ -1352,6 +1652,8 @@ static void LGDIDriverTick(CADisplayLink *link) {
                 sLGDILastForceRefresh = now;
                 [sLGDIGlass lgForceRefreshBackdrop];
             }
+            // [阶段4] 展开态弹簧到位后同样重采一次展开玻璃
+            if (sLGDIExpGlass) [sLGDIExpGlass lgForceRefreshBackdrop];
             return;
         }
     }
@@ -1543,6 +1845,17 @@ void LGDITeardownWallpaperSurface(void) {
     LGDIWriteWallpaperSurfaceInfo(0, 0, 0);
 }
 
+// [阶段4] 壁纸 fallback 捕获区域：pill 帧与展开玻璃帧取并集，
+// 保证展开卡片折射时 fallback 纹理覆盖整张卡片而不只是 compact 药丸。
+static CGRect LGDICaptureScreenRect(UIView *curtain) {
+    CGRect rect = [curtain convertRect:curtain.bounds toView:nil];
+    LGLiveBackdropView *expGlass = sLGDIExpGlass;
+    if (expGlass && !expGlass.hidden && expGlass.window) {
+        rect = CGRectUnion(rect, [expGlass convertRect:expGlass.bounds toView:nil]);
+    }
+    return CGRectIntegral(rect);
+}
+
 // 启动定时壁纸捕获（热状态自适应间隔）
 static void LGDIStartWallpaperCapture(void) {
     if (sLGDIWallpaperTimer) return;
@@ -1550,8 +1863,8 @@ static void LGDIStartWallpaperCapture(void) {
     UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     if (!curtain) return;
 
-    // 立即捕获一次
-    CGRect screenRect = [curtain convertRect:curtain.bounds toView:nil];
+    // 立即捕获一次（[阶段4] 区域含展开玻璃帧并集）
+    CGRect screenRect = LGDICaptureScreenRect(curtain);
     CGFloat scale = UIScreen.mainScreen.scale;
     LGDIEnsureWallpaperSurface(CGSizeMake(
         screenRect.size.width * scale, screenRect.size.height * scale));
@@ -1597,7 +1910,7 @@ static void LGDIStartWallpaperCapture(void) {
             return;
         }
 
-        CGRect sr = [c convertRect:c.bounds toView:nil];
+        CGRect sr = LGDICaptureScreenRect(c);
         LGDICaptureWallpaperIntoSurface(sr);
     });
     dispatch_resume(sLGDIWallpaperTimer);
@@ -2369,6 +2682,8 @@ static void LGDIInstallGlass(UIView *curtain) {
         glass.layer.cornerCurve   = kCACornerCurveContinuous;
         glass.layer.masksToBounds = YES;
         [host insertSubview:glass atIndex:0];
+        // [阶段4] 换宿主重装时若展开玻璃仍在管，pill 继续让位，避免双玻璃同显
+        if (sLGDIPillHiddenForExpanded) glass.hidden = YES;
         LGDILog(@"glass installed in host=%@ frame=%@",
                 NSStringFromClass(host.class),
                 NSStringFromCGRect(glass.frame));
@@ -2412,6 +2727,9 @@ static void LGDIInstallGlass(UIView *curtain) {
     sLGDICurtain = curtain;
     sLGDIHost = host;
 
+    // [阶段4] 展开态宿主切换导致 pill 玻璃重装时，继续保持让位隐藏
+    if (sLGDIPillHiddenForExpanded) glass.hidden = YES;
+
     LGDISyncGeometryFromPresentation(NO);
     LGDIScheduleSync(0.35);
 
@@ -2428,6 +2746,9 @@ static void LGDITeardown(BOOL featureDisabled) {
     LGLiveBackdropView *glass = sLGDIGlass;
 
     LGDIStopDriver();
+    // [阶段4] 先拆展开玻璃（恢复 pill hidden 状态由它内部处理，
+    // 随后 pill 玻璃也会被整体移除，顺序无视觉影响）
+    LGDIDestroyExpandedGlass(@"teardown");
 #if LIQUIDASS_DEBUG
     // 活动退出：探针玻璃与轮换隐藏一并还原（timer 停止）
     LGDIProbeStopTimer();

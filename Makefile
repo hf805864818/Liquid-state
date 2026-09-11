@@ -19,6 +19,7 @@ liquidass_FILES     = Tweak.x Hooks/Dock.x Hooks/Folder.x Hooks/AppIcons.x Hooks
                       LiquidAssPrefs/LGPrefsLiquidSlider.m \
                       LiquidAssPrefs/LGPrefsLiquidSwitch.m \
                       Shared/LGGlassKit.x Shared/LGLiveBackdropView.m \
+                      Shared/LGDIContentProvider.m \
                       Shared/LGSharedSupport.m
 liquidass_CFLAGS    = -fobjc-arc -DLIQUIDASS_DEBUG=$(LIQUIDASS_DEBUG) -DLG_PACKAGE_VERSION=@\"$(LG_PACKAGE_VERSION)\"
 liquidass_FRAMEWORKS = UIKit QuartzCore CoreText CoreGraphics CoreMotion IOSurface
