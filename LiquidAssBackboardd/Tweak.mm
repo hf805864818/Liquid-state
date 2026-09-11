@@ -1030,7 +1030,7 @@ static void lgReloadHostPrefs(void) {
             ? [attrs.fileModificationDate descriptionWithLocale:nil] : @"-";
         bool stdExists = [[NSFileManager defaultManager] fileExistsAtPath:
             @"/var/mobile/Library/Preferences/dylv.liquidassprefs.plist"];
-        lglog("[DI] EmptyCaptureDebug raw=%@(%@) -> on=%d mode=%.0f | "
+        lglog("[DI] EmptyCaptureDebug raw=%s(%s) -> on=%d mode=%.0f | "
               "plist=%s mtime=%s stdPathExists=%d",
               diEmptyDbg ? NSStringFromClass([diEmptyDbg class]).UTF8String : "nil",
               diEmptyDbg ? [diEmptyDbg description].UTF8String : "-",
