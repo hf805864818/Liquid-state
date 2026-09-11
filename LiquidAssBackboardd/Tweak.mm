@@ -1,7 +1,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#import <IOSurface/IOSurface.h>
+#import "../Shared/LGIOSurface.h"
 #import "../Shared/LGHostRegistry.h"
 #import "LGSymbolResolver.h"
 #import "../Shared/LGCoverSheetState.h"

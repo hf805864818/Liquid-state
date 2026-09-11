@@ -42,7 +42,7 @@
 #import "../Shared/LGDIWallpaperCapture.h"
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
-#import <IOSurface/IOSurface.h>
+#import "../Shared/LGIOSurface.h"
 #import <notify.h>
 #import <math.h>
 
@@ -1449,7 +1449,7 @@ void LGDIEnsureWallpaperSurface(CGSize size) {
     NSDictionary *options = @{
         (id)kIOSurfaceWidth: @(w),
         (id)kIOSurfaceHeight: @(h),
-        (id)kIOSurfacePixelFormat: @(kCVPixelFormatType_32BGRA),
+        (id)kIOSurfacePixelFormat: @(LG_IOSURFACE_PF_BGRA8),
         (id)kIOSurfaceBytesPerElement: @(4),
     };
     sLGDIWallpaperSurface = IOSurfaceCreate((CFDictionaryRef)options);
