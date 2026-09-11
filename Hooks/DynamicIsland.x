@@ -1300,6 +1300,9 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
 static void LGDIStopDriver(void);
 
 static const NSUInteger kLGDISteadyFrameThreshold = 8;  // ~130ms 持续稳定
+// [闪烁修复] 几何稳定后的缓冲帧数：继续跟帧同步几何但不再断言装饰，
+// 等待系统残余动画彻底到位后再停 driver，避免稳定判定后动画尾部导致反复启停。
+static const NSUInteger kLGDISteadySettleFrames = 15;  // ~250ms 缓冲
 static const CGFloat    kLGDISteadyDelta = 0.15;        // pt，单帧位移阈值
 static CGRect   sLGDILastPresentationFrame;
 static NSUInteger sLGDISteadyFrameCount;
@@ -1313,14 +1316,6 @@ static void LGDIDriverTick(CADisplayLink *link) {
             LGDIStopDriver();
             return;
         }
-        // 形变期间系统可能反复把幕布/装饰放回来，每帧重新断言
-        // （四路开关各管一路，单独开关关闭后该层不再被强制隐藏）
-        if (LGDIHideCurtain() && !curtain.hidden) curtain.hidden = YES;
-        UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
-        if (LGDRemoveGainMap() && gain && !gain.hidden) gain.hidden = YES;
-        LGDIReassertSuppressed();
-        LGDISyncGeometryFromPresentation(YES);
-
         // 几何稳定判定
         CALayer *present = curtain.layer.presentationLayer;
         CGRect f = present ? present.frame : curtain.frame;
@@ -1332,8 +1327,19 @@ static void LGDIDriverTick(CADisplayLink *link) {
         sLGDILastPresentationFrame = f;
         sLGDISteadyFrameCount = stable ? sLGDISteadyFrameCount + 1 : 0;
 
+        // [闪烁修复] 形变期间系统可能反复把幕布/装饰放回来，每帧重新断言。
+        // 几何稳定后（sLGDISteadyFrameCount > 0 表示已进入稳定态）停止逐帧断言，
+        // 避免与系统隐式动画/事务冲突造成边框闪烁。
+        if (sLGDISteadyFrameCount == 0) {
+            if (LGDIHideCurtain() && !curtain.hidden) curtain.hidden = YES;
+            UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
+            if (LGDRemoveGainMap() && gain && !gain.hidden) gain.hidden = YES;
+            LGDIReassertSuppressed();
+        }
+        LGDISyncGeometryFromPresentation(YES);
+
         CFTimeInterval now = CACurrentMediaTime();
-        if (sLGDISteadyFrameCount >= kLGDISteadyFrameThreshold
+        if (sLGDISteadyFrameCount >= kLGDISteadyFrameThreshold + kLGDISteadySettleFrames
             && now >= sLGDIMinDriverEnd) {
             LGDISyncGeometryFromPresentation(NO);
             [[DIPillStateMachine shared] setInteractiveExpanding:NO];
