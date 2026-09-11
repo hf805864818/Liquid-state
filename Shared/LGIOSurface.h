@@ -20,6 +20,7 @@ extern const CFStringRef kIOSurfaceWidth;
 extern const CFStringRef kIOSurfaceHeight;
 extern const CFStringRef kIOSurfacePixelFormat;
 extern const CFStringRef kIOSurfaceBytesPerElement;
+extern const CFStringRef kIOSurfaceIsGlobal;
 
 // Pixel format for BGRA8 (same as kCVPixelFormatType_32BGRA)
 // 'BGRA' = 0x42475241 in big-endian

@@ -1451,6 +1451,7 @@ void LGDIEnsureWallpaperSurface(CGSize size) {
         (__bridge id)kIOSurfaceHeight: @(h),
         (__bridge id)kIOSurfacePixelFormat: @(LG_IOSURFACE_PF_BGRA8),
         (__bridge id)kIOSurfaceBytesPerElement: @(4),
+        (__bridge id)kIOSurfaceIsGlobal: @YES,
     };
     sLGDIWallpaperSurface = IOSurfaceCreate((CFDictionaryRef)options);
     if (!sLGDIWallpaperSurface) {
