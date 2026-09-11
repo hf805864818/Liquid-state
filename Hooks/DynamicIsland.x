@@ -2831,9 +2831,11 @@ static void LGDITeardown(BOOL featureDisabled) {
 //  小药丸；延迟 kLGDIDeferredTeardownDelay 待弹簧到位后，在关闭隐式动画的
 //  事务里一次性硬切回系统黑色小药丸。延迟窗口内活动复活则取消拆除。
 // =============================================================================
-// [P2 修复] 缩短延迟拆除窗口：0.5s 对快速活动切换太长，新活动进入前
-// 旧装饰可能被系统重建但尚未被压制。0.25s 仍足以覆盖收缩弹簧主体。
-static const NSTimeInterval kLGDIDeferredTeardownDelay = 0.25;
+// [闪烁根因修复] 延迟拆除窗口：0.25s 太短，element 表在活动切换时
+// 会短暂空白（旧 element 释放、新 element 尚未注册），0.25s 内新 element
+// 可能还没到，导致拆除 → 恢复装饰 → 立即重新点亮 → 再拆 → 无限循环 = 闪烁。
+// 增大到 0.8s：给新 element 足够注册时间，同时也覆盖 curtain 收缩弹簧。
+static const NSTimeInterval kLGDIDeferredTeardownDelay = 0.8;
 
 static void LGDICancelDeferredTeardown(NSString *reason) {
     if (!sLGDITeardownPending) return;
@@ -2862,6 +2864,17 @@ static void LGDIScheduleDeferredTeardown(void) {
         // 兜底：事件先于取消逻辑到达时，若布局已重新活跃则不拆
         if (LGDIFeatureEnabled() && LGDIHasActiveLayout()) {
             LGDILog(@"deferred teardown skipped — layout active again");
+            return;
+        }
+        // [闪烁根因修复] curtain 仍在屏且尺寸合理 = 灵动岛仍有活动在展示。
+        // LGDIEngage 会以 curtain 就绪为信号重新点亮，所以这里也不能拆——
+        // 否则 拆除(恢复装饰→黑边框闪现) → 立即重新点亮(再压制) = 闪烁循环。
+        // 仅当 curtain 真正下屏/尺寸无效时才执行拆除。
+        UIView *cur = sLGDICurtain ?: LGDIFindCurtainInWindows();
+        if (LGDIFeatureEnabled() && LGDICurtainReady(cur)) {
+            LGDILog(@"deferred teardown skipped — curtain still on screen");
+            // 重新排队一次延迟拆除检查（curtain 可能很快下屏）
+            LGDIScheduleDeferredTeardown();
             return;
         }
         sLGDIActive = NO;
