@@ -37,6 +37,16 @@ UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
 // early-return，无法触发重采样。此方法重置捕获配置并强制重挂，无动画、可重复调用。
 - (void)lgForceRefreshBackdrop;
 
+// [闪烁根因修复] 滤镜更新挂起/恢复机制。
+// 灵动岛弹簧动画期间，玻璃尺寸逐帧变化导致动态半径步进（.r0~.r16）反复跨过
+// 边界，每次跨步都触发 layer.filters 数组替换 → render server 短暂无滤镜 =
+// 灰/黑闪烁 2-3 次（对应弹簧弹跳）。
+// 挂起期间 layoutSubviews 仍更新 specular（frame/radius），但跳过 applyFilters，
+// 避免滤镜替换。恢复时用最终尺寸重新 evaluate 滤镜类型，一次性切换到位。
+- (void)lgSuspendFilterUpdates;   // 挂起：动画开始时调用
+- (void)lgResumeFilterUpdates;     // 恢复：动画结束时调用，作废节流缓存触发下次 layoutSubviews 重 evaluate
+- (BOOL)lgFilterUpdateSuspended;   // 查询：延迟回调判断是否需要避让
+
 // 为 native blur 层设置形状 mask（用于 Clock 文字形状裁剪）
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer;
 

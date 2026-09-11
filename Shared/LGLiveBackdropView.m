@@ -778,6 +778,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
     BOOL             _parameterRefreshVariant;
     CGSize           _lastLayoutSize;       // layoutSubviews throttling
     CGFloat          _lastLayoutCornerRadius; // layoutSubviews throttling
+    BOOL             _lgFilterUpdateSuspended; // [闪烁修复] 动画期间挂起滤镜替换
 }
 
 - (NSString *)lgEffectiveFilterType {
@@ -931,8 +932,13 @@ static void LGReportMemoryUsageIfNeeded(void) {
     }
     _lastLayoutSize = currentSize;
     _lastLayoutCornerRadius = currentRadius;
-    [self applyFilters];
+    // [闪烁根因修复] 动画期间挂起 applyFilters：动态半径步进变化导致
+    // layer.filters 数组替换，render server 短暂无滤镜 = 灰/黑闪烁。
+    // specular 只更新 frame/radius（无滤镜替换），安全保留。
     [self updateSpecular];
+    if (!_lgFilterUpdateSuspended) {
+        [self applyFilters];
+    }
 }
 
 - (void)updateNativeBlurOverlayWithRadius:(CGFloat)radius filterClass:(Class)filterCls {
@@ -1169,6 +1175,29 @@ static void LGReportMemoryUsageIfNeeded(void) {
     [self applyFilters];
     [layer setNeedsLayout];
     [layer setNeedsDisplay];
+}
+
+// [闪烁根因修复] 滤镜更新挂起/恢复机制
+- (void)lgSuspendFilterUpdates {
+    if (_lgFilterUpdateSuspended) return;
+    _lgFilterUpdateSuspended = YES;
+}
+
+- (void)lgResumeFilterUpdates {
+    if (!_lgFilterUpdateSuspended) return;
+    _lgFilterUpdateSuspended = NO;
+    // 不直接调 applyFilters — 调用方（lgForceRefreshBackdrop 或下一帧
+    // layoutSubviews）会用最终尺寸一次性 evaluate 滤镜类型。
+    // 直接调 applyFilters 会和紧随其后的 lgForceRefreshBackdrop 产生
+    // 双重滤镜替换，可能在动画尾帧造成一次微闪。
+    // 作废节流缓存，让下次 layoutSubviews 一定会重 evaluate。
+    _lastLayoutSize = CGSizeMake(-1, -1);
+    _lastLayoutCornerRadius = -1.0;
+    [self setNeedsLayout];
+}
+
+- (BOOL)lgFilterUpdateSuspended {
+    return _lgFilterUpdateSuspended;
 }
 
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer {

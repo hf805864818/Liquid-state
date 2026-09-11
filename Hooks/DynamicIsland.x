@@ -423,8 +423,14 @@ static BOOL LGDIHasActiveLayout(void) {
 static BOOL LGDILiquidSuppressionActive(void) {
     // 延迟拆除窗口内（活动刚退出、玻璃正随收缩弹簧 morph 回小药丸）仍视为
     // 压制活跃：防止系统 setHidden:NO 穿透让黑色小药丸提前露出与玻璃重叠。
+    // [闪烁根因修复] 增加 sLGDIActive 检查：弹簧途中 element 表会短暂空白
+    // （旧 element 释放、新 element 尚未注册），此时 LGDIHasActiveLayout()
+    // 返回 NO，导致 LGDIShouldForceHidden 返回 NO → 系统 setHidden:NO 穿透
+    // → 黑/灰边框闪现 2-3 次（对应弹簧弹跳振荡）。
+    // sLGDIActive 在 LGDIEngage 时置 YES、在 LGDITeardown 时置 NO，
+    // 期间即使 element 表短暂空白，只要我们仍然 active，就继续压制。
     return LGDIFeatureEnabled()
-        && (LGDIHasActiveLayout() || sLGDITeardownPending);
+        && (LGDIHasActiveLayout() || sLGDITeardownPending || sLGDIActive);
 }
 
 // =============================================================================
@@ -1336,6 +1342,7 @@ static CGRect LGDIFindExpandedTarget(UIView *curtain,
 }
 
 static CFTimeInterval sLGDIExpLastSweep;  // 展开窗口装饰压制节流
+static CFTimeInterval sLGDIExpCompactSince; // 展开态进入 compact 的时刻（0=在展开态）
 
 // 创建/挂载/同步展开玻璃（幂等）。frame/radius 均在 host 坐标系。
 static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
@@ -1381,13 +1388,9 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
         LGDILog(@"expanded: independent glass created provider=%@ frame=%@",
                 provider.identifier, NSStringFromCGRect(frame));
         // 首捕可能为空（内容/背景未就绪），多时间点强制重建捕获组
-        __weak LGLiveBackdropView *weakGlass = glass;
+        // [闪烁修复] 使用 LGDIDelayedRefreshBackdrop：动画进行中自动推迟
         for (NSNumber *delay in @[ @0.2, @0.5, @1.0, @1.8 ]) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                         (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [weakGlass lgForceRefreshBackdrop];
-            });
+            LGDIDelayedRefreshBackdrop(glass, delay.doubleValue);
         }
     }
     if (glass.superview != host) {
@@ -1480,7 +1483,10 @@ static BOOL LGDISyncExpandedGeometry(void) {
         sLGDIExpFramePending = YES;
     } else if (sLGDIExpFramePending
                && sLGDIExpRetries < kLGDIExpMaxRetries
-               && now - sLGDIExpLastCapture > kLGDIExpCaptureThrottle) {
+               && now - sLGDIExpLastCapture > kLGDIExpCaptureThrottle
+               && ![sLGDIExpGlass lgFilterUpdateSuspended]) {
+        // [闪烁修复] 动画期间不重建捕获组：清空滤镜会导致灰/黑闪烁。
+        // sLGDIExpFramePending 保持 YES，动画结束后下一帧会重试。
         sLGDIExpFramePending = NO;
         sLGDIExpRetries++;
         sLGDIExpLastCapture = now;
@@ -1542,20 +1548,40 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
     BOOL isExpanded = (NSInteger)[DIPillStateMachine shared].currentMode >= DIPillLayoutModeExpanded;
 
     if (isExpanded) {
+        sLGDIExpCompactSince = 0;  // 在展开态 → 重置 compact 计时
         if (LGDISyncExpandedGeometry()) return;
     } else if (sLGDIExpGlass || sLGDIExpBlur) {
-        // [闪烁修复] 系统弹簧途中会快速 expanded→compact→expanded 循环。
-        // 每次 compact 都销毁展开玻璃会导致 create/destroy 循环 = 边框闪烁。
-        // compact 模式仅隐藏展开玻璃并恢复 pill 玻璃，不销毁实例。
-        // 仅 inert（真正空闲）才销毁。
+        // [闪烁根因修复] 弹簧弹跳会快速 expanded→compact→expanded→compact 循环。
+        // 旧逻辑每次 compact 都立即 hide 展开玻璃 + show pill 玻璃，每次 expanded
+        // 又反过来——每帧 toggle = 黑边闪烁 2-3 次（对应弹簧振荡）。
+        // 新逻辑：compact 时先尝试同步展开玻璃（弹跳可能已回到 expanded）；
+        // 如果确实没有展开目标，开始 0.3s 防抖计时，期间保持展开玻璃可见不动，
+        // pill 玻璃也保持隐藏——不 toggle = 不闪烁。
+        // 0.3s 后仍为 compact 才执行可见性切换。
         if ([DIPillStateMachine shared].currentMode == DIPillLayoutModeInert) {
             LGDIDestroyExpandedGlass(@"inert (idle)");
         } else {
-            if (sLGDIExpGlass && !sLGDIExpGlass.hidden) sLGDIExpGlass.hidden = YES;
-            if (sLGDIExpBlur && !sLGDIExpBlur.hidden) sLGDIExpBlur.hidden = YES;
-            if (sLGDIPillHiddenForExpanded && sLGDIGlass) {
-                sLGDIGlass.hidden = NO;
-                sLGDIPillHiddenForExpanded = NO;
+            // 先尝试同步展开玻璃——弹跳可能已回到 expanded
+            if (LGDISyncExpandedGeometry()) {
+                sLGDIExpCompactSince = 0;
+                return;  // 回到 expanded，展开玻璃在管
+            }
+            // 确实没有展开目标
+            if (sLGDIExpCompactSince == 0) {
+                sLGDIExpCompactSince = CACurrentMediaTime();
+            }
+            if (CACurrentMediaTime() - sLGDIExpCompactSince < 0.3) {
+                // 防抖窗口内：保持展开玻璃可见（冻在旧帧），pill 玻璃保持隐藏
+                // 不 toggle = 不闪烁。仍同步 pill 几何以备切换后立即对齐。
+                // 跳过本帧的 pill 可见性切换，但不跳过几何同步。
+            } else {
+                // 防抖到期：确认是真 compact，执行切换
+                if (sLGDIExpGlass && !sLGDIExpGlass.hidden) sLGDIExpGlass.hidden = YES;
+                if (sLGDIExpBlur && !sLGDIExpBlur.hidden) sLGDIExpBlur.hidden = YES;
+                if (sLGDIPillHiddenForExpanded && sLGDIGlass) {
+                    sLGDIGlass.hidden = NO;
+                    sLGDIPillHiddenForExpanded = NO;
+                }
             }
         }
     }
@@ -1719,10 +1745,18 @@ static void LGDIStartDriverReal(NSTimeInterval duration) {
     sLGDIMinDriverEnd = now + duration * 0.6;    // 弹簧进行中不提前停
     sLGDISteadyFrameCount = 0;
     sLGDILastPresentationFrame = CGRectNull;
+    // [闪烁根因修复] 弹簧动画期间挂起滤镜替换：动态半径步进（.r0~.r16）
+    // 随尺寸变化反复跨步 → layer.filters 数组替换 → render server 短暂无滤镜 =
+    // 灰/黑闪烁 2-3 次。挂起后 layoutSubviews 只更新 specular，不调 applyFilters。
+    if (sLGDIGlass) [sLGDIGlass lgSuspendFilterUpdates];
+    if (sLGDIExpGlass) [sLGDIExpGlass lgSuspendFilterUpdates];
 }
 
 static void LGDIStopDriver(void) {
     sLGDILink.paused = YES;
+    // [闪烁根因修复] 动画结束，恢复滤镜更新：用最终尺寸一次性 evaluate 滤镜类型
+    if (sLGDIGlass) [sLGDIGlass lgResumeFilterUpdates];
+    if (sLGDIExpGlass) [sLGDIExpGlass lgResumeFilterUpdates];
 }
 
 #pragma mark - Forward declarations
@@ -2680,6 +2714,28 @@ static void LGDIProbeStopTimer(void) {
 
 #endif // LIQUIDASS_DEBUG
 
+// [闪烁根因修复] 延迟刷新 backdrop 的安全版本：动画进行中自动推迟。
+// lgForceRefreshBackdrop 会清空滤镜并重建捕获组，在弹簧动画进行中触发
+// 会造成一次灰/黑闪烁。此函数检查 lgFilterUpdateSuspended，挂起时
+// 每 0.2s 重试，直到动画结束后再执行。
+static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval delay);
+
+static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval delay) {
+    __weak LGLiveBackdropView *weakGlass = glass;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        LGLiveBackdropView *g = weakGlass;
+        if (!g || !g.window) return;
+        if ([g lgFilterUpdateSuspended]) {
+            // 动画进行中，0.2s 后重试
+            LGDIDelayedRefreshBackdrop(g, 0.2);
+        } else {
+            [g lgForceRefreshBackdrop];
+        }
+    });
+}
+
 // =============================================================================
 //  Glass lifecycle
 // =============================================================================
@@ -2753,13 +2809,10 @@ static void LGDIInstallGlass(UIView *curtain) {
         // CABackdropLayer 首次捕获可能为空/黑；且 applyFilters 在滤镜类型
         // 未变时会 early-return。这里在布局就绪的多个时间点强制重建 backdrop
         // 捕获组（对标 Mango refreshGlassBackdrop），使其重新采样窗外实时画面。
-        __weak LGLiveBackdropView *weakGlass = glass;
+        // [闪烁修复] 使用 LGDIDelayedRefreshBackdrop：动画进行中自动推迟，
+        // 避免清空滤镜重建捕获组时造成灰/黑闪烁。
         for (NSNumber *delay in @[ @0.3, @0.8, @1.6, @3.0 ]) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                         (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [weakGlass lgForceRefreshBackdrop];
-            });
+            LGDIDelayedRefreshBackdrop(glass, delay.doubleValue);
         }
     }
 
