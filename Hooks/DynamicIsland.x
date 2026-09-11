@@ -1162,6 +1162,8 @@ static void LGDIRestoreAllSuppressed(void) {
 // =============================================================================
 
 static CGFloat LGDIFallbackCornerRadius(CGRect f);  // 前向声明
+// [闪烁修复] 前向声明：在 LGDIEnsureExpandedGlass 中使用，但定义在 Glass lifecycle 段
+static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval delay);
 
 static NSString * const kLGDIExpFilterType = @"dylv.liquidglass.dynamicisland.expanded";
 static NSString * const kLGDIExpGroupTag   = @"dylv.liquidglass.island.expanded";
@@ -2718,8 +2720,7 @@ static void LGDIProbeStopTimer(void) {
 // lgForceRefreshBackdrop 会清空滤镜并重建捕获组，在弹簧动画进行中触发
 // 会造成一次灰/黑闪烁。此函数检查 lgFilterUpdateSuspended，挂起时
 // 每 0.2s 重试，直到动画结束后再执行。
-static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval delay);
-
+// 前向声明已在前部（LGDIFallbackCornerRadius 旁）给出。
 static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval delay) {
     __weak LGLiveBackdropView *weakGlass = glass;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
