@@ -39,8 +39,11 @@
 #import <QuartzCore/QuartzCore.h>
 #import "../Shared/LGLiveBackdropView.h"
 #import "../Shared/LGGlassKit.h"
+#import "../Shared/LGDIWallpaperCapture.h"
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
+#import <IOSurface/IOSurface.h>
+#import <notify.h>
 #import <math.h>
 
 #ifndef LIQUIDASS_DEBUG
@@ -184,6 +187,12 @@ static BOOL      sLGDISplitExpanded;        // 因分屏而提升层级
 // 改为 LGDIEngage 以「总开关 + 在屏黑色幕布」直接点亮。
 
 static void LGDIRecordElementMode(id element, NSInteger mode) {
+    // [P4 修复] 同样验证 element mode：无效值不记录，防止
+    // currentPreferredMode 返回越界值污染 LGDIHasActiveLayout 判定
+    if (mode < 0 || mode > kLGDIModeDetached) {
+        LGDILog(@"RecordElementMode: INVALID mode=%ld, ignoring", (long)mode);
+        return;
+    }
     if (!sLGDIElementModes) {
         sLGDIElementModes = [NSMapTable weakToStrongObjectsMapTable];
     }
@@ -303,6 +312,13 @@ typedef NS_ENUM(NSInteger, DIPillLayoutMode) {
 }
 
 - (void)updateLayoutMode:(DIPillLayoutMode)mode reason:(NSInteger)reason {
+    // [P4 修复] 验证 mode 值：日志中观察到 mode=-1（mode-1）无效枚举值，
+    // 系统在特定时序下可能传入越界值。无效值回退到 inert，防止状态机
+    // 进入未定义状态导致点亮/拆除逻辑异常。
+    if (mode < 0 || mode > DIPillLayoutModeDetached) {
+        LGDILog(@"stateMachine: INVALID mode=%ld, clamping to inert", (long)mode);
+        mode = DIPillLayoutModeInert;
+    }
     if (mode != (DIPillLayoutMode)sLGDIMode) {
         LGDILog(@"stateMachine: mode changed %@ -> %@ reason=%ld",
                LGDIModeName(sLGDIMode), LGDIModeName((NSInteger)mode), (long)reason);
@@ -960,8 +976,11 @@ static BOOL LGDIColorIsNearBlackOpaque(UIColor *c) {
     } else {
         return NO;     // 图案/图案色等无法取分量，保守不动
     }
-    if (!(a > 0.4)) return NO;                 // 透明底无需剥离
-    return (r < 0.25 && g < 0.25 && b < 0.25); // 近黑
+    // [P3 修复] 放宽阈值：原 0.25 漏掉灰色背景（r=g=b=0.3，系统常见），
+    // 导致灰色盖在玻璃之上。提高到 0.35 捕获更多深灰背景。
+    // alpha 从 0.4 降到 0.3：半透明深灰也需剥离。
+    if (!(a > 0.3)) return;                  // 半透明底也需剥离
+    return (r < 0.35 && g < 0.35 && b < 0.35); // 近黑/深灰
 }
 
 // 仅清背景色（bg-only）。记录到同一压制集合，停用/回空闲时由 restore 统一还原。
@@ -1365,6 +1384,217 @@ static void LGDIStopDriver(void) {
 
 static void LGDIScheduleSync(NSTimeInterval driverDuration);
 static void LGDIReconcile(void);
+
+// =============================================================================
+//  [路线B] 壁纸跨进程捕获 — SpringBoard 端
+//
+//  CABackdropLayer 在 SBSystemApertureWindow 中无法跨窗口采样壁纸。
+//  这里在 SpringBoard 中创建一个 IOSurface，定期捕获灵动岛区域
+//  下方壁纸内容，写入 IOSurface。backboardd 通过 IOSurfaceID 创建
+//  MTLTexture，在 shader 中作为 fallback 折射源。
+//
+//  捕获策略：通过 renderInContext: 渲染壁纸窗口的 layer 到 IOSurface
+//  的像素内存。灵动岛区域很小（~160x64pt），CPU 渲染开销可接受。
+// =============================================================================
+
+static IOSurfaceRef sLGDIWallpaperSurface = NULL;
+static uint32_t     sLGDIWallpaperSurfaceID = 0;
+static NSUInteger   sLGDIWallpaperW = 0;
+static NSUInteger   sLGDIWallpaperH = 0;
+static dispatch_source_t sLGDIWallpaperTimer = nil;
+
+// 壁纸 surface 元数据文件路径（跨进程通信：文件 I/O + Darwin 通知）
+static NSString *LGDIWallpaperPrefsPath(void) {
+    NSString *standard = @LG_DI_WALLPAPER_PREFS_PATH;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:standard]) return standard;
+    NSString *jb = jbroot(@LG_DI_WALLPAPER_PREFS_PATH);
+    return jb ?: standard;
+}
+
+// 将 surface ID / 宽 / 高写入 plist 文件并广播 Darwin 通知
+static void LGDIWriteWallpaperSurfaceInfo(uint32_t surfaceID, NSUInteger w, NSUInteger h) {
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    if (surfaceID) {
+        info[LG_DI_WALLPAPER_SURFACE_ID_KEY]    = @(surfaceID);
+        info[LG_DI_WALLPAPER_SURFACE_WIDTH_KEY]  = @(w);
+        info[LG_DI_WALLPAPER_SURFACE_HEIGHT_KEY] = @(h);
+    }
+    [info writeToFile:LGDIWallpaperPrefsPath() atomically:YES];
+    notify_post(LG_DI_WALLPAPER_CAPTURE_READY_NOTIFY);
+}
+
+// 获取壁纸窗口（优先 SBWallpaperWindow，其次 SBHomeScreenWindow）
+static UIWindow *LGDIFindWallpaperWindow(void) {
+    for (UIWindow *w in UIApplication.sharedApplication.windows) {
+        NSString *cls = NSStringFromClass(w.class);
+        if ([cls containsString:@"Wallpaper"] || [cls containsString:@"HomeScreen"]) {
+            return w;
+        }
+    }
+    return nil;
+}
+
+void LGDIEnsureWallpaperSurface(CGSize size) {
+    NSUInteger w = (NSUInteger)ceil(size.width);
+    NSUInteger h = (NSUInteger)ceil(size.height);
+    if (w < 2 || h < 2) return;
+
+    if (sLGDIWallpaperSurface && w == sLGDIWallpaperW && h == sLGDIWallpaperH) return;
+
+    if (sLGDIWallpaperSurface) {
+        CFRelease(sLGDIWallpaperSurface);
+        sLGDIWallpaperSurface = NULL;
+    }
+
+    NSDictionary *options = @{
+        (id)kIOSurfaceWidth: @(w),
+        (id)kIOSurfaceHeight: @(h),
+        (id)kIOSurfacePixelFormat: @(kCVPixelFormatType_32BGRA),
+        (id)kIOSurfaceBytesPerElement: @(4),
+    };
+    sLGDIWallpaperSurface = IOSurfaceCreate((CFDictionaryRef)options);
+    if (!sLGDIWallpaperSurface) {
+        LGDILog(@"[路线B] IOSurfaceCreate failed");
+        return;
+    }
+    sLGDIWallpaperSurfaceID = IOSurfaceGetID(sLGDIWallpaperSurface);
+    sLGDIWallpaperW = w;
+    sLGDIWallpaperH = h;
+
+    // 写入 plist 文件供 backboardd 读取（文件 I/O + Darwin 通知）
+    LGDIWriteWallpaperSurfaceInfo(sLGDIWallpaperSurfaceID, w, h);
+
+    LGDILog(@"[路线B] wallpaper surface created ID=%u dims=%lux%lu",
+            sLGDIWallpaperSurfaceID, (unsigned long)w, (unsigned long)h);
+}
+
+void LGDICaptureWallpaperIntoSurface(CGRect screenRect) {
+    if (!sLGDIWallpaperSurface || !sLGDIWallpaperSurfaceID) return;
+    screenRect = CGRectIntegral(screenRect);
+    if (screenRect.size.width < 2 || screenRect.size.height < 2) return;
+
+    // 确保尺寸匹配（含 scale）
+    CGFloat scale = UIScreen.mainScreen.scale;
+    NSUInteger needW = (NSUInteger)ceil(screenRect.size.width * scale);
+    NSUInteger needH = (NSUInteger)ceil(screenRect.size.height * scale);
+    if (needW != sLGDIWallpaperW || needH != sLGDIWallpaperH) {
+        LGDIEnsureWallpaperSurface(CGSizeMake(needW, needH));
+        if (!sLGDIWallpaperSurface) return;
+    }
+
+    UIWindow *wallpaperWin = LGDIFindWallpaperWindow();
+    if (!wallpaperWin) {
+        // 没有独立壁纸窗口时，尝试用主屏幕根视图
+        wallpaperWin = UIApplication.sharedApplication.windows.firstObject;
+        if (!wallpaperWin) return;
+    }
+
+    // 将壁纸窗口在灵动岛屏幕区域的内容渲染到 IOSurface
+    IOSurfaceLock(sLGDIWallpaperSurface, 0, NULL);
+    void *base = IOSurfaceGetBaseAddress(sLGDIWallpaperSurface);
+    size_t stride = IOSurfaceGetBytesPerRow(sLGDIWallpaperSurface);
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(base,
+        sLGDIWallpaperW, sLGDIWallpaperH, 8, stride, cs,
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        IOSurfaceUnlock(sLGDIWallpaperSurface, 0, NULL);
+        return;
+    }
+
+    // 偏移到灵动岛在屏幕上的位置
+    CGContextTranslateCTM(ctx,
+        -screenRect.origin.x * scale,
+        -screenRect.origin.y * scale);
+    CGContextScaleCTM(ctx, scale, scale);
+
+    // 渲染壁纸层到 IOSurface
+    [wallpaperWin.layer renderInContext:ctx];
+
+    CGContextRelease(ctx);
+    IOSurfaceUnlock(sLGDIWallpaperSurface, 0, NULL);
+
+    // 通知 backboardd 有新数据
+    notify_post(LG_DI_WALLPAPER_CAPTURE_READY_NOTIFY);
+}
+
+void LGDITeardownWallpaperSurface(void) {
+    if (sLGDIWallpaperTimer) {
+        dispatch_source_cancel(sLGDIWallpaperTimer);
+        sLGDIWallpaperTimer = nil;
+    }
+    if (sLGDIWallpaperSurface) {
+        CFRelease(sLGDIWallpaperSurface);
+        sLGDIWallpaperSurface = NULL;
+    }
+    sLGDIWallpaperSurfaceID = 0;
+    sLGDIWallpaperW = 0;
+    sLGDIWallpaperH = 0;
+    // 清空文件中的 surface ID 并广播通知
+    LGDIWriteWallpaperSurfaceInfo(0, 0, 0);
+}
+
+// 启动定时壁纸捕获（热状态自适应间隔）
+static void LGDIStartWallpaperCapture(void) {
+    if (sLGDIWallpaperTimer) return;
+
+    UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
+    if (!curtain) return;
+
+    // 立即捕获一次
+    CGRect screenRect = [curtain convertRect:curtain.bounds toView:nil];
+    CGFloat scale = UIScreen.mainScreen.scale;
+    LGDIEnsureWallpaperSurface(CGSizeMake(
+        screenRect.size.width * scale, screenRect.size.height * scale));
+    LGDICaptureWallpaperIntoSurface(screenRect);
+
+    // 定时刷新：热状态越高间隔越长，降低 CPU 占用
+    // Nominal/Fair → 2s, Serious → 5s, Critical → 10s, 充电+热 → 额外 ×1.5
+    sLGDIWallpaperTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                  dispatch_get_main_queue());
+    // 初始 2s，每次回调动态计算下一次间隔
+    dispatch_source_set_timer(sLGDIWallpaperTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 2.0 * NSEC_PER_SEC),
+                              2.0 * NSEC_PER_SEC, 0.5 * NSEC_PER_SEC);
+    __weak UIView *weakCurtain = curtain;
+    dispatch_source_set_event_handler(sLGDIWallpaperTimer, ^{
+        UIView *c = weakCurtain ?: sLGDICurtain;
+        if (!c || !sLGDIActive) {
+            return;
+        }
+
+        // 热状态自适应：动态调整定时器间隔
+        NSUInteger thermal = [NSProcessInfo processInfo].thermalState;
+        NSTimeInterval interval;
+        switch (thermal) {
+            case 3:  interval = 5.0;  break;  // Serious
+            case 4:  interval = 10.0; break;  // Critical
+            default: interval = 2.0;  break;  // Nominal/Fair
+        }
+        // 充电 + 热状态 ≥ Fair 时进一步放慢
+        if (LGLiquidIsCharging() && thermal >= 2) {
+            interval *= 1.5;
+        }
+        static NSTimeInterval sLastAppliedInterval = 0;
+        if (sLastAppliedInterval != interval) {
+            sLastAppliedInterval = interval;
+            dispatch_source_set_timer(sLGDIWallpaperTimer,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)),
+                (uint64_t)(interval * NSEC_PER_SEC), 0.5 * NSEC_PER_SEC);
+        }
+
+        // Critical 热状态时跳过本帧捕获，减少 CPU 负载
+        if (thermal >= 4 && LGLiquidShouldSkipRenderFrame()) {
+            return;
+        }
+
+        CGRect sr = [c convertRect:c.bounds toView:nil];
+        LGDICaptureWallpaperIntoSurface(sr);
+    });
+    dispatch_resume(sLGDIWallpaperTimer);
+}
 
 // =============================================================================
 //  阶段 3.2/3.3/3.4 探针 v2（仅 LIQUIDASS_DEBUG）
@@ -2109,6 +2339,15 @@ static void LGDIInstallGlass(UIView *curtain) {
     UIView *gain = LGDIFindSubviewOfClass(curtain, @"_SBGainMapView");
     if (LGDRemoveGainMap() && gain && !gain.hidden) gain.hidden = YES;
 
+    // [P2 修复] 先压制装饰再装玻璃：消除「玻璃已装但装饰未压」的 1-2 帧空窗。
+    // 旧顺序：insertSubview → SweepView → StripNearBlackSubtree，中间有闪烁。
+    // 新顺序：SweepView → StripNearBlackSubtree → insertSubview，装饰先隐再装玻璃。
+    if (sLGDIActive) {
+        UIView *sweepRoot = host.window ?: host;
+        LGDISweepView(sweepRoot, 14);
+        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sweepRoot, 16);
+    }
+
     LGLiveBackdropView *glass = sLGDIGlass;
     if (!glass || glass.superview != host) {
         if (!glass) {
@@ -2126,6 +2365,17 @@ static void LGDIInstallGlass(UIView *curtain) {
         LGDILog(@"glass installed in host=%@ frame=%@",
                 NSStringFromClass(host.class),
                 NSStringFromCGRect(glass.frame));
+
+        // [P2 修复] 装玻璃后再异步扫一次：系统在 insertSubview 后可能
+        // 重建装饰视图（layoutSubviews 重建子树），需要捕获新装饰。
+        __weak UIView *weakHost = host;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (sLGDIActive && weakHost) {
+                UIView *sr = weakHost.window ?: weakHost;
+                LGDISweepView(sr, 14);
+                if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sr, 16);
+            }
+        });
 
         // 诊断：安装后 dump 真实层级（仅 DEBUG，限次，无视觉影响）
 #if LIQUIDASS_DEBUG
@@ -2155,16 +2405,13 @@ static void LGDIInstallGlass(UIView *curtain) {
     sLGDICurtain = curtain;
     sLGDIHost = host;
 
-    // 安装/迁移时从窗口根全树压制，防止黑色材质是宿主的兄弟分支；
-    // 布局期的增量压制仍只扫容器自身
-    if (sLGDIActive) {
-        UIView *sweepRoot = host.window ?: host;
-        LGDISweepView(sweepRoot, 14);
-        // 近黑背景剥离同样需要全树覆盖：内容容器可能不在 host 子树内
-        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sweepRoot, 16);
-    }
     LGDISyncGeometryFromPresentation(NO);
     LGDIScheduleSync(0.35);
+
+    // [路线B] 启动壁纸捕获：创建 IOSurface 并定期将灵动岛区域
+    // 下方的壁纸内容渲染进去，供 backboardd 端作为折射 fallback 纹理
+    LGDIStartWallpaperCapture();
+
 #if LIQUIDASS_DEBUG
     LGDIProbeEnsureTimer();
 #endif
@@ -2201,6 +2448,10 @@ static void LGDITeardown(BOOL featureDisabled) {
         }
     });
 
+    // [路线B] 停止壁纸捕获并清理 IOSurface，防止 backboardd 端
+    // 继续引用已失效的 surface ID
+    LGDITeardownWallpaperSurface();
+
     sLGDICurtain = nil;
     sLGDIHost = nil;
 }
@@ -2214,7 +2465,9 @@ static void LGDITeardown(BOOL featureDisabled) {
 //  小药丸；延迟 kLGDIDeferredTeardownDelay 待弹簧到位后，在关闭隐式动画的
 //  事务里一次性硬切回系统黑色小药丸。延迟窗口内活动复活则取消拆除。
 // =============================================================================
-static const NSTimeInterval kLGDIDeferredTeardownDelay = 0.5;
+// [P2 修复] 缩短延迟拆除窗口：0.5s 对快速活动切换太长，新活动进入前
+// 旧装饰可能被系统重建但尚未被压制。0.25s 仍足以覆盖收缩弹簧主体。
+static const NSTimeInterval kLGDIDeferredTeardownDelay = 0.25;
 
 static void LGDICancelDeferredTeardown(NSString *reason) {
     if (!sLGDITeardownPending) return;
@@ -2286,17 +2539,28 @@ static void LGDIEngage(UIView *curtain) {
         }
         return;
     }
-    // 阶段2.6.1：空闲 inert/minimal 小药丸不液态化。活动结束回到空闲时，
-    // 不立即拆除：延迟到收缩弹簧结束后硬切还原，避免边框淡入灰闪。
-    if (!LGDIHasActiveLayout()) {
-        if (sLGDIActive || sLGDIGlass) {
-            LGDIScheduleDeferredTeardown();
-            LGDILog(@"disengage: idle/inert island — deferring liquid removal");
-        }
-        return;
-    }
+    // [P4 修复] curtain 在屏即点亮：不再硬门控在 LGDIHasActiveLayout()。
+    // 通知到达时 setLayoutMode:reason: 回调可能延迟到达，但 curtain 已在屏
+    // 且尺寸合理本身就是有活动的信号。如果 element 表还空但 curtain 就绪，
+    // 先点亮——element 表后续补齐只是辅助确认。
     if (!curtain) curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
-    if (!LGDICurtainReady(curtain)) return;   // 布局未完成/已下屏：等下一个事件重试
+    BOOL curtainReady = LGDICurtainReady(curtain);
+
+    if (!LGDIHasActiveLayout()) {
+        if (curtainReady) {
+            // curtain 在屏且尺寸合理但 element 表还空：先点亮，不门控
+            // 落入下方正常点亮路径（不 return）
+            LGDILog(@"engage: curtain ready but element table empty — engaging anyway");
+        } else {
+            // curtain 也没就绪：如果有残留玻璃/活动，延迟拆除
+            if (sLGDIActive || sLGDIGlass) {
+                LGDIScheduleDeferredTeardown();
+                LGDILog(@"disengage: idle/inert island — deferring liquid removal");
+            }
+            return;
+        }
+    }
+    if (!curtainReady) return;   // 布局未完成/已下屏：等下一个事件重试
 
     // 活动在延迟拆除窗口内复活：取消拆除，无缝继续液态态
     LGDICancelDeferredTeardown(@"layout active again");
@@ -2326,9 +2590,17 @@ static void LGDIDoScheduledSync(void) {
         return;
     }
 
-    // 阶段2.6.1：空闲小岛不液态化（兜底，正常路径由状态机 reconcile 拆除）。
-    // 退出瞬间不拆：延迟到收缩弹簧结束后硬切，防止回小药丸灰闪。
+    // [P4 修复] 同 LGDIEngage：element 表可能延迟填充，
+    // 但 curtain 在屏就应点亮。先查 curtain，再判 element 表。
+    UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
+    BOOL curtainReady = LGDICurtainReady(curtain);
+
     if (!LGDIHasActiveLayout()) {
+        if (curtainReady && !sLGDIActive) {
+            // curtain 就绪但 element 表空：点亮（LGDIEngage 内部也会走这条路径）
+            LGDIEngage(curtain);
+            return;
+        }
         if (sLGDIActive || sLGDIGlass) {
             LGDIScheduleDeferredTeardown();
             LGDILog(@"scheduled sync: idle layout — defer liquid removal");
@@ -2339,7 +2611,6 @@ static void LGDIDoScheduledSync(void) {
     // 延迟拆除窗口内活动复活：取消拆除，继续液态态
     LGDICancelDeferredTeardown(@"active layout (sync)");
 
-    UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     if (!curtain || !curtain.window) return;
 
     // 尚未激活：以在屏幕布为信号点亮（此时必为 compact/expanded）
@@ -2378,6 +2649,14 @@ static void LGDIDoScheduledSync(void) {
         else if (!shouldHide && gain.hidden) gain.hidden = NO;
     }
     LGDISuppressDecorations(host);
+    // [P2 修复] 布局后异步再扫一次：layoutSubviews 可能在 SuppressDecorations
+    // 之后重建装饰视图，异步二次扫描捕获新建的装饰
+    __weak UIView *weakHost = host;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (sLGDIActive && weakHost) {
+            LGDISuppressDecorations(weakHost);
+        }
+    });
     LGDISyncGeometryFromPresentation(NO);
 }
 
@@ -2434,6 +2713,19 @@ static void LGDIHandleCurtainAttached(UIView *curtain) {
             LGDIScheduleSync(0.25);
         }
     });
+    // [P4 修复] 递增重试：不依赖后续系统事件，主动在多个时间点重试。
+    // curtain bounds=0x0 第二次 didMoveToWindow 在日志中已观察到，
+    // 递增重试确保即使首次 async 时 bounds 未就绪，后续仍能点亮。
+    for (NSNumber *delay in @[ @0.1, @0.2, @0.4, @0.8 ]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (!sLGDIActive && LGDIFeatureEnabled() && LGDICurtainReady(curtain)) {
+                LGDILog(@"engage: escalating retry at %.1fs", delay.doubleValue);
+                LGDIEngage(curtain);
+            }
+        });
+    }
 }
 
 static BOOL LGDIShouldForceHidden(UIView *view) {
@@ -2744,7 +3036,9 @@ static void LGDynamicIslandInit(void) {
 
     // SpringBoard 启动时若已有实时活动（音乐/导航等），系统通常会补发
     // setLayoutMode:；这里的延迟 reconcile 仅作兜底
-    for (NSNumber *delay in @[ @0.8, @2.5, @5.0 ]) {
+    // [P4 修复] 缩短兜底延迟：0.8/2.5/5.0s 对短时通知太慢，
+    // 改为 0.3/0.8/1.5/3.0s，更快捕获启动时已有活动
+    for (NSNumber *delay in @[ @0.3, @0.8, @1.5, @3.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{

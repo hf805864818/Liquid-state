@@ -1,9 +1,11 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <IOSurface/IOSurface.h>
 #import "../Shared/LGHostRegistry.h"
 #import "LGSymbolResolver.h"
 #import "../Shared/LGCoverSheetState.h"
+#import "../Shared/LGDIWallpaperCapture.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
@@ -104,6 +106,9 @@ typedef struct {
     // 下方窗口画面）：0=整像素透明（旧行为）；1=深色玻璃底色 + 边缘高光；
     // 2=洋红色调试渲染，用于设备上一锤定音确认"空捕获"。
     float       captureFallbackMode;
+    // [路线B] 壁纸纹理是否可用：与 shader Uniforms 对应
+    float       hasWallpaperTexture;
+    float       _pad0, _pad1;
 } LGUniforms;
 
 typedef void (*Render13Fn)(void*,
@@ -197,6 +202,112 @@ static float                       g_clockMaskBezelWidthPoints = 24.0f;
 static uint64_t                    g_clockMaskGeneration = 0;
 static uint64_t                    g_clockMaskUploadedGeneration = 0;
 
+// [路线B] 壁纸 fallback 纹理：从 SpringBoard 创建的 IOSurface 中加载，
+// 当 CABackdropLayer 跨窗口捕获失败时作为折射源
+static id<MTLTexture>             g_wallpaperTex = nil;
+static IOSurfaceRef               g_wallpaperSurface = NULL;
+static uint32_t                   g_wallpaperSurfaceID = 0;
+static uint32_t                   g_lastWallpaperSurfaceID = 0;
+static os_unfair_lock             g_wallpaperLock = OS_UNFAIR_LOCK_INIT;
+// 通知到达时置位，渲染线程下一帧强制重新加载 plist
+static volatile int32_t          g_wallpaperReloadFlag = 0;
+
+// 壁纸 surface 元数据文件路径（与 SpringBoard 端 LGDIWallpaperPrefsPath 对应）
+static NSString *lgWallpaperPrefsPath(void) {
+    NSString *standard = @LG_DI_WALLPAPER_PREFS_PATH;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:standard]) return standard;
+    NSString *jb = jbroot(@LG_DI_WALLPAPER_PREFS_PATH);
+    return jb ?: standard;
+}
+
+// [路线B] 从 plist 文件读取 IOSurfaceID，创建/刷新 MTLTexture
+static void LGDILoadWallpaperTexture(id<MTLDevice> device) {
+    if (!device) return;
+
+    // 从 plist 文件读取 surface ID（跨进程通信：文件 I/O）
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:lgWallpaperPrefsPath()];
+    NSNumber *idNum = info[LG_DI_WALLPAPER_SURFACE_ID_KEY];
+    uint32_t surfaceID = 0;
+    if (idNum && [idNum isKindOfClass:[NSNumber class]]) {
+        surfaceID = idNum.unsignedIntValue;
+    }
+
+    // surface ID 为 0：壁纸捕获已关闭，清理旧纹理
+    if (surfaceID == 0) {
+        os_unfair_lock_lock(&g_wallpaperLock);
+        if (g_wallpaperTex) {
+            g_wallpaperTex = nil;
+            g_lastWallpaperSurfaceID = 0;
+            if (g_wallpaperSurface) { CFRelease(g_wallpaperSurface); g_wallpaperSurface = NULL; }
+            lglog("[路线B] wallpaper texture cleared (surfaceID=0)");
+        }
+        os_unfair_lock_unlock(&g_wallpaperLock);
+        return;
+    }
+
+    os_unfair_lock_lock(&g_wallpaperLock);
+    if (surfaceID == g_lastWallpaperSurfaceID && g_wallpaperTex) {
+        // Same surface, texture already cached
+        os_unfair_lock_unlock(&g_wallpaperLock);
+        return;
+    }
+    os_unfair_lock_unlock(&g_wallpaperLock);
+
+    // Look up the IOSurface by ID (cross-process)
+    IOSurfaceRef surface = IOSurfaceLookup(surfaceID);
+    if (!surface) {
+        static int sLogCount = 0;
+        if (__sync_fetch_and_add(&sLogCount, 1) < 5) {
+            lglog("[路线B] IOSurfaceLookup failed for ID=%u", surfaceID);
+        }
+        return;
+    }
+
+    // Create MTLTexture from IOSurface
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                     width:IOSurfaceGetWidth(surface)
+                                                                                    height:IOSurfaceGetHeight(surface)
+                                                                                 mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead;
+    desc.storageMode = MTLStorageModeShared;
+
+    id<MTLTexture> tex = [device newTextureWithDescriptor:desc
+                                              iosurface:surface
+                                                  plane:0];
+    if (!tex) {
+        static int sLogCount2 = 0;
+        if (__sync_fetch_and_add(&sLogCount2, 1) < 5) {
+            lglog("[路线B] newTextureWithDescriptor:iosurface: failed for ID=%u", surfaceID);
+        }
+        CFRelease(surface);
+        return;
+    }
+
+    os_unfair_lock_lock(&g_wallpaperLock);
+    if (g_wallpaperSurface) CFRelease(g_wallpaperSurface);
+    g_wallpaperSurface = surface;  // retains
+    g_wallpaperTex = tex;
+    g_lastWallpaperSurfaceID = surfaceID;
+    os_unfair_lock_unlock(&g_wallpaperLock);
+
+    lglog("[路线B] wallpaper texture loaded: ID=%u dims=%lux%lu",
+          surfaceID, (unsigned long)tex.width, (unsigned long)tex.height);
+}
+
+id<MTLTexture> LGDIGetWallpaperTexture(id<MTLDevice> device) {
+    os_unfair_lock_lock(&g_wallpaperLock);
+    id<MTLTexture> tex = g_wallpaperTex;
+    os_unfair_lock_unlock(&g_wallpaperLock);
+    return tex;
+}
+
+BOOL LGDIHasWallpaperTexture(void) {
+    os_unfair_lock_lock(&g_wallpaperLock);
+    BOOL has = (g_wallpaperTex != nil);
+    os_unfair_lock_unlock(&g_wallpaperLock);
+    return has;
+}
+
 static os_unfair_lock g_pipelineLock = OS_UNFAIR_LOCK_INIT;
 static os_unfair_lock g_clockMaskLock = OS_UNFAIR_LOCK_INIT;
 static bool           g_pipelineInit = false;
@@ -258,6 +369,9 @@ struct Uniforms {
     float2 maskResolution;
     // 0=空采样透明（旧行为）；1=深色玻璃底色兜底；2=洋红调试
     float  captureFallbackMode;
+    // [路线B] 壁纸纹理是否可用：>0.5 时，空捕获回退使用 wallpaperTex 而非纯色
+    float  hasWallpaperTexture;
+    float  _pad0, _pad1;  // 对齐到 8 字节边界（Metal natural alignment）
 };
 
 float surfaceConvexSquircle(float x) {
@@ -393,6 +507,7 @@ float2 backdropSampleUV(float2 capturePx,
 
 float4 liquidGlassPixel(texture2d<float, access::sample> src,
                         texture2d<float, access::sample> glyphMask,
+                        texture2d<float, access::sample> wallpaperTex,
                         constant Uniforms &u, uint2 gid, uint2 dimensions)
 {
     const uint W = dimensions.x, H = dimensions.y;
@@ -510,7 +625,16 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
                 signedDistance = (superLength - 1.0) * min(extent.x, extent.y);
             }
         }
-        if (signedDistance > 1.0) return src.sample(s, captureUV);
+        if (signedDistance > 1.0) {
+            // [路线B] early return 路径也需要壁纸 fallback
+            float4 earlySample = src.sample(s, captureUV);
+            if (earlySample.a < 0.01 && u.hasWallpaperTexture > 0.5) {
+                float2 wpUV = backdropSampleUV(capturePx, px, float2(0.0),
+                                               isCoverSheet, u);
+                earlySample = wallpaperTex.sample(s, wpUV);
+            }
+            return earlySample;
+        }
 
         distFromSide = max(0.0, -signedDistance);
         float2 cornerDelta = max(abs(p) - core, float2(0.0));
@@ -550,13 +674,21 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
     if (R < shortest * 0.45 && distFromSide >= bezel) {
         float4 flat = src.sample(s, captureUV);
         if (flat.a < 0.01 && u.captureFallbackMode > 0.5) {
-            // 跨窗口 backdrop 捕获为空（灵动岛独立合成域兜底）：不返回全透明，
-            // 用深色玻璃材质底色替代；边缘着色/菲涅尔在调用方仍会叠加。
-            // mode 2 为洋红诊断色，设备上看到实心洋红即证实"空捕获"。
-            float3 fb = u.captureFallbackMode > 1.5
-                        ? float3(1.0, 0.0, 1.0)
-                        : float3(0.045, 0.045, 0.055);
-            flat = float4(fb, 1.0);
+            // [路线B] backdrop 捕获为空。优先使用壁纸纹理采样。
+            // 使用 backdropSampleUV 计算壁纸 UV（考虑屏幕坐标映射），
+            // 这样壁纸内容会对准灵动岛在屏幕上的实际位置。
+            if (u.hasWallpaperTexture > 0.5) {
+                float2 wpUV = backdropSampleUV(capturePx, px, float2(0.0),
+                                               isCoverSheet, u);
+                flat = wallpaperTex.sample(s, wpUV);
+            }
+            if (flat.a < 0.01) {
+                // 壁纸纹理也不可用或采样为空：回退到纯色兜底
+                float3 fb = u.captureFallbackMode > 1.5
+                            ? float3(1.0, 0.0, 1.0)
+                            : float3(0.045, 0.045, 0.055);
+                flat = float4(fb, 1.0);
+            }
         }
         float centerTintAlpha = u.tintColor.a * u.centerTintFactor;
         flat.rgb = mix(flat.rgb, u.tintColor.rgb, centerTintAlpha);
@@ -591,16 +723,23 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
     bool loadedFallback = false;
     bool captureEmpty = false;
     if (greenSample.a < 0.01) {
-        fallback = src.sample(s, captureUV);
-        loadedFallback = true;
-        greenSample = fallback;
+        // [路线B] backdrop 折射采样为空：尝试壁纸纹理
+        if (u.hasWallpaperTexture > 0.5) {
+            fallback = wallpaperTex.sample(s, greenUV);
+            if (fallback.a > 0.01) {
+                loadedFallback = true;
+                greenSample = fallback;
+            }
+        }
+        if (greenSample.a < 0.01) {
+            fallback = src.sample(s, captureUV);
+            loadedFallback = true;
+            greenSample = fallback;
+        }
     }
     if (greenSample.a < 0.01) {
         if (u.captureFallbackMode > 0.5) {
-            // 折射采样与原位采样都为空：灵动岛跨窗口捕获失败兜底。
-            // 用深色玻璃底色（或洋红诊断色）替代，跳过色散（没有可色散的
-            // 内容），后续边缘着色渐变 + 菲涅尔眩光仍正常叠加，
-            // 保证边缘有液态高光而不是整块纯透明。
+            // [路线B] backdrop 和壁纸都为空：深色玻璃底色兜底
             captureEmpty = true;
             float3 fb = u.captureFallbackMode > 1.5
                         ? float3(1.0, 0.0, 1.0)
@@ -623,10 +762,24 @@ float4 liquidGlassPixel(texture2d<float, access::sample> src,
         float4 redSample = src.sample(s, redUV);
         float4 blueSample = src.sample(s, blueUV);
 
+        // [路线B] 色散采样也为空时，优先用壁纸纹理 fallback
         if (redSample.a < 0.01 || blueSample.a < 0.01) {
-            if (!loadedFallback) fallback = src.sample(s, captureUV);
-            if (redSample.a < 0.01) redSample = fallback;
-            if (blueSample.a < 0.01) blueSample = fallback;
+            if (u.hasWallpaperTexture > 0.5) {
+                if (!loadedFallback) {
+                    fallback = wallpaperTex.sample(s, captureUV);
+                    if (fallback.a > 0.01) loadedFallback = true;
+                }
+                if (redSample.a < 0.01 && fallback.a > 0.01)
+                    redSample = wallpaperTex.sample(s, redUV);
+                if (blueSample.a < 0.01 && fallback.a > 0.01)
+                    blueSample = wallpaperTex.sample(s, blueUV);
+            }
+            // 如果壁纸纹理也不可用，回退到纯色
+            if (redSample.a < 0.01 || blueSample.a < 0.01) {
+                if (!loadedFallback) fallback = src.sample(s, captureUV);
+                if (redSample.a < 0.01) redSample = fallback;
+                if (blueSample.a < 0.01) blueSample = fallback;
+            }
         }
 
         bg.r = redSample.r;
@@ -665,6 +818,7 @@ fragment float4 liquidGlassFragment(
     LGVertexOut in [[stage_in]],
     texture2d<float, access::sample> src [[texture(0)]],
     texture2d<float, access::sample> glyphMask [[texture(1)]],
+    texture2d<float, access::sample> wallpaperTex [[texture(2)]],
     constant Uniforms &u [[buffer(0)]])
 {
     uint2 dimensions(src.get_width(), src.get_height());
@@ -673,7 +827,7 @@ fragment float4 liquidGlassFragment(
     if (any(sourcePosition < float2(0.0)) ||
         any(sourcePosition >= u.resolution)) return float4(0.0);
     uint2 gid = min(uint2(sourcePosition), dimensions - 1);
-    return liquidGlassPixel(src, glyphMask, u, gid, dimensions);
+    return liquidGlassPixel(src, glyphMask, wallpaperTex, u, gid, dimensions);
 }
 
 )MSL";
@@ -837,6 +991,9 @@ static void ensureUniforms(__unsafe_unretained id<MTLDevice> device, uint64_t w,
     u->centerTintFactor        = 1.0f;
     u->maskResolution          = simd_make_float2(0.f, 0.f);
     u->captureFallbackMode     = 0.f;
+    u->hasWallpaperTexture     = 0.f;
+    u->_pad0                   = 0.f;
+    u->_pad1                   = 0.f;
 
     lglog("uniforms buffer allocated (geometry refreshed per-frame)");
 }
@@ -1441,6 +1598,20 @@ static void lgStartPrefsObserver(void) {
         NULL, CFNotificationSuspensionBehaviorCoalesce);
 }
 
+// [路线B] 壁纸捕获就绪通知回调：设置标志位，渲染线程下一帧重新加载 plist
+static void lgWallpaperCaptureReadyCallback(CFNotificationCenterRef c, void *o,
+                                             CFStringRef n, const void *obj,
+                                             CFDictionaryRef info) {
+    __sync_bool_compare_and_swap(&g_wallpaperReloadFlag, 0, 1);
+}
+
+static void lgStartWallpaperObserver(void) {
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL, lgWallpaperCaptureReadyCallback,
+        CFSTR(LG_DI_WALLPAPER_CAPTURE_READY_NOTIFY), NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately);
+}
+
 static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
                                float opacity, void *surface, float scale,
                                bool flag, void *cm, void *shape, float *out)
@@ -1813,6 +1984,23 @@ static void ourCustomRender13(void *self, void *filter, void *layer, void *ctx,
     [enc setRenderPipelineState:renderPipeline];
     [enc setFragmentTexture:origTex atIndex:0];
     [enc setFragmentTexture:glyphMaskTexture atIndex:1];
+    
+    // [路线B] 为灵动岛 host 绑定壁纸 fallback 纹理（texture index 2）
+    // 当 CABackdropLayer 跨窗口捕获失败时，shader 使用此纹理作为折射源
+    lu.hasWallpaperTexture = 0.f;
+    if (!strcmp(hp->prefPrefix, "DynamicIsland")) {
+        // 通知到达或首帧时重新加载 plist（避免每帧读文件）
+        if (__sync_bool_compare_and_swap(&g_wallpaperReloadFlag, 1, 0) ||
+            !g_lastWallpaperSurfaceID) {
+            LGDILoadWallpaperTexture(device);
+        }
+        id<MTLTexture> wpTex = LGDIGetWallpaperTexture(device);
+        if (wpTex) {
+            [enc setFragmentTexture:wpTex atIndex:2];
+            lu.hasWallpaperTexture = 1.f;
+        }
+    }
+    
     [enc setFragmentBytes:&lu length:sizeof(lu) atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [enc endEncoding];
@@ -2395,6 +2583,9 @@ static void tweakInit(void) {
                                     kClockMaskReloadNotification, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
     lgReloadClockMask();
+
+    // [路线B] 监听 SpringBoard 壁纸捕获就绪通知
+    lgStartWallpaperObserver();
 
     registerCustomFilter();
 
