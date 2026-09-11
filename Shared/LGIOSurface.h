@@ -20,7 +20,8 @@ extern const CFStringRef kIOSurfaceWidth;
 extern const CFStringRef kIOSurfaceHeight;
 extern const CFStringRef kIOSurfacePixelFormat;
 extern const CFStringRef kIOSurfaceBytesPerElement;
-extern const CFStringRef kIOSurfaceIsGlobal;
+// kIOSurfaceIsGlobal 自 iOS 11 起废弃且 -Werror 会命中；
+// 需要全局 surface 时直接用 CFSTR("IOSurfaceIsGlobal") 原始键名。
 
 // Pixel format for BGRA8 (same as kCVPixelFormatType_32BGRA)
 // 'BGRA' = 0x42475241 in big-endian

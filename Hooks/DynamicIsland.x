@@ -1159,7 +1159,9 @@ static CGFloat LGDIFallbackCornerRadius(CGRect f);  // 前向声明
 static NSString * const kLGDIExpFilterType = @"dylv.liquidglass.dynamicisland.expanded";
 static NSString * const kLGDIExpGroupTag   = @"dylv.liquidglass.island.expanded";
 
-static CGRect        sLGDIExpLastFrame = CGRectNull;
+// CGRectNull 含 INFINITY，不是编译期常量，不能做静态初始化；用零值 + 标志位
+static CGRect        sLGDIExpLastFrame;
+static BOOL          sLGDIExpHasLastFrame;
 static CFTimeInterval sLGDIExpLastCapture;
 static NSInteger      sLGDIExpRetries;
 static BOOL           sLGDIExpFramePending;  // 帧变化后等待稳定再重捕
@@ -1461,7 +1463,7 @@ static BOOL LGDISyncExpandedGeometry(void) {
     // 帧稳定后节流强刷 backdrop（对标 Mango lastExpandedGlassCaptureTime +
     // expandedGlassRetryCount：只在形变收敛后重采，避免弹簧途中频繁重建捕获组）
     CFTimeInterval now = CACurrentMediaTime();
-    BOOL sameFrame = !CGRectIsNull(sLGDIExpLastFrame)
+    BOOL sameFrame = sLGDIExpHasLastFrame
         && fabs(f.origin.x - sLGDIExpLastFrame.origin.x) < 0.5
         && fabs(f.origin.y - sLGDIExpLastFrame.origin.y) < 0.5
         && fabs(f.size.width  - sLGDIExpLastFrame.size.width)  < 0.5
@@ -1477,6 +1479,7 @@ static BOOL LGDISyncExpandedGeometry(void) {
         [sLGDIExpGlass lgForceRefreshBackdrop];
     }
     sLGDIExpLastFrame = f;
+    sLGDIExpHasLastFrame = YES;
     return YES;
 }
 
@@ -1495,7 +1498,8 @@ static void LGDIDestroyExpandedGlass(NSString *reason) {
     sLGDIExpGlass = nil;
     sLGDIExpBlur = nil;
     sLGDIExpHost = nil;
-    sLGDIExpLastFrame = CGRectNull;
+    sLGDIExpLastFrame = CGRectZero;
+    sLGDIExpHasLastFrame = NO;
     sLGDIExpRetries = 0;
     sLGDIExpFramePending = NO;
     sLGDIExpLastSweep = 0;
@@ -1759,7 +1763,8 @@ void LGDIEnsureWallpaperSurface(CGSize size) {
         (__bridge id)kIOSurfaceHeight: @(h),
         (__bridge id)kIOSurfacePixelFormat: @(LG_IOSURFACE_PF_BGRA8),
         (__bridge id)kIOSurfaceBytesPerElement: @(4),
-        (__bridge id)kIOSurfaceIsGlobal: @YES,
+        // 不用已废弃的 kIOSurfaceIsGlobal 常量（-Werror 会命中），直接用原始键名
+        (__bridge id)CFSTR("IOSurfaceIsGlobal"): @YES,
     };
     sLGDIWallpaperSurface = IOSurfaceCreate((CFDictionaryRef)options);
     if (!sLGDIWallpaperSurface) {
