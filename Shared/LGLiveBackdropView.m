@@ -1038,7 +1038,10 @@ static void LGReportMemoryUsageIfNeeded(void) {
         mask.frame = self.bounds;
         mask.cornerRadius = self.layer.cornerRadius;
         mask.cornerCurve = self.layer.cornerCurve;
-        mask.borderWidth = 0.75;
+        // [0.1.288b 修复] 0.75pt 黑描边是"收缩遗留大岛玻璃阴影"+"活动周边闪烁黑边"的共同根因：
+        // mask 的高光收边描边在 render server 重采样/展开玻璃拆除时被视觉残留/重绘出来。
+        // 置 0 去掉黑描边，玻璃主体(折射/模糊/高光渐变)完全保留。
+        mask.borderWidth = 0;
     }
     [CATransaction commit];
     [self applySpecularAngle:sLGSpecularAngle];

@@ -1533,6 +1533,9 @@ static void LGDIDestroyExpandedGlass(NSString *reason) {
             [glass removeFromSuperview];
             @try {
                 glass.layer.filters = @[];
+                // [0.1.288b 修复] 同步清掉展开玻璃的高光 mask（含黑描边/渐变），
+                // 否则收缩回 compact 时 render server 残留大岛玻璃视觉（"遗留阴影无法消失"）。
+                glass.layer.mask = nil;
                 [glass.layer setValue:nil forKey:@"groupName"];
             } @catch (NSException *e) {
                 LGDILog(@"destroyExpanded KVC cleanup exception: %@", e.reason);
