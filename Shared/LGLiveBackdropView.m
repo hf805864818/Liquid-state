@@ -946,7 +946,14 @@ static void LGReportMemoryUsageIfNeeded(void) {
         return;
     }
 
-    BOOL needsFilter = !_nativeBlurLayer || fabs(_nativeBlurRadius - radius) > 0.001;
+    // [黑边修复 v6] native blur gaussian filter 重建阈值 0.001 → 2.0pt：
+    // radius 微小变化（<2pt）不足以产生可感知的模糊半径差异，但重建
+    // layer.filters = @[gaussian] 会让 render server 销毁旧 native blur
+    // 捕获组、建新组，新组首帧为空 = 黑边闪 1-2 帧。弹簧动画多个振荡
+    // 每次到达极值都可能触发一次 radius 重算 → 多次闪烁。提高到 2.0pt
+    // 阈值后，只有 radius 真正大幅变化（布局大调整/窗口模式切换）才
+    // 重建，动画过程中的微幅 radius 波动不再触发管线销毁重建。
+    BOOL needsFilter = !_nativeBlurLayer || fabs(_nativeBlurRadius - radius) > 2.0;
     id gaussian = needsFilter ? LGCreateNativeGaussianFilter(filterCls, radius) : nil;
     if (needsFilter && !gaussian) return;
     if (!_nativeBlurLayer) {
