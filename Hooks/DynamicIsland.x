@@ -2992,6 +2992,9 @@ static void LGDITeardown(BOOL featureDisabled) {
             [glass removeFromSuperview];
             @try {
                 glass.layer.filters = @[];
+                // [0.1.288b 修复] 同 LGDIDestroyExpandedGlass：清掉 pill 玻璃的高光 mask，
+                // 避免总开关关闭/活动彻底退出时 render server 残留玻璃视觉。
+                glass.layer.mask = nil;
                 [glass.layer setValue:nil forKey:@"groupName"];
             } @catch (NSException *e) {
                 LGDILog(@"teardown KVC cleanup exception: %@", e.reason);
