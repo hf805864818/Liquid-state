@@ -84,13 +84,6 @@ static void LGDILog(NSString *fmt, ...) {
 @end
 @interface SBSystemApertureWindow : UIWindow
 @end
-// [锁屏修复] 封面页/锁屏控制器，用于检测锁屏状态
-@interface SBCoverSheetPresentationManager : NSObject
-@end
-@interface SBLockScreenManager : NSObject
-+ (instancetype)sharedInstance;
-- (BOOL)isUILocked;
-@end
 
 #pragma mark - Constants / association keys
 
@@ -3555,44 +3548,62 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 %end
 
 // =============================================================================
-//  [锁屏修复] Hook: SBLockScreenManager
-//  检测锁屏状态变化，锁屏时拆除液态玻璃（省电降温），解锁后重新点亮。
+//  [锁屏修复] 锁屏状态检测
+//  用 CFNotificationCenter 监听系统锁屏/解锁通知，避免 hook 私有方法的版本兼容问题，
+//  也避免在 constructor 里调用 SBLockScreenManager 导致崩溃（SB 启动时它还没初始化）。
+//  锁屏时拆除液态玻璃（省电降温），解锁后重新点亮。
 // =============================================================================
-%group LGDILockScreenHook
 
-%hook SBLockScreenManager
-
-- (void)_lockUIFromSource:(NSInteger)source withOptions:(id)options {
-    %orig;
-    if (!sLGDIOnLockScreen) {
-        sLGDIOnLockScreen = YES;
-        LGDILog(@"lock screen: UI locked (source=%ld)", (long)source);
-        if (sLGDIActive || sLGDIGlass) {
-            LGDICancelDeferredTeardown(@"lock screen");
-            sLGDIActive = NO;
-            LGDITeardown(NO);
+static void LGDIOnLockStateChanged(CFNotificationCenterRef center,
+                                   void *observer,
+                                   CFStringRef name,
+                                   const void *object,
+                                   CFDictionaryRef userInfo) {
+    @autoreleasepool {
+        if (CFEqual(name, CFSTR("SBLockScreenLockStateDidChangeNotification"))) {
+            // 从 userInfo 或 SBLockScreenManager 读取状态
+            Class lockMgrCls = objc_getClass("SBLockScreenManager");
+            if (!lockMgrCls) return;
+            id lockMgr = ((id (*)(Class, SEL))objc_msgSend)(lockMgrCls, @selector(sharedInstance));
+            if (!lockMgr) return;
+            BOOL locked = ((BOOL (*)(id, SEL))objc_msgSend)(lockMgr, @selector(isUILocked));
+            
+            if (locked != sLGDIOnLockScreen) {
+                sLGDIOnLockScreen = locked;
+                LGDILog(@"lock state changed: %d", locked);
+                if (locked) {
+                    // 锁屏：拆除液态玻璃，省电降温
+                    if (sLGDIActive || sLGDIGlass) {
+                        LGDICancelDeferredTeardown(@"lock screen");
+                        sLGDIActive = NO;
+                        LGDITeardown(NO);
+                    }
+                } else {
+                    // 解锁：延迟 reconcile，等系统布局稳定后再重新点亮
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                                 (int64_t)(0.3 * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{
+                        LGDIReconcile();
+                    });
+                }
+            }
         }
     }
 }
 
-- (void)_finishUnlockWithSound:(BOOL)sound
-          unlockSource:(NSInteger)source
-          isAutoUnlock:(BOOL)autoUnlock {
-    %orig;
-    if (sLGDIOnLockScreen) {
-        sLGDIOnLockScreen = NO;
-        LGDILog(@"lock screen: UI unlocked (source=%ld auto=%d)", (long)source, autoUnlock);
-        // 解锁后延迟 reconcile，等系统布局稳定后再重新点亮
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.3 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            LGDIReconcile();
-        });
-    }
+static void LGDIInstallLockScreenObserver(void) {
+    // 延迟到下一个 runloop 再注册，避免 constructor 期间通知中心不可用
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            NULL,
+            LGDIOnLockStateChanged,
+            CFSTR("SBLockScreenLockStateDidChangeNotification"),
+            NULL,
+            CFNotificationSuspensionBehaviorDrop);
+        LGDILog(@"lock screen observer installed");
+    });
 }
-
-%end
-%end
 
 // =============================================================================
 //  Constructor
@@ -3640,21 +3651,13 @@ static void LGDynamicIslandInit(void) {
     if (objc_getClass("SBSystemApertureWindow")) {
         %init(LGDIApertureWindowHook);
     }
-    // [锁屏修复] 注册锁屏状态检测 hook
-    if (objc_getClass("SBLockScreenManager")) {
-        %init(LGDILockScreenHook);
-    }
 
-    // [锁屏修复] 初始化锁屏状态
-    Class lockMgrCls = objc_getClass("SBLockScreenManager");
-    if (lockMgrCls) {
-        id lockMgr = ((id (*)(Class, SEL))objc_msgSend)(lockMgrCls, @selector(sharedInstance));
-        if (lockMgr) {
-            BOOL locked = ((BOOL (*)(id, SEL))objc_msgSend)(lockMgr, @selector(isUILocked));
-            sLGDIOnLockScreen = locked;
-            LGDILog(@"initial lock state: %d", locked);
-        }
-    }
+    // [锁屏修复] 注意：不能在 constructor 里调用 SBLockScreenManager sharedInstance，
+    // SpringBoard 启动时 SBLockScreenManager 还没初始化完成，此时调用会触发
+    // NSAssert 失败 → 崩溃 → 安全模式。
+    // 默认解锁态，通过 CFNotificationCenter 监听锁屏通知动态更新状态。
+    sLGDIOnLockScreen = NO;
+    LGDIInstallLockScreenObserver();
 
     // 初始一律视为 inert：空闲小药丸不处理，等系统发出 compact/expanded
     // 的 setLayoutMode: 后再装配（此时 element 表才会有记录）
