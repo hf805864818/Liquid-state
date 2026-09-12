@@ -58,6 +58,20 @@ UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
 // = 2-3 次闪烁。此标记让 host 切换走"保留滤镜"路径，黑边消除。
 - (void)lgSetReparenting:(BOOL)reparenting;
 
+// [P0 修复] 拆除玻璃时彻底清理 render server 捕获组。仅 removeFromSuperview +
+// layer.filters=@[] 不够：_nativeBlurLayer 是挂在 self.layer 上的第二个
+// CABackdropLayer 捕获组（独立 groupName），不显式移除会在渲染服务器侧残留
+// 1-2 帧液态玻璃阴影。此方法原子清理 filters + nativeBlur + groupName。
+- (void)lgTeardownCaptureGroup;
+
+// [P0 修复] 跨 window/superview 移动后强制 nudge 捕获组重关联。
+// 同 window 内换 superview 时 didMoveToWindow(nil) 不触发，reparenting 标记
+// 用不上；insertSubview 触发的 didMoveToWindow(win) 里 applyFilters 因滤镜
+// 类型未变 early return，setNeedsDisplay 不足以让 render server 重关联捕获组。
+// 此方法在无动画事务内切换 sourceLayer off/on（对应 kageroumado
+// "refreshConnection" 解法），强制捕获组重新关联，消除边缘黑框。
+- (void)lgNudgeCaptureReattach;
+
 @end
 
 // Call to notify that SpringBoard is in foreground (icons visible) or background (app in front)

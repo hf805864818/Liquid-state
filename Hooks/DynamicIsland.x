@@ -1439,9 +1439,16 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
     }
     if (glass.superview != host) {
         hostChanged = YES;
-        // [P0 修复] host 切换时保留滤镜，避免 render server 销毁捕获组
+        // [P0 修复] host 切换时保留滤镜，避免 render server 销毁捕获组。
+        // 同 window 内换 superview：didMoveToWindow(nil)/(win) 都不触发，
+        // reparenting 标记用不上；layer.filters 虽保留但捕获组未重关联到
+        // 新 superview 几何 → 边缘黑框闪。
         if (glass.superview) [glass lgSetReparenting:YES];
         [host insertSubview:glass aboveSubview:blur];
+        // 插入后立即 nudge 捕获组重关联：applyFilters early-return 之外强制
+        // 重新挂滤镜 + setNeedsDisplay，让 render server 按新 superview 几何
+        // 重采样，消除边缘黑框。
+        [glass lgNudgeCaptureReattach];
     } else {
         NSUInteger bi = [host.subviews indexOfObject:blur];
         NSUInteger gi = [host.subviews indexOfObject:glass];
@@ -1555,15 +1562,14 @@ static void LGDIDestroyExpandedGlass(NSString *reason) {
         return;
     }
     LGDIWithoutImplicitAnimations(^{
-        // [F2 修复] 同 teardown：removeFromSuperview 前清理 render server 捕获组
         if (glass) {
+            // [P0 修复] 先彻底清 render server 捕获组（layer.filters +
+            // _nativeBlurLayer + groupName 同帧原子销毁），再移除视图。
+            // 旧逻辑只清 layer.filters 漏清 _nativeBlurLayer（第二个独立
+            // CABackdropLayer 捕获组），残留 1-2 帧液态玻璃阴影 = 展开关闭时
+            // "延迟阴影"根因。
+            [glass lgTeardownCaptureGroup];
             [glass removeFromSuperview];
-            @try {
-                glass.layer.filters = @[];
-                [glass.layer setValue:nil forKey:@"groupName"];
-            } @catch (NSException *e) {
-                LGDILog(@"destroyExpanded KVC cleanup exception: %@", e.reason);
-            }
         }
         [blur removeFromSuperview];
     });
@@ -3389,6 +3395,12 @@ static void LGDIDoScheduledSync(void) {
         [sLGDIGlass removeFromSuperview];
         sLGDIHost = nil;
         LGDIInstallGlass(curtain);
+        // [P0 修复] host 切换后立即 nudge 捕获组重关联。
+        // 同 window 内换 superview：removeFromSuperview + insertSubview
+        // 都不触发 didMoveToWindow（window 没变），layer.filters 虽保留
+        // 但捕获组未重关联到新 host 几何 → 边缘黑框闪。nudge 软刷新
+        // 强制 applyFilters 重新评估 + setNeedsDisplay 重采样。
+        if (sLGDIGlass) [sLGDIGlass lgNudgeCaptureReattach];
         // [P2 修复] 立即同步扫近黑剥离，不等 dispatch_async。
         // 新 container 可能带近黑 backgroundColor，扫一次防黑底透出。
         if (sLGDIActive) {

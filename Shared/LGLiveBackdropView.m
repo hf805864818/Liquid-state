@@ -914,6 +914,53 @@ static void LGReportMemoryUsageIfNeeded(void) {
     _lgReparenting = reparenting;
 }
 
+// [P0 修复] 拆除玻璃时彻底清理 render server 捕获组。仅 removeFromSuperview +
+// layer.filters=@[] 不够：_nativeBlurLayer 是挂在 self.layer 上的第二个
+// CABackdropLayer 捕获组（独立 groupName 带 .nativeblur 后缀），不显式移除
+// 会在渲染服务器侧残留 1-2 帧液态玻璃阴影（展开关闭时的"延迟阴影"根因）。
+// 此方法在无动画事务内原子清理：layer.filters + _nativeBlurLayer + groupName，
+// 确保 render server 侧两个捕获组同帧销毁。
+- (void)lgTeardownCaptureGroup {
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    @try {
+        self.layer.filters = @[];
+        [self.layer setValue:nil forKey:@"groupName"];
+        if (_nativeBlurLayer) {
+            [_nativeBlurLayer removeFromSuperlayer];
+            _nativeBlurLayer = nil;
+            _nativeBlurRadius = 0.0;
+        }
+    } @catch (NSException *e) {
+        sblog("lgTeardownCaptureGroup exception: %s", e.reason.UTF8String);
+    }
+    _filterAttached = NO;
+    _backdropConfigured = NO;
+    _appliedScale = -1.0f;
+    [self.layer setNeedsDisplay];
+    [CATransaction commit];
+}
+
+// [P0 修复] 跨 window/superview 移动后强制 nudge 捕获组重关联。
+// 同 window 内换 superview 时 didMoveToWindow(nil)/(win) 都不触发，
+// reparenting 标记用不上；layer.filters 虽保留但捕获组未重关联到
+// 新 superview 几何 → 边缘黑框闪。
+// 此方法用软刷新（同 lgForceRefreshBackdrop 策略）：只重置 _appliedScale
+// 让 applyFilters 重新评估 scale + setNeedsDisplay 强制重采样，
+// 保持 _filterAttached=YES 不替换 layer.filters 数组（替换会产生 1-2 帧
+// 无滤镜黑边）。无动画事务，避免隐式动画叠加闪框。
+- (void)lgNudgeCaptureReattach {
+    _appliedScale = -1.0f;  // 强制 applyFilters 重新评估 scale，走 early-return 之外的更新路径
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [self applyFilters];
+    [self.layer setNeedsDisplay];
+    if (_nativeBlurLayer) {
+        [_nativeBlurLayer setNeedsDisplay];
+    }
+    [CATransaction commit];
+}
+
 - (void)setHidden:(BOOL)hidden {
     BOOL wasHidden = self.hidden;
     [super setHidden:hidden];
