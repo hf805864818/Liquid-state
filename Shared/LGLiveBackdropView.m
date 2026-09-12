@@ -778,6 +778,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
     BOOL             _parameterRefreshVariant;
     CGSize           _lastLayoutSize;       // layoutSubviews throttling
     CGFloat          _lastLayoutCornerRadius; // layoutSubviews throttling
+    BOOL             _lgReparentPending;   // [黑边修复 v7] host 切换重装待处理标记
     BOOL             _lgFilterTypeLocked; // [闪烁修复] 动画期间锁定滤镜类型，阻止数组替换
     CFTimeInterval   _lgFilterSettleUntil; // [黑边修复 v4] 解锁后稳定期：阻止滤镜类型替换
     NSInteger        _lgLastFilterStep;   // [F3 修复] 上次半径步进值，用于自适应稳定期判定
@@ -868,6 +869,12 @@ static void LGReportMemoryUsageIfNeeded(void) {
 - (void)didMoveToWindow {
     [super didMoveToWindow];
     if (!self.window) {
+        // [v7 P0] host 切换重装场景：跳过滤镜清空，保住 render server 捕获组，
+        // 避免清空→重建空窗期的黑边闪烁。
+        if ([self lgConsumeReparentingOffWindow]) {
+            if (sLGMotionSetup) LGRefreshMotionHighlights();
+            return;
+        }
         // 视图离开窗口: 停止 GPU 模糊渲染
         // CABackdropLayer 和 _nativeBlurLayer 在视图不可见时仍会
         // 在 render server 中持续合成, 浪费大量 GPU 资源
@@ -881,7 +888,20 @@ static void LGReportMemoryUsageIfNeeded(void) {
         if (sLGMotionSetup) LGRefreshMotionHighlights();
     } else {
         // 视图回到窗口: 重新挂载滤镜
-        [self applyFilters];
+        // [黑边修复 v7 P1] 重装场景：同步检查滤镜是否真正挂上，
+        // 避免 applyFilters early-return 后 0.2-1.0s 延迟刷新空窗期的黑边。
+        if ([self lgConsumeReparentingOnWindow]) {
+            [self applyFilters];
+            if (self.layer.filters.count == 0) {
+                // applyFilters early-return 路径（CAFilter 未注册等），强制走完整路径
+                _backdropConfigured = NO;
+                _filterAttached = NO;
+                [self applyFilters];
+            }
+            [self.layer setNeedsDisplay];
+        } else {
+            [self applyFilters];
+        }
         if (sLGMotionSetup) LGRefreshMotionHighlights();
     }
 }
@@ -1242,6 +1262,38 @@ static BOOL LGDIFilterBaseTypeEqual(NSString *a, NSString *b) {
 
     [self applyFilters];
     [layer setNeedsDisplay];
+}
+
+// [黑边修复 v7 P0] host 切换重装标记：
+// DynamicIsland host 切换会 removeFromSuperview（didMoveToWindow(nil)）再
+// insertSubview（didMoveToWindow(win)）。原实现在离窗时清空 layer.filters、
+// 拆掉 _nativeBlurLayer → render server 销毁捕获组；回窗时 applyFilters
+// 才重建 → 两次 move 之间有空窗帧，CABackdropLayer 采样为空 = 黑边闪 1-2 帧，
+// 弹簧弹跳 2-3 次 = 闪 2-3 下（正是"活动开始闪几下就停"的根因）。
+// 标记后：离窗跳过滤镜清空（保住捕获组），回窗走快速重采样而非全量重建。
+- (void)lgPrepareReparenting {
+    objc_setAssociatedObject(self, @selector(lgPrepareReparenting),
+                             (__bridge id)CFBooleanTrue, OBJC_ASSOCIATION_RETAIN);
+}
+
+// [v7 P1 修复] 标记分两阶段消费：
+// - 离窗（didMoveToWindow(nil)）消费"跳过滤镜清空"语义，置位 _lgReparentPending
+// - 回窗（didMoveToWindow(win)）消费 _lgReparentPending，走同步滤镜检查
+// 旧实现 lgConsumeReparenting 是单阶段，离窗消费后回窗拿不到标记。
+- (void)lgConsumeReparentingOffWindow {
+    BOOL marked = [objc_getAssociatedObject(self, @selector(lgPrepareReparenting))
+                 isEqual: (__bridge id)CFBooleanTrue];
+    if (marked) {
+        objc_setAssociatedObject(self, @selector(lgPrepareReparenting),
+                                 nil, OBJC_ASSOCIATION_RETAIN);
+        _lgReparentPending = YES;  // 回窗时走同步检查
+    }
+}
+
+- (BOOL)lgConsumeReparentingOnWindow {
+    if (!_lgReparentPending) return NO;
+    _lgReparentPending = NO;
+    return YES;
 }
 
 // [闪烁根因修复] 滤镜类型锁定/解锁机制

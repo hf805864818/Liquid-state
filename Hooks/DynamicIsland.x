@@ -3235,6 +3235,9 @@ static void LGDIDoScheduledSync(void) {
     if (host && host != sLGDIHost) {
         LGDILog(@"host changed: %@ -> %@, reinstalling",
                 NSStringFromClass(sLGDIHost.class), NSStringFromClass(host.class));
+        // [黑边修复 v7 P0] 标记即将重装：didMoveToWindow(nil) 时跳过滤镜清空，
+        // 保住 render server 捕获组；新 host 上的 applyFilters 走快速重采样。
+        [sLGDIGlass lgPrepareReparenting];
         [sLGDIGlass removeFromSuperview];
         sLGDIHost = nil;
         LGDIInstallGlass(curtain);

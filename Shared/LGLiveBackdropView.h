@@ -48,6 +48,11 @@ UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
 - (void)lgUnlockFilterType;  // 解锁：动画结束时调用
 - (BOOL)lgFilterTypeLocked;   // 查询：延迟回调判断是否需要避让
 
+// [黑边修复 v7] host 切换重装保护：
+// 标记后下次 didMoveToWindow(nil) 跳过滤镜清空（保住 render server 捕获组），
+// 避免清空→重建空窗期的黑边闪烁。非重装路径的正常离窗仍走原有清空逻辑。
+- (void)lgPrepareReparenting;   // 标记：即将 removeFromSuperview + insertSubview 到另一个 host
+
 // 为 native blur 层设置形状 mask（用于 Clock 文字形状裁剪）
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer;
 
