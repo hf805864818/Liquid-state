@@ -84,6 +84,11 @@ static void LGDILog(NSString *fmt, ...) {
 @end
 @interface SBSystemApertureWindow : UIWindow
 @end
+// [锁屏修复] 锁屏/封面页控制器，用于检测锁屏状态
+@interface SBCoverSheetViewController : UIViewController
+@end
+@interface SBDashBoardViewController : UIViewController
+@end
 
 #pragma mark - Constants / association keys
 
@@ -163,6 +168,7 @@ static __weak UIView            *sLGDICurtain;   // 当前幕布（唯一）
 static __weak UIView            *sLGDIHost;      // 玻璃挂载容器
 static __weak LGLiveBackdropView *sLGDIGlass;    // 当前玻璃（compact pill）
 static BOOL                      sLGDIActive;    // 已激活液态化（开关开 && 当前 compact/expanded/detached）
+static BOOL                      sLGDIOnLockScreen; // [锁屏修复] 锁屏/封面页可见时不渲染液态，省电降温
 
 // [阶段4] 展开态独立玻璃（对标 Mango expandedLiquidGlassView + blurBackgroundView）：
 // 展开卡片不复用 pill 玻璃，而在展开内容所在窗口创建第二块玻璃，
@@ -1399,6 +1405,12 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
         glass.layer.masksToBounds = YES;
         sLGDIExpGlass = glass;
         sLGDIExpRetries = 0;
+        // [黑边修复 v5] 展开玻璃在驱动运行期间创建，必须立即锁定滤镜，
+        // 否则后续每帧 layoutSubviews → applyFilters 会更新 scale → 闪烁。
+        // StartDriverReal 只锁定当时已存在的 glass，新创建的展开玻璃不会被自动锁定。
+        if (sLGDILink && !sLGDILink.paused) {
+            [glass lgLockFilterType];
+        }
         LGDILog(@"expanded: independent glass created provider=%@ frame=%@",
                 provider.identifier, NSStringFromCGRect(frame));
         // 首捕可能为空（内容/背景未就绪），多时间点触发软刷新
@@ -2851,6 +2863,11 @@ static void LGDIInstallGlass(UIView *curtain) {
             }
             sLGDIGlass = glass;
         }
+        // [黑边修复 v5] 如果驱动正在运行（新活动在旧活动动画期间启动），
+        // 立即锁定新创建的 pill 玻璃，防止 scale 更新导致闪烁。
+        if (sLGDILink && !sLGDILink.paused) {
+            [glass lgLockFilterType];
+        }
         glass.layer.cornerCurve   = kCACornerCurveContinuous;
         glass.layer.masksToBounds = YES;
         [host insertSubview:glass atIndex:0];
@@ -3052,6 +3069,13 @@ static BOOL LGDIFeatureEnabled(void) {
     return lgHostEnabled(kLGDIFilterPrefix);
 }
 
+// [锁屏修复] 锁屏/封面页可见时不渲染液态：省电、降温、避免无意义渲染。
+// 灵动岛在锁屏下仍显示活动内容，但用户看不到液态效果（被封面页遮挡），
+// CABackdropLayer 仍在后台持续采样 = 纯浪费 GPU。锁屏时直接拆除。
+static BOOL LGDIShouldBeActive(void) {
+    return LGDIFeatureEnabled() && !sLGDIOnLockScreen;
+}
+
 static BOOL LGDICurtainReady(UIView *curtain) {
     return curtain && curtain.window
         && LGDIInApertureWindow(curtain)
@@ -3060,6 +3084,16 @@ static BOOL LGDICurtainReady(UIView *curtain) {
 
 // 点亮/刷新液态化。curtain 为 nil 时自动在窗口中查找。可重入、幂等。
 static void LGDIEngage(UIView *curtain) {
+    // [锁屏修复] 锁屏时不点亮，如果已点亮则拆除
+    if (sLGDIOnLockScreen) {
+        if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"lock screen appeared");
+            sLGDIActive = NO;
+            LGDITeardown(NO);  // 不恢复 curtain（锁屏时系统自己管）
+            LGDILog(@"disengage: lock screen active, liquid glass torn down");
+        }
+        return;
+    }
     if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
             LGDICancelDeferredTeardown(@"feature turned off");
@@ -3120,6 +3154,16 @@ static void LGDIEngage(UIView *curtain) {
 
 static void LGDIDoScheduledSync(void) {
     sLGDISyncQueued = NO;
+    // [锁屏修复] 锁屏时不点亮，已点亮则拆除
+    if (sLGDIOnLockScreen) {
+        if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"lock screen (sync)");
+            sLGDIActive = NO;
+            LGDITeardown(NO);
+            LGDILog(@"sync: lock screen active, torn down");
+        }
+        return;
+    }
     if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
             LGDICancelDeferredTeardown(@"feature disabled (sync)");
@@ -3525,6 +3569,75 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 %end
 
 // =============================================================================
+//  [锁屏修复] Hook: SBCoverSheetViewController / SBDashBoardViewController
+//  检测锁屏/封面页可见性，锁屏时拆除液态玻璃，解锁后重新点亮。
+//  省电降温：CABackdropLayer 在锁屏下持续采样 = 纯浪费 GPU。
+// =============================================================================
+%group LGDILockScreenHook
+
+%hook SBCoverSheetViewController
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (!sLGDIOnLockScreen) {
+        sLGDIOnLockScreen = YES;
+        LGDILog(@"lock screen: CoverSheet viewWillAppear");
+        if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"lock screen");
+            sLGDIActive = NO;
+            LGDITeardown(NO);
+        }
+    }
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig;
+    if (sLGDIOnLockScreen) {
+        sLGDIOnLockScreen = NO;
+        LGDILog(@"lock screen: CoverSheet viewDidDisappear");
+        // 解锁后延迟 reconcile，等系统布局稳定后再重新点亮
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            LGDIReconcile();
+        });
+    }
+}
+
+%end
+
+%hook SBDashBoardViewController
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (!sLGDIOnLockScreen) {
+        sLGDIOnLockScreen = YES;
+        LGDILog(@"lock screen: DashBoard viewWillAppear");
+        if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"lock screen (dashboard)");
+            sLGDIActive = NO;
+            LGDITeardown(NO);
+        }
+    }
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig;
+    if (sLGDIOnLockScreen) {
+        sLGDIOnLockScreen = NO;
+        LGDILog(@"lock screen: DashBoard viewDidDisappear");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            LGDIReconcile();
+        });
+    }
+}
+
+%end
+%end
+
+// =============================================================================
 //  Constructor
 // =============================================================================
 
@@ -3569,6 +3682,10 @@ static void LGDynamicIslandInit(void) {
     }
     if (objc_getClass("SBSystemApertureWindow")) {
         %init(LGDIApertureWindowHook);
+    }
+    // [锁屏修复] 注册锁屏/封面页检测 hook
+    if (objc_getClass("SBCoverSheetViewController") || objc_getClass("SBDashBoardViewController")) {
+        %init(LGDILockScreenHook);
     }
 
     // 初始一律视为 inert：空闲小药丸不处理，等系统发出 compact/expanded

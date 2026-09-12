@@ -1074,6 +1074,18 @@ static void LGReportMemoryUsageIfNeeded(void) {
             _backdropConfigured = YES;
         }
 
+        // [黑边修复 v5] 动画/稳定期内完全跳过 scale、nativeBlur、filter 更新。
+        // 此前 v1-v4 只阻止了 filter type 替换（layer.filters 数组替换），
+        // 但 scale 每帧随 bounds 变化而更新 → CABackdropLayer 在 render server
+        // 中以新 scale 重新捕获 → 新捕获帧为空 = 黑边闪烁。
+        // 这才是长岛闪 3 下、展开岛闪 2 下的真正根因。
+        //
+        // 锁定期内只保留 backdrop 基础配置（groupName 等一次性设置），
+        // 不触碰任何会触发 render server 重新捕获的属性。
+        if (_lgFilterTypeLocked || CACurrentMediaTime() < _lgFilterSettleUntil) {
+            return;
+        }
+
         CGFloat wantScale;
         // 充电/热状态时应用额外的降采样，减少 GPU 模糊计算量
         CGFloat thermalScale = LGThermalScaleFactor();
@@ -1109,19 +1121,6 @@ static void LGReportMemoryUsageIfNeeded(void) {
             NSString *type = nil;
             @try { type = [existing.firstObject valueForKey:@"type"]; } @catch (...) {}
             if ([type isEqualToString:wantType]) {
-                return;
-            }
-            // [闪烁根因修复] 类型变化时如果滤镜已锁定（动画进行中），
-            // 不执行 layer.filters 数组替换——替换会导致 render server
-            // 短暂无滤镜 = 灰色（小岛）/黑边（展开岛）闪烁。
-            // 保持旧类型渲染（尺寸略有偏差但不会闪），动画结束后
-            // 解锁时下一帧 applyFilters 会用最终尺寸一次性切换到正确类型。
-            // [黑边修复 v4] 解锁后 0.5s 稳定期内也阻止类型替换：
-            // 弹簧动画结束后系统仍有残余布局更新（layoutSubviews 回调），
-            // 尺寸/圆角微变 → 动态半径步进跨步 → layer.filters 替换 →
-            // render server 重新初始化滤镜管线 → 黑边闪烁 2-3 次。
-            // 稳定期后系统布局完全收敛，步进不再变化，安全切换。
-            if (_lgFilterTypeLocked || CACurrentMediaTime() < _lgFilterSettleUntil) {
                 return;
             }
         }
