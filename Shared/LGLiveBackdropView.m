@@ -779,6 +779,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
     CGSize           _lastLayoutSize;       // layoutSubviews throttling
     CGFloat          _lastLayoutCornerRadius; // layoutSubviews throttling
     BOOL             _lgFilterTypeLocked; // [闪烁修复] 动画期间锁定滤镜类型，阻止数组替换
+    CFTimeInterval   _lgFilterSettleUntil; // [黑边修复 v4] 解锁后稳定期：阻止滤镜类型替换
 }
 
 - (NSString *)lgEffectiveFilterType {
@@ -1115,7 +1116,12 @@ static void LGReportMemoryUsageIfNeeded(void) {
             // 短暂无滤镜 = 灰色（小岛）/黑边（展开岛）闪烁。
             // 保持旧类型渲染（尺寸略有偏差但不会闪），动画结束后
             // 解锁时下一帧 applyFilters 会用最终尺寸一次性切换到正确类型。
-            if (_lgFilterTypeLocked) {
+            // [黑边修复 v4] 解锁后 0.5s 稳定期内也阻止类型替换：
+            // 弹簧动画结束后系统仍有残余布局更新（layoutSubviews 回调），
+            // 尺寸/圆角微变 → 动态半径步进跨步 → layer.filters 替换 →
+            // render server 重新初始化滤镜管线 → 黑边闪烁 2-3 次。
+            // 稳定期后系统布局完全收敛，步进不再变化，安全切换。
+            if (_lgFilterTypeLocked || CACurrentMediaTime() < _lgFilterSettleUntil) {
                 return;
             }
         }
@@ -1161,25 +1167,21 @@ static void LGReportMemoryUsageIfNeeded(void) {
         [self applyFilters];
         return;
     }
-    // [黑边修复 v3] 不再清空 layer.filters = @[]。
+    // [黑边修复 v4] 软刷新：不再改变 groupName、不再重置 _filterAttached/
+    // _backdropConfigured。只重置 scale 触发重新评估，让 applyFilters 走
+    // early return（类型相同时不替换 layer.filters）。
     //
-    // 旧逻辑：filters=@[] → commit → applyFilters → filters=@[new] → commit
-    // 两次 render server 提交之间有 1+ 帧无滤镜 = 黑边闪一次。
-    // 每个延迟回调触发一次 lgForceRefreshBackdrop = 一次闪烁。
-    // 4 个延迟回调堆积 = 3-4 次闪烁（用户看到 3 次快闪）。
+    // 旧逻辑（v3）虽然不清空 layer.filters=@[]，但仍改 groupName + 重置
+    // _filterAttached=NO + _backdropConfigured=NO → applyFilters 重新设置
+    // groupName 到 layer → render server 销毁旧捕获组、建新组 → 新组首帧
+    // 为空 = 黑边闪一次。每个延迟回调触发一次 = 一次闪烁。
     //
-    // 新逻辑：只重置内部状态 + 换 groupName（render server 据此销毁旧
-    // 捕获组、建新组），让 applyFilters 在单次 CATransaction 中直接替换
-    // 滤镜（filters=@[old]→@[new]，render server 原子处理，无空窗）。
-    NSString *newGroup = [self lgUniqueGroupNameWithTag:_lgGroupTag ?: @"dylv.liquidglass"];
-    _lgGroupName = newGroup;
-    _filterAttached = NO;
-    _backdropConfigured = NO;
+    // 新逻辑：保持 groupName 不变，保持 _filterAttached=YES，只重置 scale
+    // 让 applyFilters 更新 capture quality。render server 保持现有捕获组
+    // 不销毁，[layer setNeedsDisplay] 触发重新采样已就绪的窗外内容。
     _appliedScale = -1.0f;
-    // 不清空 layer.filters，让 applyFilters 直接替换
 
     [self applyFilters];
-    [layer setNeedsLayout];
     [layer setNeedsDisplay];
 }
 
@@ -1194,13 +1196,24 @@ static void LGReportMemoryUsageIfNeeded(void) {
 - (void)lgUnlockFilterType {
     if (!_lgFilterTypeLocked) return;
     _lgFilterTypeLocked = NO;
-    // [黑边修复 v2] 不再作废 _lastLayoutSize：旧逻辑强制下一帧 applyFilters
-    // 重评估滤镜类型 → 如果尺寸/圆角微变 → layer.filters 数组替换 →
-    // render server 短暂无滤镜 → 黑边闪烁 2-3 次（对应弹跳振荡）。
-    // 新逻辑：保持 _lastLayoutSize 不变，applyFilters 走 early return。
-    // 如果最终尺寸确实变了，下一帧 layoutSubviews 会自然触发 applyFilters。
-    // 仅在需要强制刷新时通过 lgForceRefreshBackdrop 显式调用。
+    // [黑边修复 v4] 解锁后设置 0.5s 稳定期：此期间 applyFilters 仍跳过
+    // 滤镜类型替换（但允许 scale 更新）。弹簧动画结束后系统仍有残余
+    // layoutSubviews 回调，尺寸/圆角微变导致动态半径步进跨步 →
+    // layer.filters 替换 → render server 重新初始化 → 黑边闪烁。
+    // 0.5s 后系统布局完全收敛，安全切换滤镜类型。
+    _lgFilterSettleUntil = CACurrentMediaTime() + 0.5;
     [self setNeedsLayout];
+    // [黑边修复 v4] 稳定期结束后主动重评估：layoutSubviews 可能因
+    // 尺寸未变而 early return，不会触发 applyFilters。稳定期结束后
+    // 主动调用一次，确保用最终尺寸切换到正确的滤镜类型（如有变化）。
+    __weak LGLiveBackdropView *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                         (int64_t)(0.55 * NSEC_PER_SEC)),
+           dispatch_get_main_queue(), ^{
+        LGLiveBackdropView *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf applyFilters];
+    });
 }
 
 - (BOOL)lgFilterTypeLocked {
