@@ -1273,21 +1273,23 @@ static BOOL LGDIFilterBaseTypeEqual(NSString *a, NSString *b) {
 // 标记后：离窗跳过滤镜清空（保住捕获组），回窗走快速重采样而非全量重建。
 - (void)lgPrepareReparenting {
     objc_setAssociatedObject(self, @selector(lgPrepareReparenting),
-                             (__bridge id)CFBooleanTrue, OBJC_ASSOCIATION_RETAIN);
+                             (__bridge id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN);
 }
 
 // [v7 P1 修复] 标记分两阶段消费：
 // - 离窗（didMoveToWindow(nil)）消费"跳过滤镜清空"语义，置位 _lgReparentPending
 // - 回窗（didMoveToWindow(win)）消费 _lgReparentPending，走同步滤镜检查
 // 旧实现 lgConsumeReparenting 是单阶段，离窗消费后回窗拿不到标记。
-- (void)lgConsumeReparentingOffWindow {
+// 返回是否处于"重装待处理"状态（同时消费离窗标记、置位回窗标记）。
+- (BOOL)lgConsumeReparentingOffWindow {
     BOOL marked = [objc_getAssociatedObject(self, @selector(lgPrepareReparenting))
-                 isEqual: (__bridge id)CFBooleanTrue];
+                 isEqual: (__bridge id)kCFBooleanTrue];
     if (marked) {
         objc_setAssociatedObject(self, @selector(lgPrepareReparenting),
                                  nil, OBJC_ASSOCIATION_RETAIN);
         _lgReparentPending = YES;  // 回窗时走同步检查
     }
+    return marked;
 }
 
 - (BOOL)lgConsumeReparentingOnWindow {
