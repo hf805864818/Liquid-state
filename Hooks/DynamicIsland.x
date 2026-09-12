@@ -182,6 +182,14 @@ static CFTimeInterval            sLGDIMinDriverEnd;  // 几何稳定停机的“
 static BOOL                      sLGDITeardownPending;
 static NSUInteger                sLGDITeardownGeneration;
 
+// [闪烁修复] 拆除后冷却期：防止 hook 在拆除完成后立即用过期 sLGDIMode
+// 重新点亮，导致玻璃反复装到默认小药丸上。冷却期内 !sLGDIActive 时不 Engage。
+static CFTimeInterval            sLGDITeardownCooldownUntil;
+
+// [设计修复] 中心遮罩层：compact 药丸仅左右两端显示液态效果，
+// 中心区域用深色层覆盖，保持系统原样的黑色中心条外观。
+static CALayer                  *sLGDICenterCover;
+
 // element(weak) -> 当前 layoutMode。仅 compact/expanded 视为“有活跃内容”
 static NSMapTable<id, NSNumber *> *sLGDIElementModes;
 
@@ -427,14 +435,14 @@ static BOOL LGDIHasActiveLayout(void) {
 static BOOL LGDILiquidSuppressionActive(void) {
     // 延迟拆除窗口内（活动刚退出、玻璃正随收缩弹簧 morph 回小药丸）仍视为
     // 压制活跃：防止系统 setHidden:NO 穿透让黑色小药丸提前露出与玻璃重叠。
-    // [闪烁根因修复] 增加 sLGDIActive 检查：弹簧途中 element 表会短暂空白
-    // （旧 element 释放、新 element 尚未注册），此时 LGDIHasActiveLayout()
-    // 返回 NO，导致 LGDIShouldForceHidden 返回 NO → 系统 setHidden:NO 穿透
-    // → 黑/灰边框闪现 2-3 次（对应弹簧弹跳振荡）。
-    // sLGDIActive 在 LGDIEngage 时置 YES、在 LGDITeardown 时置 NO，
-    // 期间即使 element 表短暂空白，只要我们仍然 active，就继续压制。
+    // [闪烁根因修复 v2] 移除 || sLGDIActive 穿透：
+    //   sLGDIActive 曾用于弹簧途中 element 表短暂空白时保持压制，但这导致
+    //   拆除完成后 hook 仍能通过该标志间接维持压制 → 与过期 sLGDIMode 配合
+    //   导致玻璃反复装到默认小药丸上。现在 sLGDITeardownPending 已覆盖
+    //   拆除过渡窗口，compact↔expanded 弹跳期间 element 不会释放（同一
+    //   element 切换模式），不需要额外 sLGDIActive 穿透。
     return LGDIFeatureEnabled()
-        && (LGDIHasActiveLayout() || sLGDITeardownPending || sLGDIActive);
+        && (LGDIHasActiveLayout() || sLGDITeardownPending);
 }
 
 // =============================================================================
@@ -1528,6 +1536,11 @@ static void LGDIDestroyExpandedGlass(NSString *reason) {
         sLGDIGlass.hidden = NO;
         sLGDIPillHiddenForExpanded = NO;
     }
+    // [设计修复] 回到 compact 时恢复中心遮罩可见性：展开态将其隐藏，
+    // 下一帧几何同步才会重新设为 NO，但中间可能有 1 帧完整液态效果透出。
+    if (sLGDICenterCover && sLGDICenterCover.hidden) {
+        sLGDICenterCover.hidden = NO;
+    }
     LGDILog(@"expanded glass destroyed: %@", reason);
 }
 
@@ -1555,6 +1568,10 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
 
     if (isExpanded) {
         sLGDIExpCompactSince = 0;  // 在展开态 → 重置 compact 计时
+        // [设计修复] 展开态不需要中心遮罩（展开玻璃独立管理）
+        if (sLGDICenterCover && !sLGDICenterCover.hidden) {
+            sLGDICenterCover.hidden = YES;
+        }
         if (LGDISyncExpandedGeometry()) return;
     } else if (sLGDIExpGlass || sLGDIExpBlur) {
         // [闪烁根因修复] 弹簧弹跳会快速 expanded→compact→expanded→compact 循环。
@@ -1630,6 +1647,26 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
     }
     if (fabs(glass.layer.cornerRadius - targetRadius) > 0.25) {
         glass.layer.cornerRadius = targetRadius;
+    }
+    // [设计修复] 同步中心遮罩层 frame：覆盖药丸中心区域，
+    // 仅左右两端（各占 height/2 宽度）显示液态效果。
+    // 中心遮罩 frame = (endWidth, 0, centerWidth, height)
+    if (sLGDICenterCover) {
+        CGFloat pillH = targetFrame.size.height;
+        CGFloat endW = pillH / 2.0;
+        CGFloat centerW = targetFrame.size.width - 2.0 * endW;
+        if (centerW > 1.0) {
+            CGRect coverFrame = CGRectMake(endW, 0, centerW, pillH);
+            if (!CGRectEqualToRect(sLGDICenterCover.frame, coverFrame)) {
+                sLGDICenterCover.frame = coverFrame;
+            }
+            sLGDICenterCover.hidden = NO;
+            // 中心区域是直边矩形，不需要圆角——药丸圆角在左右两端，
+            // 中心遮罩从 endW=pillH/2 开始，已在圆弧之后。
+        } else {
+            // 药丸太窄（接近正方形）时无需中心遮罩
+            sLGDICenterCover.hidden = YES;
+        }
     }
     // cornerCurve / masksToBounds 安装时已固定，逐帧同步不再重复写入
     [CATransaction commit];
@@ -2783,6 +2820,18 @@ static void LGDIInstallGlass(UIView *curtain) {
         glass.layer.cornerCurve   = kCACornerCurveContinuous;
         glass.layer.masksToBounds = YES;
         [host insertSubview:glass atIndex:0];
+        // [设计修复] 添加中心遮罩层：compact 药丸仅左右两端显示液态效果。
+        // 中心区域用深色层覆盖，保持系统原样的黑色中心条外观。
+        // 遮罩层位于玻璃上方、内容下方（insertSubview:aboveSubview:glass）。
+        if (!sLGDICenterCover) {
+            sLGDICenterCover = [CALayer layer];
+            sLGDICenterCover.backgroundColor = [UIColor.blackColor CGColor];
+            sLGDICenterCover.name = @"lgdi.centerCover";
+            LGDILog(@"center cover layer created for left/right-only liquid effect");
+        }
+        if (!sLGDICenterCover.superlayer) {
+            [glass.layer addSublayer:sLGDICenterCover];
+        }
         // [阶段4] 换宿主重装时若展开玻璃仍在管，pill 继续让位，避免双玻璃同显
         if (sLGDIPillHiddenForExpanded) glass.hidden = YES;
         LGDILog(@"glass installed in host=%@ frame=%@",
@@ -2859,6 +2908,11 @@ static void LGDITeardown(BOOL featureDisabled) {
             [glass removeFromSuperview];
             sLGDIGlass = nil;
         }
+        // [设计修复] 清理中心遮罩层：从 glass.layer 移除并置空
+        if (sLGDICenterCover) {
+            [sLGDICenterCover removeFromSuperlayer];
+            sLGDICenterCover = nil;
+        }
         // 恢复所有被压制的装饰视图（可能分布在多个嵌套容器中）
         LGDIRestoreAllSuppressed();
 
@@ -2901,6 +2955,9 @@ static void LGDICancelDeferredTeardown(NSString *reason) {
     if (!sLGDITeardownPending) return;
     sLGDITeardownPending = NO;
     sLGDITeardownGeneration++;
+    // [闪烁修复] 防御性清除冷却期：正常流程中冷却期只在拆除回调中设置，
+    // 取消时尚未设置。但防御性清除以应对可能的边缘竞态。
+    sLGDITeardownCooldownUntil = 0;
     LGDILog(@"deferred teardown cancelled: %@", reason);
 }
 
@@ -2924,24 +2981,21 @@ static void LGDIScheduleDeferredTeardown(void) {
         // 兜底：事件先于取消逻辑到达时，若布局已重新活跃则不拆
         if (LGDIFeatureEnabled() && LGDIHasActiveLayout()) {
             LGDILog(@"deferred teardown skipped — layout active again");
-            return;
-        }
-        // [设计调整] 判断拆除后是否会立即重新点亮：
-        // 旧逻辑用「curtain 在屏」判断，但 inert 模式 curtain 本来就在屏
-        // （默认小药丸），会导致无限延迟拆除循环。
-        // 新逻辑：用状态机模式判断——如果模式仍是 compact/expanded/detached，
-        // 说明 LGDIEngage 会立即重新点亮 → 不拆（避免闪烁循环）；
-        // 如果模式已降到 inert/minimal → 不会重亮 → 可以拆。
-        DIPillLayoutMode mode = [DIPillStateMachine shared].currentMode;
-        if (LGDIFeatureEnabled() && mode >= DIPillLayoutModeCompact) {
-            LGDILog(@"deferred teardown skipped — compact/expanded mode still active");
-            // 重新排队一次延迟拆除检查（可能很快回到 inert）
+            // [闪烁修复 v2] 重新排队延迟拆除：element 仍存活但可能即将释放。
+            // 旧逻辑用 sLGDIMode 判断是否重新排队，但该值会过期。
+            // 新逻辑用 element 表判断：表非空 = 仍活跃 = 不拆但继续轮询。
+            // element 释放后 hook 事件会触发 LGDIScheduleSync → 新一轮拆除；
+            // 但若系统恰好不触发 hook（边缘场景），这里提供安全网。
             LGDIScheduleDeferredTeardown();
             return;
         }
         sLGDIActive = NO;
+        // [闪烁修复] 设置 1.0s 冷却期：拆除后 hook 可能因 curtain
+        // layoutSubviews 立即触发 LGDIScheduleSync → LGDIEngage。
+        // 冷却期内 LGDIEngage 不点亮，防止用过期 sLGDIMode 重装玻璃。
+        sLGDITeardownCooldownUntil = CACurrentMediaTime() + 1.0;
         LGDITeardown(YES);
-        LGDILog(@"deferred teardown executed — stock pill restored (hard cut, no fade)");
+        LGDILog(@"deferred teardown executed — stock pill restored (cooldown 1.0s)");
     });
 }
 
@@ -2980,45 +3034,40 @@ static void LGDIEngage(UIView *curtain) {
         }
         return;
     }
-    // [P4 修复] curtain 在屏即点亮：不再硬门控在 LGDIHasActiveLayout()。
-    // 通知到达时 setLayoutMode:reason: 回调可能延迟到达，但 curtain 已在屏
-    // 且尺寸合理本身就是有活动的信号。如果 element 表还空但 curtain 就绪，
-    // 先点亮——element 表后续补齐只是辅助确认。
+    // [闪烁根因修复 v2] 不再用 sLGDIMode 作为回退点亮信号。
+    // 旧逻辑：LGDIHasActiveLayout()=NO 时，若 sLGDIMode 仍为 compact/expanded
+    // 则认为 element 表延迟填充 → 点亮。但活动结束时系统不回调
+    // setLayoutMode:inert，sLGDIMode 过期停留在 compact → 误点亮 → 玻璃
+    // 反复装到默认小药丸上 → 滤镜类型切换闪烁。
+    // 新逻辑：LGDIHasActiveLayout() 基于 element 弱引用表实时聚合，element
+    // 释放后自动回到 inert。setLayoutMode: hook 在 %orig 之前注册 element，
+    // 所以新活动启动时 element 表已填充，不存在「延迟填充」场景。
+    // 若 LGDIHasActiveLayout()=NO，一律不点亮；有残留玻璃则延迟拆除。
     if (!curtain) curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     BOOL curtainReady = LGDICurtainReady(curtain);
 
     if (!LGDIHasActiveLayout()) {
-        if (curtainReady) {
-            // [设计调整] inert/minimal 模式保持系统原样，不做液态效果。
-            // 区分两种情况：
-            //   1. 状态机已到 compact/expanded：element 表延迟填充 → 点亮（原 P4 修复路径）
-            //   2. 状态机仍在 inert/minimal：真正的默认小灵动岛 → 不点亮
-            DIPillLayoutMode mode = [DIPillStateMachine shared].currentMode;
-            if (mode >= DIPillLayoutModeCompact) {
-                LGDILog(@"engage: compact/expanded mode, element table delayed — engaging anyway");
-                // 落入下方正常点亮路径（不 return）
-            } else {
-                // inert/minimal：保持系统原样。如果此前有液态（拆除过渡期），
-                // 走延迟拆除逻辑。
-                if (sLGDIActive || sLGDIGlass) {
-                    LGDIScheduleDeferredTeardown();
-                    LGDILog(@"disengage: inert/minimal island — deferring liquid removal");
-                }
-                return;
-            }
-        } else {
-            // curtain 也没就绪：如果有残留玻璃/活动，延迟拆除
-            if (sLGDIActive || sLGDIGlass) {
-                LGDIScheduleDeferredTeardown();
-                LGDILog(@"disengage: idle/inert island — deferring liquid removal");
-            }
+        // [闪烁修复] 检查拆除冷却期：刚拆除完成时 hook 可能立即触发，
+        // 此时 sLGDIMode 可能仍过期为 compact。冷却期内直接返回，
+        // 不点亮也不延迟拆除（拆除已完成，无需再拆）。
+        BOOL inCooldown = (sLGDITeardownCooldownUntil > 0
+                           && CACurrentMediaTime() < sLGDITeardownCooldownUntil);
+        if (inCooldown) {
+            LGDILog(@"engage: in teardown cooldown, skipping (stale mode protection)");
             return;
         }
+        if (sLGDIActive || sLGDIGlass) {
+            LGDIScheduleDeferredTeardown();
+            LGDILog(@"disengage: no active layout — deferring liquid removal");
+        }
+        return;
     }
     if (!curtainReady) return;   // 布局未完成/已下屏：等下一个事件重试
 
     // 活动在延迟拆除窗口内复活：取消拆除，无缝继续液态态
     LGDICancelDeferredTeardown(@"layout active again");
+    // [闪烁修复] 新活动启动，清除冷却期
+    sLGDITeardownCooldownUntil = 0;
 
     if (!sLGDIActive) {
         sLGDIActive = YES;
@@ -3045,17 +3094,21 @@ static void LGDIDoScheduledSync(void) {
         return;
     }
 
-    // [P4 修复] 同 LGDIEngage：element 表可能延迟填充，
-    // 但 curtain 在屏就应点亮。先查 curtain，再判 element 表。
+    // [闪烁修复 v2] 同 LGDIEngage：不再用过期 sLGDIMode 回退点亮。
+    // element 表实时聚合是最可靠的信号。
     UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
     BOOL curtainReady = LGDICurtainReady(curtain);
 
     if (!LGDIHasActiveLayout()) {
-        if (curtainReady && !sLGDIActive) {
-            // curtain 就绪但 element 表空：点亮（LGDIEngage 内部也会走这条路径）
-            LGDIEngage(curtain);
+        // [闪烁修复] 拆除冷却期检查：防止拆除后 hook 立即重装玻璃
+        BOOL inCooldown = (sLGDITeardownCooldownUntil > 0
+                           && CACurrentMediaTime() < sLGDITeardownCooldownUntil);
+        if (inCooldown && !sLGDIActive) {
+            LGDILog(@"scheduled sync: in teardown cooldown, skipping engage");
             return;
         }
+        // [闪烁修复 v2] 不再调用 LGDIEngage 回退路径（它会重复检查已知条件）。
+        // 直接处理：有残留玻璃或激活态 → 延迟拆除；否则无事可做。
         if (sLGDIActive || sLGDIGlass) {
             LGDIScheduleDeferredTeardown();
             LGDILog(@"scheduled sync: idle layout — defer liquid removal");
@@ -3066,7 +3119,7 @@ static void LGDIDoScheduledSync(void) {
     // 延迟拆除窗口内活动复活：取消拆除，继续液态态
     LGDICancelDeferredTeardown(@"active layout (sync)");
 
-    if (!curtain || !curtain.window) return;
+    if (!curtainReady) return;  // curtain 未就绪：等下一个事件重试
 
     // 尚未激活：以在屏幕布为信号点亮（此时必为 compact/expanded）
     if (!sLGDIActive) {
