@@ -1528,7 +1528,16 @@ static void LGDIDestroyExpandedGlass(NSString *reason) {
         return;
     }
     LGDIWithoutImplicitAnimations(^{
-        [glass removeFromSuperview];
+        // [F2 修复] 同 teardown：removeFromSuperview 前清理 render server 捕获组
+        if (glass) {
+            [glass removeFromSuperview];
+            @try {
+                glass.layer.filters = @[];
+                [glass.layer setValue:nil forKey:@"groupName"];
+            } @catch (NSException *e) {
+                LGDILog(@"destroyExpanded KVC cleanup exception: %@", e.reason);
+            }
+        }
         [blur removeFromSuperview];
     });
     sLGDIExpGlass = nil;
@@ -1581,6 +1590,12 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
             sLGDICenterCover.hidden = YES;
         }
         if (LGDISyncExpandedGeometry()) return;
+        // [F1 修复] 展开态激活但展开玻璃尚未就绪时，如果展开玻璃已创建
+        // （sLGDIExpGlass 存在），跳过 pill 玻璃几何同步：pill 已隐藏，
+        // 更新其 frame/cornerRadius 会触发 applyFilters → layer.filters 替换
+        // → render server 重建捕获组 → 闪烁。只有在展开玻璃完全不存在时
+        // （首次展开，尚未创建）才回退到 pill 追踪。
+        if (sLGDIExpGlass) return;
     } else if (sLGDIExpGlass || sLGDIExpBlur) {
         // [闪烁根因修复] 弹簧弹跳会快速 expanded→compact→expanded→compact 循环。
         // 旧逻辑每次 compact 都立即 hide 展开玻璃 + show pill 玻璃，每次 expanded
@@ -1895,9 +1910,14 @@ void LGDIEnsureWallpaperSurface(CGSize size) {
 
     if (sLGDIWallpaperSurface && w == sLGDIWallpaperW && h == sLGDIWallpaperH) return;
 
+    // [R1 修复] 重建前先写入 surfaceID=0 暂停标记，通知 backboardd
+    // 停止采样旧 surface。避免重建期间 backboardd 仍读取旧 surface →
+    // 尺寸不匹配或读取已释放内存。
     if (sLGDIWallpaperSurface) {
+        LGDIWriteWallpaperSurfaceInfo(0, 0, 0);
         CFRelease(sLGDIWallpaperSurface);
         sLGDIWallpaperSurface = NULL;
+        sLGDIWallpaperSurfaceID = 0;
     }
 
     NSDictionary *options = @{
@@ -1981,15 +2001,30 @@ void LGDITeardownWallpaperSurface(void) {
         dispatch_source_cancel(sLGDIWallpaperTimer);
         sLGDIWallpaperTimer = nil;
     }
-    if (sLGDIWallpaperSurface) {
-        CFRelease(sLGDIWallpaperSurface);
-        sLGDIWallpaperSurface = NULL;
-    }
-    sLGDIWallpaperSurfaceID = 0;
-    sLGDIWallpaperW = 0;
-    sLGDIWallpaperH = 0;
-    // 清空文件中的 surface ID 并广播通知
+    // [L2 修复] 先写入 surfaceID=0 到 plist 并广播通知，让 backboardd
+    // 停止读取当前 IOSurface，然后再销毁。避免 backboardd 在 surface
+    // 已释放后仍尝试访问 → 读取垃圾数据或 render server 异常。
     LGDIWriteWallpaperSurfaceInfo(0, 0, 0);
+
+    if (sLGDIWallpaperSurface) {
+        // 延迟 50ms 销毁 IOSurface，给 backboardd 一个运行周期处理无效标记
+        IOSurfaceRef surfaceToRelease = sLGDIWallpaperSurface;
+        sLGDIWallpaperSurface = NULL;
+        uint32_t oldID = sLGDIWallpaperSurfaceID;
+        sLGDIWallpaperSurfaceID = 0;
+        sLGDIWallpaperW = 0;
+        sLGDIWallpaperH = 0;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.05 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            CFRelease(surfaceToRelease);
+            LGDILog(@"[路线B] wallpaper surface torn down + backboardd notified (old ID=%u)", oldID);
+        });
+    } else {
+        sLGDIWallpaperSurfaceID = 0;
+        sLGDIWallpaperW = 0;
+        sLGDIWallpaperH = 0;
+    }
 }
 
 // [阶段4] 壁纸 fallback 捕获区域：pill 帧与展开玻璃帧取并集，
@@ -2947,7 +2982,17 @@ static void LGDITeardown(BOOL featureDisabled) {
     // 硬切完成。延迟拆除回调到达时系统收缩弹簧已结束，这里不会产生任何淡变。
     LGDIWithoutImplicitAnimations(^{
         if (glass) {
+            // [F2 修复] 在 removeFromSuperview 之前显式清理 layer.filters 和
+            // groupName，让 render server 在同一渲染事务内销毁捕获组，
+            // 避免残留捕获组在下次创建玻璃时干扰首帧采样 → 闪烁/发黑。
+            // 先移除视图确保即使 KVC 抛异常也不会残留。
             [glass removeFromSuperview];
+            @try {
+                glass.layer.filters = @[];
+                [glass.layer setValue:nil forKey:@"groupName"];
+            } @catch (NSException *e) {
+                LGDILog(@"teardown KVC cleanup exception: %@", e.reason);
+            }
             sLGDIGlass = nil;
         }
         // [设计修复] 清理中心遮罩层：从 glass.layer 移除并置空

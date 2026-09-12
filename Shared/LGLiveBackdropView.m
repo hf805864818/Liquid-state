@@ -780,6 +780,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
     CGFloat          _lastLayoutCornerRadius; // layoutSubviews throttling
     BOOL             _lgFilterTypeLocked; // [闪烁修复] 动画期间锁定滤镜类型，阻止数组替换
     CFTimeInterval   _lgFilterSettleUntil; // [黑边修复 v4] 解锁后稳定期：阻止滤镜类型替换
+    NSInteger        _lgLastFilterStep;   // [F3 修复] 上次半径步进值，用于自适应稳定期判定
 }
 
 - (NSString *)lgEffectiveFilterType {
@@ -1241,6 +1242,17 @@ static BOOL LGDIFilterBaseTypeEqual(NSString *a, NSString *b) {
     _lgFilterTypeLocked = YES;
 }
 
+// [F3 修复] 计算当前动态半径步进值（与 lgEffectiveFilterType 中的逻辑一致）
+- (NSInteger)lgCurrentRadiusStep {
+    if (!_lgFilterType.length) return 0;
+    if (!LGUsesDynamicRadiusType(_lgFilterType)) return 0;
+    if (CGRectIsEmpty(self.bounds)) return 0;
+    CGFloat shortest = MIN(CGRectGetWidth(self.bounds), CGRectGetHeight(self.bounds));
+    if (shortest <= 0.0) return 0;
+    CGFloat ratio = self.layer.cornerRadius / shortest;
+    return (NSInteger)llround(MAX(0.0, MIN(0.5, ratio)) * kLGDynamicRadiusSteps);
+}
+
 - (void)lgUnlockFilterType {
     if (!_lgFilterTypeLocked) return;
     _lgFilterTypeLocked = NO;
@@ -1250,16 +1262,38 @@ static BOOL LGDIFilterBaseTypeEqual(NSString *a, NSString *b) {
     // layer.filters 替换 → render server 重新初始化 → 黑边闪烁。
     // 0.5s 后系统布局完全收敛，安全切换滤镜类型。
     _lgFilterSettleUntil = CACurrentMediaTime() + 0.5;
+    _lgLastFilterStep = [self lgCurrentRadiusStep];  // [F3] 记录解锁时步进
     [self setNeedsLayout];
     // [黑边修复 v4] 稳定期结束后主动重评估：layoutSubviews 可能因
     // 尺寸未变而 early return，不会触发 applyFilters。稳定期结束后
     // 主动调用一次，确保用最终尺寸切换到正确的滤镜类型（如有变化）。
+    // [F3 修复] 延迟回调中检查步进是否仍在变化：如果仍在跨步说明
+    // 系统布局尚未完全收敛（老旧设备或重负载场景弹簧弹跳可能 >0.55s），
+    // 自适应延长稳定期而非立即执行 applyFilters → 避免步进途中替换
+    // filter 数组导致闪烁。
     __weak LGLiveBackdropView *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                          (int64_t)(0.55 * NSEC_PER_SEC)),
            dispatch_get_main_queue(), ^{
         LGLiveBackdropView *strongSelf = weakSelf;
         if (!strongSelf) return;
+        NSInteger currentStep = [strongSelf lgCurrentRadiusStep];
+        if (strongSelf->_lgLastFilterStep >= 0
+            && currentStep != strongSelf->_lgLastFilterStep) {
+            // 步进仍在变化，延长稳定期 0.3s 再重试
+            strongSelf->_lgFilterSettleUntil = CACurrentMediaTime() + 0.3;
+            LGLog(@"filter settle extended: step %ld -> %ld",
+                  (long)strongSelf->_lgLastFilterStep, (long)currentStep);
+            strongSelf->_lgLastFilterStep = currentStep;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                LGLiveBackdropView *s = weakSelf;
+                if (s) [s applyFilters];
+            });
+            return;
+        }
+        strongSelf->_lgLastFilterStep = -1;
         [strongSelf applyFilters];
     });
 }
