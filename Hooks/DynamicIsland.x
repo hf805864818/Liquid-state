@@ -3069,13 +3069,6 @@ static BOOL LGDIFeatureEnabled(void) {
     return lgHostEnabled(kLGDIFilterPrefix);
 }
 
-// [锁屏修复] 锁屏/封面页可见时不渲染液态：省电、降温、避免无意义渲染。
-// 灵动岛在锁屏下仍显示活动内容，但用户看不到液态效果（被封面页遮挡），
-// CABackdropLayer 仍在后台持续采样 = 纯浪费 GPU。锁屏时直接拆除。
-static BOOL LGDIShouldBeActive(void) {
-    return LGDIFeatureEnabled() && !sLGDIOnLockScreen;
-}
-
 static BOOL LGDICurtainReady(UIView *curtain) {
     return curtain && curtain.window
         && LGDIInApertureWindow(curtain)
