@@ -780,6 +780,8 @@ static void LGReportMemoryUsageIfNeeded(void) {
     CGFloat          _lastLayoutCornerRadius; // layoutSubviews throttling
     BOOL             _lgFilterTypeLocked; // [闪烁修复] 动画期间锁定滤镜类型，阻止数组替换
     CFTimeInterval   _lgFilterSettleUntil; // [黑边修复 v4] 解锁后稳定期：阻止滤镜类型替换
+    NSInteger        _lastRadiusStep;     // [闪烁根因修复] 上一次动态半径步进值
+    CGFloat          _lastWantScale;       // [闪烁根因修复] 上一次计算的 scale 值缓存
 }
 
 - (NSString *)lgEffectiveFilterType {
@@ -1074,8 +1076,30 @@ static void LGReportMemoryUsageIfNeeded(void) {
             _backdropConfigured = YES;
         }
 
+        // [闪烁根因修复 v6] 步进级 early return：参照 Mango _lastRadiusStep 模式。
+        //
+        // 核心洞察（来自 Mango Beta7 逆向）：Mango 用 _lastRadiusStep 缓存在
+        // applyFilters 最前面做"步进是否变化"检查，步进未变时直接 return，
+        // 不触碰 scale、nativeBlur、filters 等任何 render server 属性。
+        //
+        // 我们之前的 v1-v5 修复都错在：
+        //   - 只阻止了 filter type 替换（layer.filters 数组替换）
+        //   - 但 scale、nativeBlur 仍每帧更新
+        //   - scale 更新 → CABackdropLayer 在 render server 重新捕获 → 新帧为空 = 黑边
+        //   - nativeBlur 更新 → 子层创建/销毁 → 闪烁
+        //
+        // 修复：在 applyFilters 最前面计算当前步进和 scale，与缓存对比。
+        // 如果步进未变 且 scale 未变 且 滤镜已挂载 → 直接返回，零 render server 触碰。
+        NSString *baseType = _lgFilterType;
+        NSInteger currentStep = -1;
+        if (LGUsesDynamicRadiusType(baseType) && !CGRectIsEmpty(self.bounds)) {
+            CGFloat shortest = MIN(CGRectGetWidth(self.bounds), CGRectGetHeight(self.bounds));
+            CGFloat ratio = shortest > 0.0 ? self.layer.cornerRadius / shortest : 0.0;
+            currentStep = (NSInteger)llround(MAX(0.0, MIN(0.5, ratio)) * kLGDynamicRadiusSteps);
+        }
+
+        // 计算 scale
         CGFloat wantScale;
-        // 充电/热状态时应用额外的降采样，减少 GPU 模糊计算量
         CGFloat thermalScale = LGThermalScaleFactor();
         switch (LGHostIdentifierForFilterType(_lgFilterType.UTF8String)) {
             case LGHostIdentifierClock:
@@ -1089,7 +1113,21 @@ static void LGReportMemoryUsageIfNeeded(void) {
                     ? kLGPrefsControlScale : LGScaleForSize(self.bounds.size);
                 break;
         }
-        if (fabs(wantScale - _appliedScale) > 0.02) {
+
+        // 步进未变 + scale 未变 + 已挂载 → 直接返回，零 render server 触碰
+        // 这是 Mango 不闪烁的核心：步进是粗粒度的（32 级），尺寸微变
+        // 通常不会跨过步进阈值 → applyFilters 直接 return → render server
+        // 的捕获组完全不受干扰 → 无黑边、无闪烁。
+        if (_filterAttached
+            && currentStep == _lastRadiusStep
+            && fabs(wantScale - _lastWantScale) < 0.001) {
+            return;
+        }
+
+        // ---- 以下仅在步进或 scale 变化时执行 ----
+
+        // 更新 scale（使用更精确的阈值，避免浮点抖动）
+        if (fabs(wantScale - _appliedScale) > 0.001) {
             [layer setValue:@(wantScale) forKey:@"scale"];
             _appliedScale = wantScale;
             LGLog(@"glass#%u scale type=%@ bounds=%.1fx%.1f quality=%.2f budget=%.0f scale=%.3f",
@@ -1098,6 +1136,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
                        CGRectGetWidth(self.bounds), CGRectGetHeight(self.bounds),
                        LGQualityValue(), LGScaleBudget(), wantScale);
         }
+        _lastWantScale = wantScale;
 
         NSString *wantType = [self lgEffectiveFilterType];
         NSArray *existing = layer.filters;
@@ -1109,6 +1148,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
             NSString *type = nil;
             @try { type = [existing.firstObject valueForKey:@"type"]; } @catch (...) {}
             if ([type isEqualToString:wantType]) {
+                _lastRadiusStep = currentStep;
                 return;
             }
             // [闪烁根因修复] 类型变化时如果滤镜已锁定（动画进行中），
@@ -1142,6 +1182,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
         layer.filters = @[glassFilter];
         [CATransaction commit];
         _filterAttached = YES;
+        _lastRadiusStep = currentStep;
     } @catch (NSException *e) {
         sblog("applyFilters exception: %s", e.reason.UTF8String);
     }

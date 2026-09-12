@@ -84,6 +84,13 @@ static void LGDILog(NSString *fmt, ...) {
 @end
 @interface SBSystemApertureWindow : UIWindow
 @end
+// [锁屏修复] 封面页/锁屏控制器，用于检测锁屏状态
+@interface SBCoverSheetPresentationManager : NSObject
+@end
+@interface SBLockScreenManager : NSObject
++ (instancetype)sharedInstance;
+- (BOOL)isUILocked;
+@end
 
 #pragma mark - Constants / association keys
 
@@ -181,6 +188,9 @@ static CFTimeInterval            sLGDIMinDriverEnd;  // 几何稳定停机的“
 // generation 用于在活动复活时让已排队的拆除回调自动作废。
 static BOOL                      sLGDITeardownPending;
 static NSUInteger                sLGDITeardownGeneration;
+
+// [锁屏修复] 锁屏状态：锁屏时拆除液态玻璃，省电降温
+static BOOL                      sLGDIOnLockScreen;
 
 // [闪烁修复] 拆除后冷却期：防止 hook 在拆除完成后立即用过期 sLGDIMode
 // 重新点亮，导致玻璃反复装到默认小药丸上。冷却期内 !sLGDIActive 时不 Engage。
@@ -3060,6 +3070,16 @@ static BOOL LGDICurtainReady(UIView *curtain) {
 
 // 点亮/刷新液态化。curtain 为 nil 时自动在窗口中查找。可重入、幂等。
 static void LGDIEngage(UIView *curtain) {
+    // [锁屏修复] 锁屏时不点亮，如果已点亮则拆除
+    if (sLGDIOnLockScreen) {
+        if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"lock screen appeared");
+            sLGDIActive = NO;
+            LGDITeardown(NO);
+            LGDILog(@"disengage: lock screen active, liquid glass torn down");
+        }
+        return;
+    }
     if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
             LGDICancelDeferredTeardown(@"feature turned off");
@@ -3120,6 +3140,16 @@ static void LGDIEngage(UIView *curtain) {
 
 static void LGDIDoScheduledSync(void) {
     sLGDISyncQueued = NO;
+    // [锁屏修复] 锁屏时不点亮，已点亮则拆除
+    if (sLGDIOnLockScreen) {
+        if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"lock screen (sync)");
+            sLGDIActive = NO;
+            LGDITeardown(NO);
+            LGDILog(@"sync: lock screen active, torn down");
+        }
+        return;
+    }
     if (!LGDIFeatureEnabled()) {
         if (sLGDIActive || sLGDIGlass) {
             LGDICancelDeferredTeardown(@"feature disabled (sync)");
@@ -3525,6 +3555,46 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 %end
 
 // =============================================================================
+//  [锁屏修复] Hook: SBLockScreenManager
+//  检测锁屏状态变化，锁屏时拆除液态玻璃（省电降温），解锁后重新点亮。
+// =============================================================================
+%group LGDILockScreenHook
+
+%hook SBLockScreenManager
+
+- (void)_lockUIFromSource:(NSInteger)source withOptions:(id)options {
+    %orig;
+    if (!sLGDIOnLockScreen) {
+        sLGDIOnLockScreen = YES;
+        LGDILog(@"lock screen: UI locked (source=%ld)", (long)source);
+        if (sLGDIActive || sLGDIGlass) {
+            LGDICancelDeferredTeardown(@"lock screen");
+            sLGDIActive = NO;
+            LGDITeardown(NO);
+        }
+    }
+}
+
+- (void)_finishUnlockWithSound:(BOOL)sound
+          unlockSource:(NSInteger)source
+          isAutoUnlock:(BOOL)autoUnlock {
+    %orig;
+    if (sLGDIOnLockScreen) {
+        sLGDIOnLockScreen = NO;
+        LGDILog(@"lock screen: UI unlocked (source=%ld auto=%d)", (long)source, autoUnlock);
+        // 解锁后延迟 reconcile，等系统布局稳定后再重新点亮
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            LGDIReconcile();
+        });
+    }
+}
+
+%end
+%end
+
+// =============================================================================
 //  Constructor
 // =============================================================================
 
@@ -3569,6 +3639,21 @@ static void LGDynamicIslandInit(void) {
     }
     if (objc_getClass("SBSystemApertureWindow")) {
         %init(LGDIApertureWindowHook);
+    }
+    // [锁屏修复] 注册锁屏状态检测 hook
+    if (objc_getClass("SBLockScreenManager")) {
+        %init(LGDILockScreenHook);
+    }
+
+    // [锁屏修复] 初始化锁屏状态
+    Class lockMgrCls = objc_getClass("SBLockScreenManager");
+    if (lockMgrCls) {
+        id lockMgr = ((id (*)(Class, SEL))objc_msgSend)(lockMgrCls, @selector(sharedInstance));
+        if (lockMgr) {
+            BOOL locked = ((BOOL (*)(id, SEL))objc_msgSend)(lockMgr, @selector(isUILocked));
+            sLGDIOnLockScreen = locked;
+            LGDILog(@"initial lock state: %d", locked);
+        }
     }
 
     // 初始一律视为 inert：空闲小药丸不处理，等系统发出 compact/expanded
