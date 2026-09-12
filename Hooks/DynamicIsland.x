@@ -186,6 +186,13 @@ static NSUInteger                sLGDITeardownGeneration;
 // 重新点亮，导致玻璃反复装到默认小药丸上。冷却期内 !sLGDIActive 时不 Engage。
 static CFTimeInterval            sLGDITeardownCooldownUntil;
 
+// [锁屏检测 v5] 锁屏状态下不渲染液态玻璃，省电降温。
+// 使用 Darwin 通知 com.apple.springboard.lockstate 监听锁屏/解锁事件，
+// 通知回调中通过 SBLockScreenManager 查询实际状态（此时 SB 已完全启动，
+// 调用 sharedInstance 安全）。不使用 NSNotification（需要 runloop 已启动），
+// 不在 constructor 中调用 sharedInstance（会导致安全模式崩溃）。
+static BOOL                      sLGDIOnLockScreen;
+
 // [设计修复] 中心遮罩层：compact 药丸仅左右两端显示液态效果，
 // 中心区域用深色层覆盖，保持系统原样的黑色中心条外观。
 static CALayer                  *sLGDICenterCover;
@@ -3049,6 +3056,8 @@ static void LGDIScheduleDeferredTeardown(void) {
 // =============================================================================
 
 static BOOL LGDIFeatureEnabled(void) {
+    // [锁屏检测 v5] 锁屏时不渲染液态玻璃，省电降温
+    if (sLGDIOnLockScreen) return NO;
     return lgHostEnabled(kLGDIFilterPrefix);
 }
 
@@ -3525,6 +3534,53 @@ static BOOL LGDIShouldForceHidden(UIView *view) {
 %end
 
 // =============================================================================
+//  Lock screen detection (v5)
+// -----------------------------------------------------------------------------
+//  锁屏时不渲染液态玻璃，省电降温。使用 Darwin 通知监听锁屏/解锁事件，
+//  不在 constructor 中调用 SBLockScreenManager（会导致安全模式崩溃）。
+//  通知回调中通过 SBLockScreenManager 查询实际状态——此时 SB 已完全启动，
+//  调用 sharedInstance 安全。使用现有 LGDITeardown/LGDIReconcile 函数，
+//  不直接操作 glass 引用，避免折叠后玻璃残留。
+// =============================================================================
+static void LGDIOnLockStateChanged(CFNotificationCenterRef center,
+                                   void *observer,
+                                   CFStringRef name,
+                                   const void *object,
+                                   CFDictionaryRef userInfo) {
+    @autoreleasepool {
+        Class lockMgrCls = objc_getClass("SBLockScreenManager");
+        if (!lockMgrCls) return;
+        id lockMgr = ((id (*)(Class, SEL))objc_msgSend)(lockMgrCls, @selector(sharedInstance));
+        if (!lockMgr) return;
+        BOOL locked = ((BOOL (*)(id, SEL))objc_msgSend)(lockMgr, @selector(isUILocked));
+
+        if (locked != sLGDIOnLockScreen) {
+            sLGDIOnLockScreen = locked;
+            LGDILog(@"lock state changed: %d", locked);
+            if (locked) {
+                // 锁屏：拆除液态玻璃，省电降温
+                // 使用现有 teardown 函数，确保 glass 从 superview 正确移除，
+                // 不会残留。不取消 deferred teardown（让正常流程处理）。
+                if (sLGDIActive || sLGDIGlass) {
+                    LGDICancelDeferredTeardown(@"lock screen");
+                    sLGDIActive = NO;
+                    LGDITeardown(NO);
+                }
+            } else {
+                // 解锁：延迟 reconcile，等系统布局稳定后再重新点亮
+                // 延迟 0.3s：解锁后系统需要时间恢复灵动岛布局，
+                // 立即 reconcile 可能找不到 curtain 或尺寸未就绪
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                             (int64_t)(0.3 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    LGDIReconcile();
+                });
+            }
+        }
+    }
+}
+
+// =============================================================================
 //  Constructor
 // =============================================================================
 
@@ -3532,6 +3588,22 @@ __attribute__((constructor))
 static void LGDynamicIslandInit(void) {
     if (!LGDIIsSpringBoardProcess()) return;
     if (@available(iOS 16.0, *)) {} else return;
+
+    // [锁屏检测 v5] 注册 Darwin 通知监听锁屏/解锁事件。
+    // CFNotificationCenterGetDarwinNotifyCenter 在 constructor 中安全调用：
+    // 它不依赖 SpringBoard 的运行时状态，只注册一个内核级通知回调。
+    // SBLockScreenManager 的调用推迟到通知回调中（此时 SB 已启动）。
+    CFNotificationCenterRef darwinCenter =
+        CFNotificationCenterGetDarwinNotifyCenter();
+    if (darwinCenter) {
+        CFNotificationCenterAddObserver(darwinCenter,
+                                       NULL,
+                                       LGDIOnLockStateChanged,
+                                       CFSTR("com.apple.springboard.lockstate"),
+                                       NULL,
+                                       CFNotificationSuspensionBehaviorDeliverImmediately);
+        LGDILog(@"lock screen notification registered");
+    }
 
     // 设置变更：开关关闭时恢复原黑色岛，开启时重新装配（滤镜参数刷新由
     // LGLiveBackdropView 全局监听 ParametersReloaded 自动完成，无需此处处理）

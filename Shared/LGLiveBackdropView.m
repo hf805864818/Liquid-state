@@ -1056,6 +1056,38 @@ static void LGReportMemoryUsageIfNeeded(void) {
     [CATransaction commit];
 }
 
+// [黑边修复 v5] 比较两个 filter type 的基类型是否相同。
+// 基类型 = 去掉 .rXX 步进后缀后的类型字符串。
+// 例如 "DynamicIsland.r5.dark" 和 "DynamicIsland.r8.dark" 基类型相同，
+// "DynamicIsland.r5.dark" 和 "DynamicIsland.r5.light" 基类型不同。
+// 步进后缀格式为 ".r" + 数字，出现在 base filterType 之后、
+// ".dark"/".light"/".refresh" 之前。
+static NSString *LGDIBaseFilterType(NSString *type) {
+    if (!type.length) return type;
+    NSRange rRange = [type rangeOfString:@".r"
+                                options:NSBackwardsSearch
+                                  range:NSMakeRange(0, type.length)];
+    if (rRange.location == NSNotFound) return type;
+    NSUInteger afterR = rRange.location + 2;
+    NSUInteger numEnd = afterR;
+    while (numEnd < type.length &&
+           [type characterAtIndex:numEnd] >= '0' &&
+           [type characterAtIndex:numEnd] <= '9') {
+        numEnd++;
+    }
+    if (numEnd <= afterR) return type;  // ".r" 后面无数字，不是步进后缀
+    NSMutableString *mut = [type mutableCopy];
+    [mut deleteCharactersInRange:NSMakeRange(rRange.location,
+                                              numEnd - rRange.location)];
+    return [mut copy];
+}
+
+static BOOL LGDIFilterBaseTypeEqual(NSString *a, NSString *b) {
+    if (!a || !b) return NO;
+    if ([a isEqualToString:b]) return YES;
+    return [LGDIBaseFilterType(a) isEqualToString:LGDIBaseFilterType(b)];
+}
+
 - (void)applyFilters {
     CALayer *layer = self.layer;
     Class backdropCls = NSClassFromString(@"CABackdropLayer");
@@ -1109,18 +1141,34 @@ static void LGReportMemoryUsageIfNeeded(void) {
             NSString *type = nil;
             @try { type = [existing.firstObject valueForKey:@"type"]; } @catch (...) {}
             if ([type isEqualToString:wantType]) {
-                return;
+                return;  // 完全匹配，无需替换
             }
-            // [闪烁根因修复] 类型变化时如果滤镜已锁定（动画进行中），
-            // 不执行 layer.filters 数组替换——替换会导致 render server
-            // 短暂无滤镜 = 灰色（小岛）/黑边（展开岛）闪烁。
-            // 保持旧类型渲染（尺寸略有偏差但不会闪），动画结束后
-            // 解锁时下一帧 applyFilters 会用最终尺寸一次性切换到正确类型。
-            // [黑边修复 v4] 解锁后 0.5s 稳定期内也阻止类型替换：
-            // 弹簧动画结束后系统仍有残余布局更新（layoutSubviews 回调），
-            // 尺寸/圆角微变 → 动态半径步进跨步 → layer.filters 替换 →
-            // render server 重新初始化滤镜管线 → 黑边闪烁 2-3 次。
-            // 稳定期后系统布局完全收敛，步进不再变化，安全切换。
+            // [黑边修复 v5] 步进变化时不替换 filter 数组。
+            //
+            // 根因：动态半径步进（.r0~.r16）随尺寸/圆角变化而跨步。
+            // applyFilters 在步进变化时执行 layer.filters = @[newFilter]
+            // → render server 销毁旧滤镜管线、初始化新管线 → 中间有
+            // 1-2 帧无滤镜 = 黑边闪烁。弹簧动画有 2-3 次弹跳振荡，
+            // 每次振荡到达极值时步进可能跨步 → 2-3 次闪烁。
+            //
+            // v4 的 _lgFilterSettleUntil（0.5s 稳定期）和 _lgFilterTypeLocked
+            // 只能在动画期间和动画后 0.5s 内阻止替换。但稳定期结束后，
+            // 系统残余布局更新仍会导致步进跨步 → 闪烁。
+            //
+            // v5 修复：检查类型变化是否仅为半径步进变化（.rXX 后缀不同）。
+            // 如果基类型（不含 .rXX）相同，则步进变化只影响模糊参数的微调，
+            // 视觉差异极小（32 级步进，相邻步进差异 <3%），不值得替换整个
+            // filter 数组。只有基类型变化（如 dark↔light 或完全不同的
+            // filter 类）才执行替换。
+            //
+            // 这与 Mango 的 _lastRadiusStep 策略一致：步进不变时不触碰
+            // render server。v5 进一步：步进变化时也不触碰，因为替换
+            // filter 数组的代价（黑边闪烁）远大于步进偏差的视觉影响。
+            if (LGDIFilterBaseTypeEqual(type, wantType)) {
+                return;  // 基类型相同（仅步进变化），不替换
+            }
+            // 基类型变了（dark↔light / 参数刷新 / 不同 surface）
+            // 动画期间锁定或稳定期内，仍然阻止替换
             if (_lgFilterTypeLocked || CACurrentMediaTime() < _lgFilterSettleUntil) {
                 return;
             }
