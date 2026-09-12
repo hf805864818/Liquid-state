@@ -1183,9 +1183,24 @@ static void LGDIRestoreAllSuppressed(void) {
 static CGFloat LGDIFallbackCornerRadius(CGRect f);  // 前向声明
 // [闪烁修复] 前向声明：在 LGDIEnsureExpandedGlass 中使用，但定义在 Glass lifecycle 段
 static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval delay);
+// [独立 DisplayLink] 前向声明
+static void LGDIStartExpandedDriver(NSTimeInterval duration);
+static void LGDIStopExpandedDriver(void);
+static void LGDIExpandedDriverTick(CADisplayLink *link);
 
 static NSString * const kLGDIExpFilterType = @"dylv.liquidglass.dynamicisland.expanded";
 static NSString * const kLGDIExpGroupTag   = @"dylv.liquidglass.island.expanded";
+
+// [独立 DisplayLink] 展开态专用驱动，与 compact pill driver 完全隔离。
+// 对齐 Mango 的 MangoExpandedGlassLinkProxy：compact 和 expanded 各自独立
+// CADisplayLink，互不干扰。compact driver 只更新 pill 玻璃几何，
+// expanded driver 只更新展开玻璃几何，避免共用 tick 中互相触发 applyFilters。
+static CADisplayLink   *sLGDIExpLink;
+static CFTimeInterval  sLGDIExpLinkDeadline;
+static CFTimeInterval  sLGDIExpMinDriverEnd;
+static NSUInteger       sLGDIExpSteadyFrameCount;
+static CGRect           sLGDIExpLastPresentationFrame;
+static BOOL             sLGDIExpDriverActive;
 
 // CGRectNull 含 INFINITY，不是编译期常量，不能做静态初始化；用零值 + 标志位
 static CGRect        sLGDIExpLastFrame;
@@ -1521,6 +1536,8 @@ static BOOL LGDISyncExpandedGeometry(void) {
 
 // 拆除展开玻璃（回 compact / 功能关闭 / teardown）。无动画硬切，不产生淡变。
 static void LGDIDestroyExpandedGlass(NSString *reason) {
+    // [独立 DisplayLink] 先停止展开 driver，防止拆除后 tick 访问已释放的 glass
+    LGDIStopExpandedDriver();
     LGLiveBackdropView *glass = sLGDIExpGlass;
     UIVisualEffectView *blur = sLGDIExpBlur;
     if (!glass && !blur) {
@@ -1589,13 +1606,28 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
         if (sLGDICenterCover && !sLGDICenterCover.hidden) {
             sLGDICenterCover.hidden = YES;
         }
-        if (LGDISyncExpandedGeometry()) return;
-        // [F1 修复] 展开态激活但展开玻璃尚未就绪时，如果展开玻璃已创建
-        // （sLGDIExpGlass 存在），跳过 pill 玻璃几何同步：pill 已隐藏，
-        // 更新其 frame/cornerRadius 会触发 applyFilters → layer.filters 替换
-        // → render server 重建捕获组 → 闪烁。只有在展开玻璃完全不存在时
-        // （首次展开，尚未创建）才回退到 pill 追踪。
-        if (sLGDIExpGlass) return;
+        // [独立 DisplayLink] 展开态：如果展开玻璃已创建，由独立 driver 接管。
+        // compact driver 只负责首次展开（玻璃尚未创建时）的 pill 追踪。
+        // 一旦展开玻璃存在，启动独立 driver 并立即 return——
+        // compact pill 不再被逐帧更新，避免 applyFilters 触发 → 闪烁。
+        if (sLGDIExpGlass) {
+            // 首次进入展开态（独立 driver 未激活）：启动独立 driver
+            if (!sLGDIExpDriverActive) {
+                LGDIStartExpandedDriver(1.2);
+            }
+            // 同步一次展开玻璃几何（由独立 driver 后续逐帧接管）
+            LGDISyncExpandedGeometry();
+            return;
+        }
+        // 展开玻璃尚未创建：LGDISyncExpandedGeometry 内部会创建它
+        if (LGDISyncExpandedGeometry()) {
+            // 创建成功：启动独立 driver 接管后续帧
+            if (!sLGDIExpDriverActive) {
+                LGDIStartExpandedDriver(1.2);
+            }
+            return;
+        }
+        // 展开目标未找到且玻璃未创建：回退 pill 追踪
     } else if (sLGDIExpGlass || sLGDIExpBlur) {
         // [闪烁根因修复] 弹簧弹跳会快速 expanded→compact→expanded→compact 循环。
         // 旧逻辑每次 compact 都立即 hide 展开玻璃 + show pill 玻璃，每次 expanded
@@ -1730,12 +1762,17 @@ static void LGDIDriverTick(CADisplayLink *link) {
         // 先逐帧同步几何（内部按状态决定 pill 玻璃还是展开玻璃在管）
         LGDISyncGeometryFromPresentation(YES);
 
-        // 几何稳定判定。[阶段4] 展开态 compact curtain 保持 compact 尺寸不动，
-        // 形变发生在展开卡片窗口，必须改以展开玻璃帧为判稳源，否则展开弹簧
-        // 还没跑完 driver 就会因 curtain「静止」而提前停机、玻璃帧冻在中途。
+        // 几何稳定判定。[独立 DisplayLink] 展开态时展开玻璃由独立 driver 管理，
+        // compact driver 只用 curtain 的 presentationLayer 判稳。展开 driver
+        // 有自己的判稳逻辑（sLGDIExpSteadyFrameCount + sLGDIExpLastPresentationFrame）。
         CALayer *present;
         CGRect f;
-        if (sLGDIExpGlass) {
+        if (sLGDIExpGlass && sLGDIExpDriverActive) {
+            // 展开独立 driver 在管：compact driver 用 curtain 判稳
+            present = curtain.layer.presentationLayer;
+            f = present ? present.frame : curtain.frame;
+        } else if (sLGDIExpGlass) {
+            // 展开玻璃存在但独立 driver 未激活（过渡期）：用展开玻璃判稳
             present = sLGDIExpGlass.layer.presentationLayer;
             f = present ? present.frame : sLGDIExpGlass.frame;
         } else {
@@ -1821,8 +1858,9 @@ static void LGDIStartDriverReal(NSTimeInterval duration) {
     // 随尺寸变化反复跨步 → layer.filters 数组替换 → render server 短暂无滤镜 =
     // 灰/黑闪烁 2-3 次。锁定后 applyFilters 仍每帧调用（更新 scale 等），
     // 但跳过 layer.filters 数组替换，避免闪烁。
+    // [独立 DisplayLink] compact driver 只锁定 pill 玻璃。
+    // 展开玻璃由独立 driver (LGDIStartExpandedDriver) 自行锁定/解锁。
     if (sLGDIGlass) [sLGDIGlass lgLockFilterType];
-    if (sLGDIExpGlass) [sLGDIExpGlass lgLockFilterType];
 }
 
 static void LGDIStopDriver(void) {
@@ -1833,8 +1871,9 @@ static void LGDIStopDriver(void) {
     // 锁定，解锁回调到达时如果仍在动画中则跳过。
     // lgUnlockFilterType 内部设置 0.5s 稳定期，解锁后系统残余布局更新
     // 不会触发滤镜类型替换（步进跨步导致黑边闪烁的根因已消除）。
+    // [独立 DisplayLink] compact driver 只解锁 pill 玻璃。
+    // 展开玻璃由独立 driver (LGDIStopExpandedDriver) 自行解锁。
     LGLiveBackdropView *glass = sLGDIGlass;
-    LGLiveBackdropView *expGlass = sLGDIExpGlass;
     NSUInteger gen = sLGDITeardownGeneration;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(0.15 * NSEC_PER_SEC)),
@@ -1844,8 +1883,95 @@ static void LGDIStopDriver(void) {
         // 如果期间发生了 teardown，glass 已被释放
         if (gen != sLGDITeardownGeneration) return;
         if (glass) [glass lgUnlockFilterType];
+    });
+}
+
+// =============================================================================
+//  [独立 DisplayLink] 展开态专用 driver
+//  对齐 Mango 的 MangoExpandedGlassLinkProxy：展开玻璃有独立的 CADisplayLink，
+//  与 compact pill driver 完全隔离。compact driver 只更新 pill 玻璃几何，
+//  expanded driver 只更新展开玻璃几何。两者不再共用同一个 tick 函数，
+//  避免展开态下 compact pill 的 applyFilters 被不必要地触发 → 闪烁。
+// =============================================================================
+
+@interface LGDIExpDisplayLinkTarget : NSObject
+@end
+@implementation LGDIExpDisplayLinkTarget
+- (void)tick:(CADisplayLink *)link { LGDIExpandedDriverTick(link); }
+@end
+
+static LGDIExpDisplayLinkTarget *sLGDIExpLinkTarget;
+
+static void LGDIStartExpandedDriver(NSTimeInterval duration) {
+    if (!sLGDIExpLinkTarget) sLGDIExpLinkTarget = [LGDIExpDisplayLinkTarget new];
+    if (!sLGDIExpLink) {
+        sLGDIExpLink = [CADisplayLink displayLinkWithTarget:sLGDIExpLinkTarget
+                                                   selector:@selector(tick:)];
+        [sLGDIExpLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    }
+    sLGDIExpLink.paused = NO;
+    CFTimeInterval now = CACurrentMediaTime();
+    sLGDIExpLinkDeadline = now + duration;
+    sLGDIExpMinDriverEnd = now + duration * 0.6;
+    sLGDIExpSteadyFrameCount = 0;
+    sLGDIExpLastPresentationFrame = CGRectNull;
+    sLGDIExpDriverActive = YES;
+    // 展开玻璃滤镜锁定：防止展开动画期间步进跨步替换 filter 数组
+    if (sLGDIExpGlass) [sLGDIExpGlass lgLockFilterType];
+}
+
+static void LGDIStopExpandedDriver(void) {
+    sLGDIExpLink.paused = YES;
+    sLGDIExpDriverActive = NO;
+    // 延迟解锁（同 compact driver 策略）
+    LGLiveBackdropView *expGlass = sLGDIExpGlass;
+    NSUInteger gen = sLGDITeardownGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.15 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (sLGDIExpDriverActive) return;  // 期间被重新启动
+        if (gen != sLGDITeardownGeneration) return;  // 期间 teardown
         if (expGlass) [expGlass lgUnlockFilterType];
     });
+}
+
+static void LGDIExpandedDriverTick(CADisplayLink *link) {
+    (void)link;
+    @autoreleasepool {
+        if (!sLGDIActive || !sLGDIExpGlass) {
+            LGDIStopExpandedDriver();
+            return;
+        }
+
+        // 只同步展开玻璃几何，完全不碰 compact pill
+        LGDISyncExpandedGeometry();
+
+        // 几何稳定判定（使用展开玻璃 presentationLayer）
+        CALayer *present = sLGDIExpGlass.layer.presentationLayer;
+        CGRect f = present ? present.frame : sLGDIExpGlass.frame;
+        BOOL stable = CGRectEqualToRect(f, CGRectNull) ? NO :
+            (fabs(f.origin.x - sLGDIExpLastPresentationFrame.origin.x) < kLGDISteadyDelta
+             && fabs(f.origin.y - sLGDIExpLastPresentationFrame.origin.y) < kLGDISteadyDelta
+             && fabs(f.size.width  - sLGDIExpLastPresentationFrame.size.width)  < kLGDISteadyDelta
+             && fabs(f.size.height - sLGDIExpLastPresentationFrame.size.height) < kLGDISteadyDelta);
+        sLGDIExpLastPresentationFrame = f;
+        sLGDIExpSteadyFrameCount = stable ? sLGDIExpSteadyFrameCount + 1 : 0;
+
+        CFTimeInterval now = CACurrentMediaTime();
+        if (sLGDIExpSteadyFrameCount >= kLGDISteadyFrameThreshold + kLGDISteadySettleFrames
+            && now >= sLGDIExpMinDriverEnd) {
+            LGDIStopExpandedDriver();
+            // 稳定后软刷新
+            if (sLGDIExpGlass) LGDIDelayedRefreshBackdrop(sLGDIExpGlass, 0.15);
+            return;
+        }
+
+        // 硬性兜底
+        if (now >= sLGDIExpLinkDeadline) {
+            LGDIStopExpandedDriver();
+            return;
+        }
+    }
 }
 
 #pragma mark - Forward declarations
@@ -2970,6 +3096,7 @@ static void LGDITeardown(BOOL featureDisabled) {
     LGLiveBackdropView *glass = sLGDIGlass;
 
     LGDIStopDriver();
+    LGDIStopExpandedDriver();  // [独立 DisplayLink] 确保 teardown 时展开 driver 也停止
     // [阶段4] 先拆展开玻璃（恢复 pill hidden 状态由它内部处理，
     // 随后 pill 玻璃也会被整体移除，顺序无视觉影响）
     LGDIDestroyExpandedGlass(@"teardown");
