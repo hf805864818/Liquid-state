@@ -1403,7 +1403,8 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
                 provider.identifier, NSStringFromCGRect(frame));
         // 首捕可能为空（内容/背景未就绪），多时间点强制重建捕获组
         // [闪烁修复] 使用 LGDIDelayedRefreshBackdrop：动画进行中自动推迟
-        for (NSNumber *delay in @[ @0.2, @0.5, @1.0, @1.8 ]) {
+        // [黑边修复 v3] 从 4 次减为 2 次，配合防抖消除堆积闪烁
+        for (NSNumber *delay in @[ @0.2, @0.8 ]) {
             LGDIDelayedRefreshBackdrop(glass, delay.doubleValue);
         }
     }
@@ -1502,10 +1503,13 @@ static BOOL LGDISyncExpandedGeometry(void) {
                && ![sLGDIExpGlass lgFilterTypeLocked]) {
         // [闪烁修复] 动画期间不重建捕获组：清空滤镜会导致灰/黑闪烁。
         // sLGDIExpFramePending 保持 YES，动画结束后下一帧会重试。
+        // [黑边修复 v3] 使用延迟版本 + 防抖：直接调用 lgForceRefreshBackdrop
+        // 在解锁后立即触发，与延迟回调堆积。改为延迟 0.15s 版本，
+        // 配合 0.5s 防抖确保不与其它回调同时触发。
         sLGDIExpFramePending = NO;
         sLGDIExpRetries++;
         sLGDIExpLastCapture = now;
-        [sLGDIExpGlass lgForceRefreshBackdrop];
+        LGDIDelayedRefreshBackdrop(sLGDIExpGlass, 0.15);
     }
     sLGDIExpLastFrame = f;
     sLGDIExpHasLastFrame = YES;
@@ -2786,7 +2790,11 @@ static void LGDIProbeStopTimer(void) {
 // lgForceRefreshBackdrop 会清空滤镜并重建捕获组，在弹簧动画进行中触发
 // 会造成一次灰/黑闪烁。此函数检查 lgFilterTypeLocked，锁定时
 // 每 0.2s 重试，直到动画结束后再执行。
-// 前向声明已在前部（LGDIFallbackCornerRadius 旁）给出。
+// [黑边修复 v3] 添加防抖：锁定期多个延迟回调不断重试 0.2s，解锁时
+// 全部堆积在同一帧附近 → 每个触发一次 lgForceRefreshBackdrop →
+// 多次闪烁。0.5s 防抖确保同一玻璃 0.5s 内最多刷新一次。
+static CFTimeInterval sLGDILastDelayedRefresh = 0;
+static const NSTimeInterval kLGDIDelayedRefreshDebounce = 0.5;
 static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval delay) {
     __weak LGLiveBackdropView *weakGlass = glass;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
@@ -2798,6 +2806,16 @@ static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval
             // 动画进行中，0.2s 后重试
             LGDIDelayedRefreshBackdrop(g, 0.2);
         } else {
+            // [黑边修复 v3] 防抖：多个延迟回调可能在同一帧到达
+            // （锁期间不断重试 0.2s，解锁时全部就绪），0.5s 内
+            // 只允许一次 lgForceRefreshBackdrop，跳过的回调由
+            // 后续的延迟回调覆盖（内容已就绪后不需要多次刷新）。
+            CFTimeInterval now = CACurrentMediaTime();
+            if (now - sLGDILastDelayedRefresh < kLGDIDelayedRefreshDebounce) {
+                LGDILog(@"delayed refresh debounced at %.2fs", now);
+                return;
+            }
+            sLGDILastDelayedRefresh = now;
             [g lgForceRefreshBackdrop];
         }
     });
@@ -2890,7 +2908,10 @@ static void LGDIInstallGlass(UIView *curtain) {
         // 捕获组（对标 Mango refreshGlassBackdrop），使其重新采样窗外实时画面。
         // [闪烁修复] 使用 LGDIDelayedRefreshBackdrop：动画进行中自动推迟，
         // 避免清空滤镜重建捕获组时造成灰/黑闪烁。
-        for (NSNumber *delay in @[ @0.3, @0.8, @1.6, @3.0 ]) {
+        // [黑边修复 v3] 从 4 次减为 2 次：旧逻辑 4 次延迟回调在锁定期不断
+        // 重试，解锁时全部堆积触发 → 3-4 次闪烁。2 次足够覆盖内容就绪窗口
+        // （0.3s + 1.0s），配合防抖和不再清空滤镜，不会产生闪烁。
+        for (NSNumber *delay in @[ @0.3, @1.0 ]) {
             LGDIDelayedRefreshBackdrop(glass, delay.doubleValue);
         }
     }

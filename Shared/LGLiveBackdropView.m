@@ -1161,24 +1161,22 @@ static void LGReportMemoryUsageIfNeeded(void) {
         [self applyFilters];
         return;
     }
-    // 强制 render server 销毁并重建该 backdrop 的捕获组：
-    // 清空 filters + 重置 _backdropConfigured，使 applyFilters 重新断言
-    // windowServerAware / groupName / groupNamespace / ignoresScreenClip，
-    // 从而在内容已就绪后重新采样背景（修复特殊窗口首次捕获为空/黑）。
+    // [黑边修复 v3] 不再清空 layer.filters = @[]。
     //
-    // 关键：必须同步更换为一个全新的 groupName。render server 以 groupName
-    // 标识捕获组，若重建时仍用同名，setValue: 对它是 no-op，旧的（首捕为空/黑
-    // 的）捕获组会被继续复用，重采样永远不会发生。换新名后旧组被销毁、新组强制
-    // 重新建立捕获上下文（对标 Mango 每个玻璃实例使用唯一 go.mangoos.p*.g* 组名）。
+    // 旧逻辑：filters=@[] → commit → applyFilters → filters=@[new] → commit
+    // 两次 render server 提交之间有 1+ 帧无滤镜 = 黑边闪一次。
+    // 每个延迟回调触发一次 lgForceRefreshBackdrop = 一次闪烁。
+    // 4 个延迟回调堆积 = 3-4 次闪烁（用户看到 3 次快闪）。
+    //
+    // 新逻辑：只重置内部状态 + 换 groupName（render server 据此销毁旧
+    // 捕获组、建新组），让 applyFilters 在单次 CATransaction 中直接替换
+    // 滤镜（filters=@[old]→@[new]，render server 原子处理，无空窗）。
     NSString *newGroup = [self lgUniqueGroupNameWithTag:_lgGroupTag ?: @"dylv.liquidglass"];
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    layer.filters = @[];
     _lgGroupName = newGroup;
     _filterAttached = NO;
     _backdropConfigured = NO;
     _appliedScale = -1.0f;
-    [CATransaction commit];
+    // 不清空 layer.filters，让 applyFilters 直接替换
 
     [self applyFilters];
     [layer setNeedsLayout];
