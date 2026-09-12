@@ -1429,13 +1429,14 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
     if (fabs(glass.layer.cornerRadius - radius) > 0.25) glass.layer.cornerRadius = radius;
     if (blur.hidden) blur.hidden = NO;
     if (glass.hidden) glass.hidden = NO;
-    [CATransaction commit];
-
-    // 4) pill 玻璃让位（hidden 即停止可见合成；展开玻璃拆除时恢复）
+    // [黑边修复 v2] pill 玻璃让位必须与展开玻璃显示在同一 CATransaction 中：
+    // 旧逻辑在 commit 后才隐藏 pill 玻璃 → 中间有 1 帧两者都可见或都不可见
+    // → 黑边/重叠闪烁。原子切换 = 同一 render server 提交。
     if (!sLGDIPillHiddenForExpanded && sLGDIGlass) {
         sLGDIGlass.hidden = YES;
         sLGDIPillHiddenForExpanded = YES;
     }
+    [CATransaction commit];
 
     // 5) 展开窗口内同样要扫掉黑材质/剥黑底，否则盖在展开玻璃之上。
     //    全窗口递归代价高，绝不能逐帧执行：仅创建/换宿主时立即扫一次，
@@ -1599,12 +1600,17 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
                 // 跳过本帧的 pill 可见性切换，但不跳过几何同步。
             } else {
                 // 防抖到期：确认是真 compact，执行切换
+                // [黑边修复 v2] 原子切换：隐藏展开玻璃 + 显示 pill 玻璃在
+                // 同一 CATransaction，避免 1 帧空隙闪烁。
+                [CATransaction begin];
+                [CATransaction setDisableActions:YES];
                 if (sLGDIExpGlass && !sLGDIExpGlass.hidden) sLGDIExpGlass.hidden = YES;
                 if (sLGDIExpBlur && !sLGDIExpBlur.hidden) sLGDIExpBlur.hidden = YES;
                 if (sLGDIPillHiddenForExpanded && sLGDIGlass) {
                     sLGDIGlass.hidden = NO;
                     sLGDIPillHiddenForExpanded = NO;
                 }
+                [CATransaction commit];
             }
         }
     }
@@ -1752,14 +1758,16 @@ static void LGDIDriverTick(CADisplayLink *link) {
             LGDIStopDriver();
             // 弹簧动画到位、实时活动布局完全稳定后，强制重建一次 backdrop 捕获：
             // 此时窗外实时画面已就绪，重采样可拿到正确内容（修复首捕为空发黑）。
-            // 节流，避免同一稳定态内重复刷新。
+            // [黑边修复 v2] 用延迟版本刷新：lgForceRefreshBackdrop 内部清空
+            // layer.filters = @[] 再重建，这一瞬间 render server 无滤镜。
+            // 改为延迟 0.15s：如果弹跳触发新动画 → StartDriver → 滤镜锁定
+            // → 延迟回调自动重试（lgFilterTypeLocked → 推迟）。
             static CFTimeInterval sLGDILastForceRefresh = 0;
             if (sLGDIGlass && now - sLGDILastForceRefresh > 0.4) {
                 sLGDILastForceRefresh = now;
-                [sLGDIGlass lgForceRefreshBackdrop];
+                LGDIDelayedRefreshBackdrop(sLGDIGlass, 0.15);
             }
-            // [阶段4] 展开态弹簧到位后同样重采一次展开玻璃
-            if (sLGDIExpGlass) [sLGDIExpGlass lgForceRefreshBackdrop];
+            if (sLGDIExpGlass) LGDIDelayedRefreshBackdrop(sLGDIExpGlass, 0.15);
             return;
         }
     }
@@ -1798,9 +1806,25 @@ static void LGDIStartDriverReal(NSTimeInterval duration) {
 
 static void LGDIStopDriver(void) {
     sLGDILink.paused = YES;
-    // [闪烁根因修复] 动画结束，解锁滤镜类型：下一帧用最终尺寸一次性切换到正确类型
-    if (sLGDIGlass) [sLGDIGlass lgUnlockFilterType];
-    if (sLGDIExpGlass) [sLGDIExpGlass lgUnlockFilterType];
+    // [黑边修复 v2] 延迟 0.15s 解锁滤镜类型：弹簧弹跳会在 driver 停机后
+    // 1-2 帧内触发新动画（振荡），立即解锁 → applyFilters → 滤镜数组替换
+    // → 黑边闪。延迟 0.15s 解锁，期间新动画到达会重新 StartDriver 并再次
+    // 锁定，解锁回调到达时如果仍在动画中则跳过。
+    // lgUnlockFilterType 内部已改为不作废 _lastLayoutSize，所以即使解锁
+    // 后也不会强制重评估滤镜类型。
+    LGLiveBackdropView *glass = sLGDIGlass;
+    LGLiveBackdropView *expGlass = sLGDIExpGlass;
+    NSUInteger gen = sLGDITeardownGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.15 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        // 如果在此期间 driver 被重新启动（新动画），跳过解锁
+        if (!sLGDILink.paused) return;
+        // 如果期间发生了 teardown，glass 已被释放
+        if (gen != sLGDITeardownGeneration) return;
+        if (glass) [glass lgUnlockFilterType];
+        if (expGlass) [expGlass lgUnlockFilterType];
+    });
 }
 
 #pragma mark - Forward declarations
@@ -3157,14 +3181,14 @@ static void LGDIDoScheduledSync(void) {
         else if (!shouldHide && gain.hidden) gain.hidden = NO;
     }
     LGDISuppressDecorations(host);
-    // [P2 修复] 布局后异步再扫一次：layoutSubviews 可能在 SuppressDecorations
-    // 之后重建装饰视图，异步二次扫描捕获新建的装饰
-    __weak UIView *weakHost = host;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (sLGDIActive && weakHost) {
-            LGDISuppressDecorations(weakHost);
-        }
-    });
+    // [黑边修复 v2] 同步再扫一次（非异步）：layoutSubviews 可能在
+    // SuppressDecorations 之后同步重建装饰视图，旧逻辑用 dispatch_async
+    // 异步二次扫描，中间有 1-2 帧新装饰已渲染但未被压制 = 黑边闪。
+    // 改为同步立即再扫，捕获同一 runloop 中重建的装饰。
+    if (sLGDIActive && host) {
+        LGDISweepView(host, 14);
+        if (LGDClearContentBg()) LGDIStripNearBlackSubtree(host, 22);
+    }
     LGDISyncGeometryFromPresentation(NO);
 }
 

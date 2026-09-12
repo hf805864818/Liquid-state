@@ -1196,9 +1196,12 @@ static void LGReportMemoryUsageIfNeeded(void) {
 - (void)lgUnlockFilterType {
     if (!_lgFilterTypeLocked) return;
     _lgFilterTypeLocked = NO;
-    // 作废节流缓存，让下一帧 layoutSubviews 一定会重新 evaluate 滤镜类型
-    _lastLayoutSize = CGSizeMake(-1, -1);
-    _lastLayoutCornerRadius = -1.0;
+    // [黑边修复 v2] 不再作废 _lastLayoutSize：旧逻辑强制下一帧 applyFilters
+    // 重评估滤镜类型 → 如果尺寸/圆角微变 → layer.filters 数组替换 →
+    // render server 短暂无滤镜 → 黑边闪烁 2-3 次（对应弹跳振荡）。
+    // 新逻辑：保持 _lastLayoutSize 不变，applyFilters 走 early return。
+    // 如果最终尺寸确实变了，下一帧 layoutSubviews 会自然触发 applyFilters。
+    // 仅在需要强制刷新时通过 lgForceRefreshBackdrop 显式调用。
     [self setNeedsLayout];
 }
 
