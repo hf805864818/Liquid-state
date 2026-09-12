@@ -872,11 +872,13 @@ static void LGReportMemoryUsageIfNeeded(void) {
         // [P0 修复] host 切换（reparenting）时不清空滤镜，避免 render server
         // 销毁捕获组导致 1-2 帧黑边。真正离屏（非 reparenting）才清空省电。
         if (_lgReparenting) {
-            // 仅换宿主：保持滤镜，render server 端由后续 insertSubview 触发的
-            // didMoveToWindow(win) → applyFilters 重新评估。
-            // 此时 _lgGroupName 带 .e<epoch> 单调递增，render server 会建新组。
+            // 仅换宿主：保持 layer.filters 不动（不销毁捕获组）。
+            // 跨 window 移动后 render server 的 compositing connection 需
+            // 手动 nudge 才稳定（参考 kageroumado/core-animation-private:
+            // "first cross-window move → blank until connection settles"）。
+            // 这里只做 setNeedsDisplay 强制重采样，不清空滤镜、不重算高光。
+            [self.layer setNeedsDisplay];
             _lgReparenting = NO;
-            if (sLGMotionSetup) LGRefreshMotionHighlights();
             return;
         }
         // 视图离开窗口: 停止 GPU 模糊渲染
@@ -892,8 +894,16 @@ static void LGReportMemoryUsageIfNeeded(void) {
         if (sLGMotionSetup) LGRefreshMotionHighlights();
     } else {
         // 视图回到窗口: 重新挂载滤镜
+        BOOL wasReparenting = _lgReparenting;
         _lgReparenting = NO;
         [self applyFilters];
+        if (wasReparenting) {
+            // [P0 修复] reparenting 跨 window 移动后，applyFilters 在滤镜类型未
+            // 变时 early return，不会触发 setNeedsDisplay。需手动强制重采样，
+            // 让 render server 重新关联捕获组到新 window 上下文（参考
+            // kageroumado "nudge compositing connection after cross-window move"）。
+            [self.layer setNeedsDisplay];
+        }
         if (sLGMotionSetup) LGRefreshMotionHighlights();
     }
 }
