@@ -51,6 +51,13 @@ UIUserInterfaceStyle LGGetGlassAppearanceMode(void);
 // 为 native blur 层设置形状 mask（用于 Clock 文字形状裁剪）
 - (void)lgSetNativeBlurMask:(CALayer *)maskLayer;
 
+// [P0 修复] reparenting 标记：host 切换（removeFromSuperview + insertSubview）
+// 时设置 YES，使 didMoveToWindow(nil) 跳过滤镜清空，避免 render server 销毁
+// 捕获组导致 1-2 帧黑边。host 切换通常由 spring 动画中系统重排祖先链触发，
+// 每次触发一次 host 重装 = 一次滤镜清空/重建 = 一次闪烁。spring 弹跳 2-3 次
+// = 2-3 次闪烁。此标记让 host 切换走"保留滤镜"路径，黑边消除。
+- (void)lgSetReparenting:(BOOL)reparenting;
+
 @end
 
 // Call to notify that SpringBoard is in foreground (icons visible) or background (app in front)

@@ -1421,8 +1421,16 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
         glass.layer.masksToBounds = YES;
         sLGDIExpGlass = glass;
         sLGDIExpRetries = 0;
-        LGDILog(@"expanded: independent glass created provider=%@ frame=%@",
-                provider.identifier, NSStringFromCGRect(frame));
+        // [P0 修复] 创建后立即确认滤镜已挂上。init 内 applyFilters 可能因
+        // render server 捕获组尚未 ready 而 early return，导致首 0.2s 窗口
+        // 内展开卡片无液态玻璃 = 黑底透出。这里强制再走一次 applyFilters，
+        // 确保 layer.filters.count >= 1 后才依赖后续延迟刷新做采样校准。
+        if (glass.layer.filters.count == 0) {
+            [glass applyFilters];
+        }
+        LGDILog(@"expanded: independent glass created provider=%@ frame=%@ filters=%lu",
+                provider.identifier, NSStringFromCGRect(frame),
+                (unsigned long)glass.layer.filters.count);
         // 首捕可能为空（内容/背景未就绪），多时间点触发软刷新
         // [黑边修复 v4] lgForceRefreshBackdrop 已改为软刷新，不销毁捕获组
         for (NSNumber *delay in @[ @0.2, @0.8 ]) {
@@ -1431,6 +1439,8 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
     }
     if (glass.superview != host) {
         hostChanged = YES;
+        // [P0 修复] host 切换时保留滤镜，避免 render server 销毁捕获组
+        if (glass.superview) [glass lgSetReparenting:YES];
         [host insertSubview:glass aboveSubview:blur];
     } else {
         NSUInteger bi = [host.subviews indexOfObject:blur];
@@ -2957,6 +2967,10 @@ static void LGDIProbeStopTimer(void) {
 // 0.5s 防抖仍保留：避免多次 setNeedsDisplay 造成不必要的 render server 负载。
 static CFTimeInterval sLGDILastDelayedRefresh = 0;
 static const NSTimeInterval kLGDIDelayedRefreshDebounce = 0.5;
+// [P1 修复] 锁定期内延迟刷新的 pending 标记。多个回调落在锁定期时，
+// 不再各自递归 0.2s 重试（旧逻辑堆积 3-4 个同时触发），改为统一标记，
+// 锁定期结束后由下一个非锁定回调触发一次即清除。
+static BOOL sLGDIDelayedRefreshPending = NO;
 static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval delay) {
     __weak LGLiveBackdropView *weakGlass = glass;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
@@ -2965,19 +2979,31 @@ static void LGDIDelayedRefreshBackdrop(LGLiveBackdropView *glass, NSTimeInterval
         LGLiveBackdropView *g = weakGlass;
         if (!g || !g.window) return;
         if ([g lgFilterTypeLocked]) {
-            // 动画进行中，0.2s 后重试
-            LGDIDelayedRefreshBackdrop(g, 0.2);
-        } else {
-            // [黑边修复 v4] 防抖：虽然 lgForceRefreshBackdrop 已是软刷新，
-            // 多次 setNeedsDisplay 仍会增加 render server 负载，保留防抖。
-            CFTimeInterval now = CACurrentMediaTime();
-            if (now - sLGDILastDelayedRefresh < kLGDIDelayedRefreshDebounce) {
-                LGDILog(@"delayed refresh debounced at %.2fs", now);
-                return;
-            }
-            sLGDILastDelayedRefresh = now;
-            [g lgForceRefreshBackdrop];
+            // [P1 修复] 锁定期内不再递归 0.2s 重试（旧逻辑会堆积 3-4 个
+            // 回调同时命中"未锁定"分支 → 多次重采样 → 黑边闪 2-3 次）。
+            // 改为只记录 pending 标记，由下一个非锁定回调统一触发一次。
+            sLGDIDelayedRefreshPending = YES;
+            return;
         }
+        // 锁定期结束：防堆积。若已有 pending（锁定期内累积的回调），
+        // 统一在这里触发一次后清除；否则走原有 0.5s 防抖。
+        if (sLGDIDelayedRefreshPending) {
+            sLGDIDelayedRefreshPending = NO;
+            CFTimeInterval now = CACurrentMediaTime();
+            sLGDILastDelayedRefresh = now;
+            LGDILog(@"delayed refresh: batched pending trigger at %.2fs", now);
+            [g lgForceRefreshBackdrop];
+            return;
+        }
+        // [黑边修复 v4] 防抖：虽然 lgForceRefreshBackdrop 已是软刷新，
+        // 多次 setNeedsDisplay 仍会增加 render server 负载，保留防抖。
+        CFTimeInterval now = CACurrentMediaTime();
+        if (now - sLGDILastDelayedRefresh < kLGDIDelayedRefreshDebounce) {
+            LGDILog(@"delayed refresh debounced at %.2fs", now);
+            return;
+        }
+        sLGDILastDelayedRefresh = now;
+        [g lgForceRefreshBackdrop];
     });
 }
 
@@ -3356,9 +3382,20 @@ static void LGDIDoScheduledSync(void) {
     if (host && host != sLGDIHost) {
         LGDILog(@"host changed: %@ -> %@, reinstalling",
                 NSStringFromClass(sLGDIHost.class), NSStringFromClass(host.class));
+        // [P0 修复] host 切换时保留滤镜，避免 render server 销毁捕获组
+        // 导致 1-2 帧黑边。spring 弹跳期间 host 重装 2-3 次 = 闪烁 2-3 次，
+        // 此标记让每次重装走"保留滤镜"路径，黑边消除。
+        if (sLGDIGlass) [sLGDIGlass lgSetReparenting:YES];
         [sLGDIGlass removeFromSuperview];
         sLGDIHost = nil;
         LGDIInstallGlass(curtain);
+        // [P2 修复] 立即同步扫近黑剥离，不等 dispatch_async。
+        // 新 container 可能带近黑 backgroundColor，扫一次防黑底透出。
+        if (sLGDIActive) {
+            UIView *sweepRoot = host.window ?: host;
+            LGDISweepView(sweepRoot, 14);
+            if (LGDClearContentBg()) LGDIStripNearBlackSubtree(sweepRoot, 22);
+        }
         return;
     }
 

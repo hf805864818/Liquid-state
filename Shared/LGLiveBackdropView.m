@@ -781,6 +781,7 @@ static void LGReportMemoryUsageIfNeeded(void) {
     BOOL             _lgFilterTypeLocked; // [闪烁修复] 动画期间锁定滤镜类型，阻止数组替换
     CFTimeInterval   _lgFilterSettleUntil; // [黑边修复 v4] 解锁后稳定期：阻止滤镜类型替换
     NSInteger        _lgLastFilterStep;   // [F3 修复] 上次半径步进值，用于自适应稳定期判定
+    BOOL             _lgReparenting;      // [P0 修复] host 切换标记，跳过滤镜清空
 }
 
 - (NSString *)lgEffectiveFilterType {
@@ -868,6 +869,16 @@ static void LGReportMemoryUsageIfNeeded(void) {
 - (void)didMoveToWindow {
     [super didMoveToWindow];
     if (!self.window) {
+        // [P0 修复] host 切换（reparenting）时不清空滤镜，避免 render server
+        // 销毁捕获组导致 1-2 帧黑边。真正离屏（非 reparenting）才清空省电。
+        if (_lgReparenting) {
+            // 仅换宿主：保持滤镜，render server 端由后续 insertSubview 触发的
+            // didMoveToWindow(win) → applyFilters 重新评估。
+            // 此时 _lgGroupName 带 .e<epoch> 单调递增，render server 会建新组。
+            _lgReparenting = NO;
+            if (sLGMotionSetup) LGRefreshMotionHighlights();
+            return;
+        }
         // 视图离开窗口: 停止 GPU 模糊渲染
         // CABackdropLayer 和 _nativeBlurLayer 在视图不可见时仍会
         // 在 render server 中持续合成, 浪费大量 GPU 资源
@@ -881,9 +892,16 @@ static void LGReportMemoryUsageIfNeeded(void) {
         if (sLGMotionSetup) LGRefreshMotionHighlights();
     } else {
         // 视图回到窗口: 重新挂载滤镜
+        _lgReparenting = NO;
         [self applyFilters];
         if (sLGMotionSetup) LGRefreshMotionHighlights();
     }
+}
+
+// [P0 修复] reparenting 标记 setter。host 切换前调用 YES，使
+// didMoveToWindow(nil) 跳过滤镜清空，避免 render server 销毁捕获组。
+- (void)lgSetReparenting:(BOOL)reparenting {
+    _lgReparenting = reparenting;
 }
 
 - (void)setHidden:(BOOL)hidden {
