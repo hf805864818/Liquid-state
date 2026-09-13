@@ -871,6 +871,114 @@ static void LGDIRequestDump(NSString *reason) {
 #endif
 
 // =============================================================================
+//  [诊断 B：逐层 dump，对标 Mango 的 MGOIslandDiagRunner]
+// -----------------------------------------------------------------------------
+//  Mango 的诊断 runner 用两棵浅子树（element 侧深 4 / glass 侧深 3）逐层打印
+//   L%d %@ frame=%@ subs=%lu mask=%d clips=%d contents=%@
+//   D%d %@ frame=%@ subs=%lu contents=%@
+//   -- refs -- gain=%@ curtain=%@ touch=%@
+//   [MangoQADiag] t=%@s sx=%.4f sy=%.4f tx=%.2f ty=%.2f
+//
+//  现有 LGDIRequestDump 只有"整树"（深度 8/12），粒度太粗，定位不到
+//  黑底到底在哪一层。这里补两棵浅子树 + refs + transform，把黑边
+//  成因的 6 个维度（mask/clip/contents/subs/hidden/frame）逐层打出来。
+//
+//  触发点做成可配置多触发点（见 LGDIDiagLayeredSnapshot 调用点），
+//  用实际日志验证哪个帧抓得到黑边，不写死 Mango 的 displaylink 推测。
+// =============================================================================
+
+#if LIQUIDASS_DEBUG
+
+static BOOL LGDIDiagGate(void) {
+    // 对齐 Mango 的 gate global=%d pro=%d free=%d -> auth=%d：
+    // 全局开关 + 诊断授权（pro/free）双层门。这里简化为：总开关开 + 限频。
+    if (!LGDIFeatureEnabled()) return NO;
+    static int sDiagGateCount = 0;
+    static CFTimeInterval sDiagGateUntil = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now < sDiagGateUntil) return NO;
+    if (++sDiagGateCount >= 30) { sDiagGateUntil = now + 30.0; return NO; }
+    return YES;
+}
+
+// 逐层 6 字段 dump。tag='L' 为 element/content 侧（深 4），
+// tag='D' 为 glass/backdrop 侧（深 3）。对齐 Mango 的 L%d/D%d 行格式。
+static void LGDIDiagDumpLayered(UIView *v, unsigned int depth,
+                                unsigned int maxDepth, unichar tag) {
+    if (!v || depth > maxDepth) return;
+    NSString *cls = NSStringFromClass(v.class);
+    // mask / clips / contents 三个维度：黑边最常见的成因
+    CALayer *l = v.layer;
+    BOOL hasMask = (l.mask != nil);
+    BOOL hasClip = (l.clipPath != nil) || v clipsToMargins;
+    BOOL hasContents = (l.contents != nil);
+
+    LGDILog(@"  %c%d %@ frame=%@ subs=%lu mask=%d clips=%d contents=%d",
+            tag, (int)depth, cls,
+            NSStringFromRect(v.frame), (unsigned long)v.subviews.count,
+            (int)hasMask, (int)hasClip, (int)hasContents);
+
+    for (uint32_t i = 0; i < v.subviews.count; i++) {
+        LGDIDiagDumpLayered(v.subviews[i], depth + 1, maxDepth, tag);
+    }
+}
+
+// refs 快拍：把三个系统黑视图指针一次打齐，方便对照"黑的是系统哪个视图"
+static void LGDIDiagRefsDump(void) {
+    LGDILog(@"-- refs -- gain=%@ curtain=%@ touch=%@",
+            sLGDIGainMap ?: @"<nil>",
+            sLGDICurtain ?: @"<nil>",
+            sLGDIHost ?: @"<nil>");
+}
+
+// transform 快照：抓弹簧动画期间玻璃 layer 的当前变换 + 速度采样
+// CATransform3D: tx=m43, ty=m42, sx=sqrt(m11²+m21²+m31²), sy=sqrt(m12²+m22²+m32²)
+static void LGDIDiagTransformDump(LGLiveBackdropView *glass) {
+    if (!glass) return;
+    CATransform3D t = glass.layer.transform;
+    double sx = sqrt(t.m11*t.m11 + t.m21*t.m21 + t.m31*t.m31);
+    double sy = sqrt(t.m12*t.m12 + t.m22*t.m22 + t.m32*t.m32);
+    LGDILog(@"[MangoQADiag] t=%@s sx=%.4f sy=%.4f tx=%.2f ty=%.2f",
+            NSStringFromCATransform3D(t), sx, sy, t.m43, t.m42);
+}
+
+// orchestrator：一次性跑齐 6 步（gate + element subtree + glass subtree +
+// refs + transform + prefix）。对齐 Mango 的 MGOIslandDiagRunner 执行序。
+static void LGDIDiagLayeredSnapshot(NSString *reason) {
+    if (!LGDIDiagGate()) return;
+
+    LGDILog(@">>> [DI-LAYERED] reason=%@ mode=%@",
+            reason, LGDIModeName((NSInteger)[DIPillStateMachine shared].currentMode));
+
+    // ① element/content 子树（深 4）
+    UIView *curtain = sLGDICurtain ?: LGDIFindCurtainInWindows();
+    if (curtain) {
+        LGDILog(@">>> -- element subtree(4) --");
+        LGDIDiagDumpLayered(curtain, 0, 4, 'L');
+    }
+
+    // ② glass/backdrop 子树（深 3）
+    LGLiveBackdropView *glass = sLGDIGlass;
+    if (glass) {
+        LGDILog(@">>> -- glass subtree(3) --");
+        LGDIDiagDumpLayered(glass, 0, 3, 'D');
+    }
+
+    // ③ refs 快拍
+    LGDIDiagRefsDump();
+
+    // ④ transform 快照
+    LGDIDiagTransformDump(glass);
+
+    // ⑤ 前缀快照
+    LGDILog(@">>> [MangoQADiag] prefix=%@ hostClass=%@",
+            kLGDIFilterPrefix, sLGDIHost ? NSStringFromClass(sLGDIHost.class) : @"<nil>");
+
+    LGDILog(@">>> [DI-LAYERED] end reason=%@", reason);
+}
+#endif
+
+// =============================================================================
 //  装饰视图压制（描边 / 压暗层 / 容器底色）
 //  只动“叶子级、非交互、非内容”的视图，实时活动内容绝不碰。
 // =============================================================================
@@ -1472,6 +1580,12 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
             }
         }
     }
+
+    // [诊断 B 触发点 2/3] 展开玻璃创建/换宿主后逐层 dump：
+    // 展开场景是"活动周边闪烁"的最大漏口，这里抓展开侧的
+    // element/glass 子树，定位展开内容黑底承载层。
+    LGDIDiagLayeredSnapshot(@"expanded");
+
 }
 
 // 每帧同步展开玻璃。返回 YES 表示展开玻璃在管（调用方跳过 pill 几何）；
@@ -2964,6 +3078,11 @@ static void LGDIInstallGlass(UIView *curtain) {
     // 下方的壁纸内容渲染进去，供 backboardd 端作为折射 fallback 纹理
     LGDIStartWallpaperCapture();
 
+    // [诊断 B 触发点 1/3] 装玻璃后立即逐层 dump：
+    // 黑边最高发的就是"玻璃刚装、首帧采样"这一刻，这里抓
+    // element/glass 两棵浅子树 + refs + transform，定位黑底承载层。
+    LGDIDiagLayeredSnapshot(@"install");
+
 #if LIQUIDASS_DEBUG
     LGDIProbeEnsureTimer();
 #endif
@@ -3237,6 +3356,9 @@ static void LGDIDoScheduledSync(void) {
                 NSStringFromClass(sLGDIHost.class), NSStringFromClass(host.class));
         // [黑边修复 v7 P0] 标记即将重装：didMoveToWindow(nil) 时跳过滤镜清空，
         // 保住 render server 捕获组；新 host 上的 applyFilters 走快速重采样。
+        // [诊断 B 触发点 3/3] host 切换前快拍：抓玻璃即将离窗这一帧的
+        // element/glass 子树，定位重装路径黑边来源。
+        LGDIDiagLayeredSnapshot(@'host-switch-before');
         [sLGDIGlass lgPrepareReparenting];
         [sLGDIGlass removeFromSuperview];
         sLGDIHost = nil;

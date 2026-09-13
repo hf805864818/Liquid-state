@@ -1280,7 +1280,7 @@ static BOOL LGDIFilterBaseTypeEqual(NSString *a, NSString *b) {
 // - 离窗（didMoveToWindow(nil)）消费"跳过滤镜清空"语义，置位 _lgReparentPending
 // - 回窗（didMoveToWindow(win)）消费 _lgReparentPending，走同步滤镜检查
 // 旧实现 lgConsumeReparenting 是单阶段，离窗消费后回窗拿不到标记。
-// 返回是否处于"重装待处理"状态（同时消费离窗标记、置位回窗标记）。
+// 返回是否命中重装标记（同时消费离窗标记、置位回窗标记）。
 - (BOOL)lgConsumeReparentingOffWindow {
     BOOL marked = [objc_getAssociatedObject(self, @selector(lgPrepareReparenting))
                  isEqual: (__bridge id)kCFBooleanTrue];
