@@ -1,22 +1,21 @@
 // =============================================================================
-//  DynamicIsland2.x — 灵动岛2
+//  DynamicIsland2.x — 灵动岛2（参考原版 Liquid (Gl)ass + DI1 架构）
 //
-//  实现策略（参考原版 Liquid (Gl)ass + DI1 验证可行的方案）：
-//  1. 启动后延迟扫描所有窗口，递归查找 MagiciansCurtainView
-//  2. 找到后用 runtime swizzle layoutSubviews
-//  3. 隐藏系统黑色材质（curtain + gainMap + material）
-//  4. 玻璃插在 TouchPassThroughView（最高不裁剪祖先）的最底层
-//  5. 玻璃几何跟随 curtainView 形变
+//  用 Theos %hook 方式，hook 灵动岛相关的系统类
+//  核心思路：
+//  1. 隐藏系统黑色幕布 + 增益图
+//  2. 玻璃插在 TouchPassThroughView（最高不裁剪祖先）最底层
+//  3. 几何跟随 curtainView 形变
 // =============================================================================
 
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
-#import "../Shared/LGDI2Mutex.h"
-#import "../Shared/LGSharedSupport.h"
+#import "../Shared/LGLiveBackdropView.h"
 #import "../Shared/LGGlassKit.h"
 #import "../Shared/LGHostRegistry.h"
-#import "../Shared/LGLiveBackdropView.h"
+#import "../Shared/LGSharedSupport.h"
+#import "../Shared/LGDI2Mutex.h"
 #import <notify.h>
 
 #define LIQUIDASS_DEBUG 1
@@ -33,6 +32,22 @@ static void LGDI2Log(NSString *fmt, ...) {
 #endif
 }
 
+// 私有类前向声明
+@interface _SBSystemApertureMagiciansCurtainView : UIView
+@end
+@interface _SBGainMapView : UIView
+@end
+@interface SBFTouchPassThroughView : UIView
+@end
+
+// =============================================================================
+// 全局状态
+// =============================================================================
+
+static __weak UIView *sLGDI2Curtain = nil;
+static __weak UIView *sLGDI2Host = nil;
+static __weak LGLiveBackdropView *sLGDI2Glass = nil;
+
 // =============================================================================
 // 功能开关
 // =============================================================================
@@ -46,32 +61,9 @@ static BOOL LGDI2FeatureEnabled(void) {
 }
 
 // =============================================================================
-// 全局状态
-// =============================================================================
-
-static __weak UIView *sLGDI2Curtain = nil;     // 黑色幕布
-static __weak UIView *sLGDI2Host = nil;        // 玻璃宿主
-static __weak LGLiveBackdropView *sLGDI2Glass = nil;  // 玻璃视图
-static BOOL sLGDI2Swizzled = NO;               // 是否已 swizzle
-static IMP sLGDI2OrigLayoutSubviews = NULL;    // 原始 layoutSubviews
-
-// =============================================================================
 // 工具函数
 // =============================================================================
 
-// 递归查找类名匹配的视图
-static UIView *LGDI2FindViewOfClass(UIView *root, NSString *substring) {
-    if (!root) return nil;
-    NSString *cls = NSStringFromClass(root.class);
-    if ([cls containsString:substring]) return root;
-    for (UIView *sv in root.subviews) {
-        UIView *found = LGDI2FindViewOfClass(sv, substring);
-        if (found) return found;
-    }
-    return nil;
-}
-
-// 找到最高的不裁剪祖先（优先 TouchPassThrough）
 static UIView *LGDI2FindHostForCurtain(UIView *curtain) {
     UIWindow *window = curtain.window;
     if (!window) return nil;
@@ -88,65 +80,48 @@ static UIView *LGDI2FindHostForCurtain(UIView *curtain) {
     return touchPassThrough ?: topNonClipping ?: window;
 }
 
-// 隐藏系统黑色材质
-static void LGDI2HideSystemBlack(UIView *root) {
-    if (!root) return;
+static void LGDI2HideBlackInView(UIView *view) {
+    if (!view) return;
 
-    NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
-    while (stack.count > 0) {
-        UIView *v = stack.lastObject;
-        [stack removeLastObject];
+    NSString *cls = NSStringFromClass(view.class);
+    BOOL shouldHide = NO;
+    if ([cls containsString:@"Material"]) shouldHide = YES;
+    if ([cls containsString:@"GainMap"]) shouldHide = YES;
+    if ([cls containsString:@"Backdrop"]) shouldHide = YES;
+    if ([cls containsString:@"Vibrancy"]) shouldHide = YES;
 
-        NSString *cls = NSStringFromClass(v.class);
-        BOOL shouldHide = NO;
-        if ([cls containsString:@"Material"]) shouldHide = YES;
-        if ([cls containsString:@"GainMap"]) shouldHide = YES;
-        if ([cls containsString:@"Backdrop"]) shouldHide = YES;
-        if ([cls containsString:@"Vibrancy"]) shouldHide = YES;
-
-        if (shouldHide && v != sLGDI2Glass) {
-            v.hidden = YES;
-        }
-
-        [stack addObjectsFromArray:v.subviews];
+    if (shouldHide && view != sLGDI2Glass) {
+        view.hidden = YES;
     }
 
-    // 幕布本身也清底
-    root.backgroundColor = [UIColor clearColor];
-}
-
-// 打印视图树（调试）
-static void LGDI2PrintTree(UIView *v, NSInteger depth) {
-    if (!v) return;
-    NSMutableString *indent = [NSMutableString string];
-    for (NSInteger i = 0; i < depth; i++) [indent appendString:@"  "];
-    LGDI2Log(@"%@%@ (%.0f,%.0f %.0fx%.0f) hidden=%d alpha=%.2f clips=%d",
-             indent, NSStringFromClass(v.class),
-             v.frame.origin.x, v.frame.origin.y,
-             v.frame.size.width, v.frame.size.height,
-             v.hidden, v.alpha, v.clipsToBounds);
-    for (UIView *sv in v.subviews) {
-        LGDI2PrintTree(sv, depth + 1);
+    for (UIView *sv in view.subviews) {
+        LGDI2HideBlackInView(sv);
     }
 }
 
 // =============================================================================
-// 创建玻璃
+// 玻璃创建/更新/销毁
 // =============================================================================
 
-static void LGDI2CreateGlass(UIView *curtain, UIView *host) {
-    if (!curtain || !host) return;
+static void LGDI2Engage(UIView *curtain) {
+    if (!LGDI2FeatureEnabled()) return;
+    if (!curtain || !curtain.window) return;
     if (sLGDI2Glass) return;
 
-    LGDI2Log(@"createGlass: curtain=%@ host=%@",
+    LGDI2Log(@"engage: curtain=%@ bounds=%@",
              NSStringFromClass(curtain.class),
-             NSStringFromClass(host.class));
-    LGDI2Log(@"  curtain frame=%@ bounds=%@",
-             NSStringFromCGRect(curtain.frame),
              NSStringFromCGRect(curtain.bounds));
 
+    UIView *host = LGDI2FindHostForCurtain(curtain);
+    if (!host) {
+        LGDI2Log(@"  no host found");
+        return;
+    }
+    LGDI2Log(@"  host=%@", NSStringFromClass(host.class));
+
     // 隐藏系统黑色
-    LGDI2HideSystemBlack(curtain);
+    LGDI2HideBlackInView(curtain);
+    curtain.backgroundColor = [UIColor clearColor];
 
     // 创建玻璃
     NSString *filterType = LGFilterTypeForHostPrefix(@"Island");
@@ -168,171 +143,152 @@ static void LGDI2CreateGlass(UIView *curtain, UIView *host) {
     glass.layer.masksToBounds = YES;
     glass.layer.cornerCurve = kCACornerCurveContinuous;
 
-    // 插在宿主最底层
     [host insertSubview:glass atIndex:0];
-
     [glass applyFilters];
 
-    // 延迟刷新 backdrop（首次采样可能为空）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
+    // 延迟刷新 backdrop
+    for (NSNumber *delay in @[@0.3, @1.0]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+            (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
             [glass lgForceRefreshBackdrop];
         });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
-            [glass lgForceRefreshBackdrop];
-        });
+    }
 
     sLGDI2Glass = glass;
     sLGDI2Curtain = curtain;
     sLGDI2Host = host;
 
-    LGDI2Log(@"createGlass DONE");
+    LGDI2Log(@"engage DONE");
 }
 
-// 更新玻璃布局
-static void LGDI2UpdateGlass(void) {
+static void LGDI2UpdateLayout(void) {
     if (!sLGDI2Glass || !sLGDI2Curtain || !sLGDI2Host) return;
 
     CGRect glassFrame = [sLGDI2Host convertRect:sLGDI2Curtain.frame
                                        fromView:sLGDI2Curtain.superview];
     sLGDI2Glass.frame = glassFrame;
-
-    CGFloat cornerRadius = CGRectGetHeight(glassFrame) / 2.0;
-    sLGDI2Glass.layer.cornerRadius = cornerRadius;
+    sLGDI2Glass.layer.cornerRadius = CGRectGetHeight(glassFrame) / 2.0;
 }
 
-// 销毁玻璃
-static void LGDI2DestroyGlass(void) {
+static void LGDI2Disengage(void) {
     if (sLGDI2Glass) {
         [sLGDI2Glass removeFromSuperview];
         sLGDI2Glass = nil;
-        LGDI2Log(@"destroyGlass");
+        LGDI2Log(@"disengage");
     }
     sLGDI2Curtain = nil;
     sLGDI2Host = nil;
 }
 
 // =============================================================================
-// Swizzled layoutSubviews
+// Hook Group 1: _SBSystemApertureMagiciansCurtainView（核心）
 // =============================================================================
 
-static void swizzled_LGDI2_layoutSubviews(id self, SEL _cmd) {
-    // 调用原始实现
-    if (sLGDI2OrigLayoutSubviews) {
-        ((void(*)(id, SEL))sLGDI2OrigLayoutSubviews)(self, _cmd);
-    }
+%group LGDI2CurtainHook
 
+%hook _SBSystemApertureMagiciansCurtainView
+
+- (void)didMoveToWindow {
+    %orig;
     if (!LGDI2FeatureEnabled()) return;
 
-    @autoreleasepool {
-        UIView *curtain = (UIView *)self;
+    LGDI2Log(@"[Curtain] didMoveToWindow: window=%@ bounds=%@",
+             self.window ? NSStringFromClass(self.window.class) : @"nil",
+             NSStringFromCGRect(self.bounds));
 
-        if (sLGDI2Curtain != curtain) {
-            // 首次发现
-            LGDI2Log(@"swizzled layoutSubviews: new curtain %@",
-                     NSStringFromClass(curtain.class));
-
-            UIView *host = LGDI2FindHostForCurtain(curtain);
-            if (host) {
-                LGDI2Log(@"  host found: %@", NSStringFromClass(host.class));
-                LGDI2CreateGlass(curtain, host);
-            }
-        } else {
-            // 已创建，更新布局
-            LGDI2UpdateGlass();
-        }
+    if (self.window) {
+        LGDI2Engage(self);
+    } else if (sLGDI2Curtain == self) {
+        LGDI2Disengage();
     }
 }
 
-// =============================================================================
-// 查找并 swizzle 灵动岛类
-// =============================================================================
-
-static void LGDI2SwizzleIslandClass(Class cls) {
-    if (!cls || sLGDI2Swizzled) return;
-
-    SEL layoutSel = @selector(layoutSubviews);
-    Method method = class_getInstanceMethod(cls, layoutSel);
-    if (!method) {
-        LGDI2Log(@"swizzle failed: layoutSubviews not found on %@", NSStringFromClass(cls));
-        return;
-    }
-
-    sLGDI2OrigLayoutSubviews = method_getImplementation(method);
-    method_setImplementation(method, (IMP)swizzled_LGDI2_layoutSubviews);
-    sLGDI2Swizzled = YES;
-
-    LGDI2Log(@"swizzled layoutSubviews on %@", NSStringFromClass(cls));
-}
-
-// 尝试多个候选类名
-static void LGDI2TrySwizzleCandidates(void) {
-    NSArray *candidates = @[
-        @"_SBSystemApertureMagiciansCurtainView",
-        @"SBSystemApertureMagiciansCurtainView",
-        @"_SAUIMagiciansCurtainView",
-        @"SAUIMagiciansCurtainView",
-    ];
-
-    for (NSString *name in candidates) {
-        Class cls = NSClassFromString(name);
-        if (cls) {
-            LGDI2Log(@"found candidate class: %@", name);
-            LGDI2SwizzleIslandClass(cls);
-            return;
-        }
-    }
-
-    LGDI2Log(@"no candidate class found, will fallback to view scanning");
-}
-
-// 递归扫描所有窗口查找灵动岛
-static void LGDI2ScanAndInject(void) {
+- (void)layoutSubviews {
+    %orig;
     if (!LGDI2FeatureEnabled()) return;
-    if (sLGDI2Glass) return;
 
-    LGDI2Log(@"scanAndInject: scanning all windows");
-
-    NSArray *windows = [UIApplication sharedApplication].windows;
-    LGDI2Log(@"  total windows: %lu", (unsigned long)windows.count);
-
-    for (UIWindow *w in windows) {
-        LGDI2Log(@"  window: %@ (%.0fx%.0f)",
-                 NSStringFromClass(w.class),
-                 w.bounds.size.width, w.bounds.size.height);
-
-        UIView *curtain = LGDI2FindViewOfClass(w, @"MagiciansCurtain");
-        if (curtain) {
-            LGDI2Log(@"  FOUND curtain in window: %@", NSStringFromClass(w.class));
-            LGDI2Log(@"  curtain class: %@ frame=%@",
-                     NSStringFromClass(curtain.class),
-                     NSStringFromCGRect(curtain.frame));
-
-            // 如果还没 swizzle，现在 swizzle
-            if (!sLGDI2Swizzled) {
-                LGDI2SwizzleIslandClass([curtain class]);
-            }
-
-            // 直接创建玻璃
-            UIView *host = LGDI2FindHostForCurtain(curtain);
-            if (host) {
-                LGDI2Log(@"  host: %@", NSStringFromClass(host.class));
-                LGDI2CreateGlass(curtain, host);
-            }
-
-            // 打印视图树（调试）
-            LGDI2Log(@"  --- curtain subview tree ---");
-            LGDI2PrintTree(curtain, 2);
-            LGDI2Log(@"  --- host subview tree (first 3 levels) ---");
-            LGDI2PrintTree(host, 2);
-
-            return;
-        }
+    if (!sLGDI2Glass) {
+        LGDI2Engage(self);
+    } else {
+        LGDI2UpdateLayout();
     }
-
-    LGDI2Log(@"scanAndInject: no curtain found");
 }
+
+- (void)setHidden:(BOOL)hidden {
+    BOOL shouldForceHide = (LGDI2FeatureEnabled() && !hidden && sLGDI2Curtain == self);
+    if (shouldForceHide) {
+        // 如果功能开着，强制隐藏 curtain（玻璃在它下面显示）
+        hidden = YES;
+        LGDI2Log(@"[Curtain] setHidden:NO blocked (keeping hidden)");
+    }
+    %orig(hidden);
+
+    // 注意：玻璃不跟随 curtain 的 hidden 状态
+    // （curtain 被我们强制隐藏了，但玻璃应该显示）
+    // 玻璃的显隐由 HideWhenInactive 控制
+    if (sLGDI2Glass && sLGDI2Curtain == self && !shouldForceHide) {
+        sLGDI2Glass.hidden = hidden;
+    }
+}
+
+- (void)setAlpha:(CGFloat)alpha {
+    %orig(alpha);
+    if (sLGDI2Glass && sLGDI2Curtain == self) {
+        sLGDI2Glass.alpha = alpha;
+    }
+}
+
+%end
+%end
+
+// =============================================================================
+// Hook Group 2: _SBGainMapView（增益图层，需要隐藏）
+// =============================================================================
+
+%group LGDI2GainMapHook
+
+%hook _SBGainMapView
+
+- (void)didMoveToWindow {
+    %orig;
+    if (!LGDI2FeatureEnabled()) return;
+
+    if (self.window) {
+        LGDI2Log(@"[GainMap] didMoveToWindow, hiding");
+        self.hidden = YES;
+    }
+}
+
+- (void)setHidden:(BOOL)hidden {
+    if (LGDI2FeatureEnabled() && !hidden) {
+        hidden = YES;
+        LGDI2Log(@"[GainMap] setHidden:NO blocked");
+    }
+    %orig(hidden);
+}
+
+%end
+%end
+
+// =============================================================================
+// Hook Group 3: SBFTouchPassThroughView（玻璃宿主）
+// =============================================================================
+
+%group LGDI2TouchHook
+
+%hook SBFTouchPassThroughView
+
+- (void)layoutSubviews {
+    %orig;
+    if (!LGDI2FeatureEnabled()) return;
+    if (sLGDI2Host != self) return;
+
+    LGDI2UpdateLayout();
+}
+
+%end
+%end
 
 // =============================================================================
 // 构造函数
@@ -362,8 +318,13 @@ static void LGDynamicIsland2Init(void) {
         notify_post(LGPrefsChangedNotificationCString);
     }
 
-    // 尝试 swizzle 候选类
-    LGDI2TrySwizzleCandidates();
+    // 激活所有 hook group
+    if (LGDI2FeatureEnabled()) {
+        %init(LGDI2CurtainHook);
+        %init(LGDI2GainMapHook);
+        %init(LGDI2TouchHook);
+        LGDI2Log(@"all hook groups activated");
+    }
 
     // 监听偏好变更
     lgObservePreferenceReload(^{
@@ -382,22 +343,15 @@ static void LGDynamicIsland2Init(void) {
         }
 
         if (LGDI2FeatureEnabled()) {
-            LGDI2ScanAndInject();
+            LGDI2Log(@"  feature enabled");
+            // 如果还没激活 hook group，现在激活
+            // 注意：Theos 的 %init 不能重复调用，这里只在首次需要时激活
+            // （如果是 respring 后启动时已激活，这里不需要做什么）
         } else {
-            LGDI2DestroyGlass();
+            LGDI2Log(@"  feature disabled, disengage");
+            LGDI2Disengage();
         }
     });
-
-    // 多次延迟扫描（灵动岛可能启动较晚）
-    NSArray *delays = @[@0.5, @1.5, @3.0, @6.0];
-    for (NSNumber *delay in delays) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-            (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
-            dispatch_get_main_queue(), ^{
-            LGDI2Log(@"delayed scan (%.1fs)", delay.doubleValue);
-            LGDI2ScanAndInject();
-        });
-    }
 
     LGDI2Log(@"DI2 init complete");
 }
