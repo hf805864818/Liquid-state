@@ -1553,6 +1553,18 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
     }
     [CATransaction commit];
 
+    // [诊断 B 扩展] 展开玻璃首帧采空定位：每帧打 3 个状态
+    // - filters.count：滤镜是否真正挂上（=0 说明 applyFilters 还没跑 → 采空）
+    // - glass.hidden：是否可见
+    // - centerCover.hidden：中心黑罩是否已隐藏（没隐藏 = 黑罩盖住）
+    CALayer *gl = glass.layer;
+    unsigned fltCount = 0;
+    @try { fltCount = [gl filters].count; } @catch (...) {}
+    LGDILog(@"expGlass state: filters=%lu hidden=%d centerCoverHidden=%d frame=%@",
+            (unsigned long)fltCount, (int)glass.hidden,
+            sLGDICenterCover ? (int)sLGDICenterCover.hidden : -1,
+            NSStringFromCGRect(glass.frame));
+
     // 5) 展开窗口内同样要扫掉黑材质/剥黑底，否则盖在展开玻璃之上。
     //    全窗口递归代价高，绝不能逐帧执行：仅创建/换宿主时立即扫一次，
     //    稳态下按 0.3s 节流补扫（捕获系统 layoutSubviews 重建的装饰）。
