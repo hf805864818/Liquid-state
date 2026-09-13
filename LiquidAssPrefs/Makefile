@@ -5,8 +5,7 @@ BUNDLE_NAME = LiquidAssPrefs
 LG_PACKAGE_VERSION := $(shell sed -n 's/^Version: //p' ../control | head -n 1)
 
 PREF_LOCAL_FILES := LGPRootListController.m LGPSurfaceController.m LGPrefsSurfaceCatalog.m LGPrefsDataSupport.m \
-                    LGPrefsUIHelpers.m LGPrefsLiquidSlider.m LGPrefsLiquidSwitch.m \
-                    LGDI2PrefsPanelController.m
+                    LGPrefsUIHelpers.m LGPrefsLiquidSlider.m LGPrefsLiquidSwitch.m
 PREF_SHARED_FILES := ../Shared/LGSharedSupport.m ../Shared/LGLiveBackdropView.m ../Shared/LGDI2Mutex.m
 LiquidAssPrefs_FILES = $(PREF_LOCAL_FILES) $(PREF_SHARED_FILES)
 LiquidAssPrefs_FRAMEWORKS = UIKit QuartzCore CoreText CoreGraphics CoreMotion
