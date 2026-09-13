@@ -910,12 +910,12 @@ static void LGDIDiagDumpLayered(UIView *v, unsigned int depth,
     // mask / clips / contents 三个维度：黑边最常见的成因
     CALayer *l = v.layer;
     BOOL hasMask = (l.mask != nil);
-    BOOL hasClip = (l.clipPath != nil) || v clipsToMargins;
+    BOOL hasClip = (l.mask != nil) || v clipsToBounds;
     BOOL hasContents = (l.contents != nil);
 
     LGDILog(@"  %c%d %@ frame=%@ subs=%lu mask=%d clips=%d contents=%d",
             tag, (int)depth, cls,
-            NSStringFromRect(v.frame), (unsigned long)v.subviews.count,
+            NSStringFromCGRect(v.frame), (unsigned long)v.subviews.count,
             (int)hasMask, (int)hasClip, (int)hasContents);
 
     for (uint32_t i = 0; i < v.subviews.count; i++) {
@@ -926,7 +926,7 @@ static void LGDIDiagDumpLayered(UIView *v, unsigned int depth,
 // refs 快拍：把三个系统黑视图指针一次打齐，方便对照"黑的是系统哪个视图"
 static void LGDIDiagRefsDump(void) {
     LGDILog(@"-- refs -- gain=%@ curtain=%@ touch=%@",
-            sLGDIGainMap ?: @"<nil>",
+            LGDIFindSubviewOfClass(sLGDICurtain, @"_SBGainMapView") ?: @"<nil>",
             sLGDICurtain ?: @"<nil>",
             sLGDIHost ?: @"<nil>");
 }
@@ -938,8 +938,8 @@ static void LGDIDiagTransformDump(LGLiveBackdropView *glass) {
     CATransform3D t = glass.layer.transform;
     double sx = sqrt(t.m11*t.m11 + t.m21*t.m21 + t.m31*t.m31);
     double sy = sqrt(t.m12*t.m12 + t.m22*t.m22 + t.m32*t.m32);
-    LGDILog(@"[MangoQADiag] t=%@s sx=%.4f sy=%.4f tx=%.2f ty=%.2f",
-            NSStringFromCATransform3D(t), sx, sy, t.m43, t.m42);
+    LGDILog(@"[MangoQADiag] t=CATransform3d m11=%.4f m43=%.2f m42=%.2f sx=%.4f sy=%.4f",
+            t.m11, t.m43, t.m42, sx, sy);
 }
 
 // orchestrator：一次性跑齐 6 步（gate + element subtree + glass subtree +
@@ -3358,7 +3358,7 @@ static void LGDIDoScheduledSync(void) {
         // 保住 render server 捕获组；新 host 上的 applyFilters 走快速重采样。
         // [诊断 B 触发点 3/3] host 切换前快拍：抓玻璃即将离窗这一帧的
         // element/glass 子树，定位重装路径黑边来源。
-        LGDIDiagLayeredSnapshot(@'host-switch-before');
+        LGDIDiagLayeredSnapshot(@"host-switch-before");
         [sLGDIGlass lgPrepareReparenting];
         [sLGDIGlass removeFromSuperview];
         sLGDIHost = nil;
