@@ -1719,12 +1719,20 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
             sLGDICenterCover.hidden = YES;
         }
         if (LGDISyncExpandedGeometry()) return;
-        // [F1 修复] 展开态激活但展开玻璃尚未就绪时，如果展开玻璃已创建
-        // （sLGDIExpGlass 存在），跳过 pill 玻璃几何同步：pill 已隐藏，
-        // 更新其 frame/cornerRadius 会触发 applyFilters → layer.filters 替换
-        // → render server 重建捕获组 → 闪烁。只有在展开玻璃完全不存在时
-        // （首次展开，尚未创建）才回退到 pill 追踪。
-        if (sLGDIExpGlass) return;
+        // [黑框修复] 展开玻璃已创建时跳过 pill 几何同步。
+        if (sLGDIExpGlass) {
+            return;
+        }
+        // [黑框修复] 展开态但展开玻璃未建（candidates=0 MISS）时，
+        // 仍必须隐藏 centerCover：否则黑罩盖在 pill 玻璃上，
+        // 卡片展开瞬间黑罩位置/尺寸未同步 = 黑框闪 2-3 次。
+        // 这是"展开玻璃 MISS 路径"的漏口 — 之前 1718 行的隐藏在
+        // LGDISyncExpandedGeometry() 返回后、expGlass 判断前，
+        // 但 MISS 时 LGDISyncExpandedGeometry 直接 return NO，
+        // 根本没跑到隐藏代码。
+        if (sLGDICenterCover && !sLGDICenterCover.hidden) {
+            sLGDICenterCover.hidden = YES;
+        }
     } else if (sLGDIExpGlass || sLGDIExpBlur) {
         // [闪烁根因修复] 弹簧弹跳会快速 expanded→compact→expanded→compact 循环。
         // 旧逻辑每次 compact 都立即 hide 展开玻璃 + show pill 玻璃，每次 expanded
