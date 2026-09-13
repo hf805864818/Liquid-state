@@ -1725,6 +1725,19 @@ static void LGDISyncGeometryFromPresentation(BOOL usePresentation) {
         // → render server 重建捕获组 → 闪烁。只有在展开玻璃完全不存在时
         // （首次展开，尚未创建）才回退到 pill 追踪。
         if (sLGDIExpGlass) return;
+        // [黑框修复 B] 展开态 + 展开玻璃 MISS + 展开玻璃不存在：
+        // 胶囊轮廓由 Aperture 窗口的 pill 玻璃渲染，展开时它 capture fallback
+        // 采到窗帘下方（黑屏）→ 深色/黑兜底 = 卡片外围黑框。
+        // 让 pill 玻璃也让位（隐藏），卡片外围不再渲染玻璃，避免黑框。
+        // 展开玻璃 HIT 并创建后由 LGDIDestroyExpandedGlass 恢复 pill。
+        if (sLGDIGlass && !sLGDIPillHiddenForExpanded) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            sLGDIGlass.hidden = YES;
+            sLGDIPillHiddenForExpanded = YES;
+            [CATransaction commit];
+            LGDILog(@"expand-miss: pill glass hidden to avoid black outline (waiting for exp glass)");
+        }
     } else if (sLGDIExpGlass || sLGDIExpBlur) {
         // [闪烁根因修复] 弹簧弹跳会快速 expanded→compact→expanded→compact 循环。
         // 旧逻辑每次 compact 都立即 hide 展开玻璃 + show pill 玻璃，每次 expanded
