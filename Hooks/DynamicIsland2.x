@@ -302,11 +302,10 @@ static void LGDynamicIsland2Init(void) {
 
     // 启动周期性检查定时器（每 2 秒检查一次是否需要重新挂载）
     sLGDI2ReconcileTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
-                                                            target:nil
-                                                          block:^(NSTimer *t) {
+                                                           repeats:YES
+                                                             block:^(NSTimer *t) {
         LGDI2TimerReconcile();
-    }
-                                                        repeats:YES];
+    }];
 
     // 延迟首次尝试挂载（等 SpringBoard 完全启动）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
