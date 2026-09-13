@@ -113,31 +113,6 @@ static BOOL LGDI2FeatureEnabled(void) {
 %end
 
 // =============================================================================
-// Hook _SBGainMapView（增益图视图，用于增强液态效果）
-// =============================================================================
-
-%hook _SBGainMapView
-
-- (void)didMoveToSuperview {
-    %orig;
-
-    if (!LGDI2FeatureEnabled()) return;
-
-    LGDI2Log(@"_SBGainMapView didMoveToSuperview: %@",
-             self.superview ? NSStringFromClass(self.superview.class) : @"nil");
-}
-
-- (void)layoutSubviews {
-    %orig;
-
-    if (!LGDI2FeatureEnabled()) return;
-
-    // 可以在这里做增益图相关的增强
-}
-
-%end
-
-// =============================================================================
 // 构造函数
 // =============================================================================
 
