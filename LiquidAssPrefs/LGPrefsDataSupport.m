@@ -1758,6 +1758,56 @@ NSArray<NSDictionary *> *LGDynamicIslandItems(void) {
     ]);
 }
 
+NSArray<NSDictionary *> *LGDynamicIsland2Items(void) {
+    return LGJoinItemGroups(@[
+        // DI2 总开关（互斥：开启 DI2 时 DI1 自动关闭，反之亦然）
+        @[
+            LGSectionSetting(@"灵动岛2", @"开启后将使用 Banana 源灵动岛液态效果，原版灵动岛自动关闭"),
+            LGGlassEnabledSetting(@"DynamicIsland2.Enabled", NO),
+        ],
+        // DI2 玻璃渲染参数（复用 DI1 参数集）
+        LGRendererItemsForHostPrefix(@"DynamicIsland2"),
+        // DI2 功能开关
+        @[
+            LGSectionSetting(@"灵动岛2 功能", nil),
+            LGSwitchSetting(@"DynamicIsland2.HideWhenInactive",
+                            @"无活动时隐藏",
+                            @"系统灵动岛处于空闲状态时自动隐藏灵动岛2",
+                            YES),
+            LGSwitchSetting(@"DynamicIsland2.ShowCenterBar",
+                            @"显示中心条",
+                            @"compact 模式下保持系统黑色中心条外观",
+                            YES),
+        ],
+        // DI2 布局参数
+        @[
+            LGSectionSetting(@"灵动岛2 布局", nil),
+            LGSliderSetting(@"DynamicIsland2.OffsetY",
+                            @"垂直偏移", nil,
+                            16.0, 0.0, 60.0, 1),
+            LGSliderSetting(@"DynamicIsland2.WidthRatio",
+                            @"宽度比例", nil,
+                            0.78, 0.5, 1.0, 2),
+            LGSliderSetting(@"DynamicIsland2.Height",
+                            @"高度", nil,
+                            37.0, 20.0, 80.0, 1),
+            LGSliderSetting(@"DynamicIsland2.CornerRadius",
+                            @"圆角", nil,
+                            18.5, 0.0, 40.0, 1),
+        ],
+        // 展开态参数
+        @[
+            LGSectionSetting(@"展开态设置", nil),
+            LGSliderSetting(@"DynamicIsland2.ExpandedHeight",
+                            @"展开高度", nil,
+                            160.0, 80.0, 300.0, 1),
+            LGSliderSetting(@"DynamicIsland2.ExpandedCornerRadius",
+                            @"展开圆角", nil,
+                            24.0, 0.0, 60.0, 1),
+        ],
+    ]);
+}
+
 NSArray<NSDictionary *> *LGLockscreenItems(void) {
     return LGJoinItemGroups(@[
         @[

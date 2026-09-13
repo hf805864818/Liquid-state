@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>title</key>
+	<string>灵动岛2</string>
+	<key>items</key>
+	<array>
+		<!-- 互斥模式选择 -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>灵动岛模式</string>
+			<key>footerText</key>
+			<string>选择使用的灵动岛模式，开启一个会自动关闭另一个</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSegmentCell</string>
+			<key>label</key>
+			<string>模式</string>
+			<key>key</key>
+			<string>DI_ModeSelector</string>
+			<key>validValues</key>
+			<array>
+				<integer>0</integer>
+				<integer>1</integer>
+				<integer>2</integer>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>全部关闭</string>
+				<string>灵动岛1（原版）</string>
+				<string>灵动岛2（Banana）</string>
+			</array>
+		</dict>
+
+		<!-- DI2 参数组 -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>灵动岛2 设置</string>
+		</dict>
+
+		<!-- HideWhenInactive -->
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>无活动时隐藏</string>
+			<key>key</key>
+			<string>DynamicIsland2.HideWhenInactive</string>
+			<key>defaults</key>
+			<string>com.liquidass.prefs</string>
+			<key>default</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>dylv.liquidassprefs/Reload</string>
+		</dict>
+
+		<!-- ShowCenterBar -->
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>显示中心条</string>
+			<key>key</key>
+			<string>DynamicIsland2.ShowCenterBar</string>
+			<key>defaults</key>
+			<string>com.liquidass.prefs</string>
+			<key>default</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>dylv.liquidassprefs/Reload</string>
+		</dict>
+
+		<!-- OffsetY -->
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>label</key>
+			<string>垂直偏移</string>
+			<key>key</key>
+			<string>DynamicIsland2.OffsetY</string>
+			<key>defaults</key>
+			<string>com.liquidass.prefs</string>
+			<key>default</key>
+			<real>16.0</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>60.0</real>
+			<key>isSegmented</key>
+			<false/>
+			<key>showValue</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>dylv.liquidassprefs/Reload</string>
+		</dict>
+
+		<!-- WidthRatio -->
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>label</key>
+			<string>宽度比例</string>
+			<key>key</key>
+			<string>DynamicIsland2.WidthRatio</string>
+			<key>defaults</key>
+			<string>com.liquidass.prefs</string>
+			<key>default</key>
+			<real>0.78</real>
+			<key>min</key>
+			<real>0.5</real>
+			<key>max</key>
+			<real>1.0</real>
+			<key>isSegmented</key>
+			<false/>
+			<key>showValue</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>dylv.liquidassprefs/Reload</string>
+		</dict>
+
+		<!-- Height -->
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>label</key>
+			<string>高度</string>
+			<key>key</key>
+			<string>DynamicIsland2.Height</string>
+			<key>defaults</key>
+			<string>com.liquidass.prefs</string>
+			<key>default</key>
+			<real>37.0</real>
+			<key>min</key>
+			<real>20.0</real>
+			<key>max</key>
+			<real>80.0</real>
+			<key>isSegmented</key>
+			<false/>
+			<key>showValue</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>dylv.liquidassprefs/Reload</string>
+		</dict>
+
+		<!-- CornerRadius -->
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>label</key>
+			<string>圆角</string>
+			<key>key</key>
+			<string>DynamicIsland2.CornerRadius</string>
+			<key>defaults</key>
+			<string>com.liquidass.prefs</string>
+			<key>default</key>
+			<real>18.5</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>40.0</real>
+			<key>isSegmented</key>
+			<false/>
+			<key>showValue</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>dylv.liquidassprefs/Reload</string>
+		</dict>
+
+		<!-- 展开态参数 -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>展开态设置</string>
+		</dict>
+
+		<!-- ExpandedHeight -->
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>label</key>
+			<string>展开高度</string>
+			<key>key</key>
+			<string>DynamicIsland2.ExpandedHeight</string>
+			<key>defaults</key>
+			<string>com.liquidass.prefs</string>
+			<key>default</key>
+			<real>160.0</real>
+			<key>min</key>
+			<real>80.0</real>
+			<key>max</key>
+			<real>300.0</real>
+			<key>isSegmented</key>
+			<false/>
+			<key>showValue</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>dylv.liquidassprefs/Reload</string>
+		</dict>
+
+		<!-- ExpandedCornerRadius -->
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>label</key>
+			<string>展开圆角</string>
+			<key>key</key>
+			<string>DynamicIsland2.ExpandedCornerRadius</string>
+			<key>defaults</key>
+			<string>com.liquidass.prefs</string>
+			<key>default</key>
+			<real>24.0</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>60.0</real>
+			<key>isSegmented</key>
+			<false/>
+			<key>showValue</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>dylv.liquidassprefs/Reload</string>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -22,6 +22,7 @@ NSString * const LGPrefsSurfaceAppLibrarySearch = @"AppLibrarySearch";
 NSString * const LGPrefsSurfaceNotifications = @"Notifications";
 NSString * const LGPrefsSurfaceNotificationCenter = @"NotificationCenter";
 NSString * const LGPrefsSurfaceDynamicIsland = @"DynamicIsland";
+NSString * const LGPrefsSurfaceDynamicIsland2 = @"DynamicIsland2";
 NSString * const LGPrefsSurfaceQuickActions = @"QuickActions";
 NSString * const LGPrefsSurfacePasscode = @"Passcode";
 NSString * const LGPrefsSurfaceClock = @"Clock";
@@ -53,6 +54,7 @@ BOOL LGPrefsSurfaceIsKnown(NSString *identifier) {
            [identifier isEqualToString:LGPrefsSurfaceNotifications] ||
            [identifier isEqualToString:LGPrefsSurfaceNotificationCenter] ||
            [identifier isEqualToString:LGPrefsSurfaceDynamicIsland] ||
+           [identifier isEqualToString:LGPrefsSurfaceDynamicIsland2] ||
            [identifier isEqualToString:LGPrefsSurfaceQuickActions] ||
            [identifier isEqualToString:LGPrefsSurfacePasscode] ||
            [identifier isEqualToString:LGPrefsSurfaceClock] ||
@@ -85,6 +87,7 @@ NSString *LGPrefsSurfaceTitle(NSString *identifier) {
     if ([identifier isEqualToString:LGPrefsSurfaceNotifications]) return LGLocalized(@"prefs.section.lockscreen_notifications.title");
     if ([identifier isEqualToString:LGPrefsSurfaceNotificationCenter]) return LGLocalized(@"prefs.section.notification_center.title");
     if ([identifier isEqualToString:LGPrefsSurfaceDynamicIsland]) return LGLocalized(@"prefs.section.dynamic_island.title");
+    if ([identifier isEqualToString:LGPrefsSurfaceDynamicIsland2]) return @"灵动岛2";
     if ([identifier isEqualToString:LGPrefsSurfaceQuickActions]) return LGLocalized(@"prefs.section.lockscreen_quick_actions.title");
     if ([identifier isEqualToString:LGPrefsSurfacePasscode]) return LGLocalized(@"prefs.section.lockscreen_passcode.title");
     if ([identifier isEqualToString:LGPrefsSurfaceClock]) return LGLocalized(@"prefs.section.lockscreen_clock.title");
@@ -141,6 +144,7 @@ NSString *LGPrefsSurfaceSymbolName(NSString *identifier) {
     if ([identifier isEqualToString:LGPrefsSurfaceNotifications]) return @"bell.fill";
     if ([identifier isEqualToString:LGPrefsSurfaceNotificationCenter]) return @"list.bullet.rectangle";
     if ([identifier isEqualToString:LGPrefsSurfaceDynamicIsland]) return @"capsule";
+    if ([identifier isEqualToString:LGPrefsSurfaceDynamicIsland2]) return @"capsule.fill";
     if ([identifier isEqualToString:LGPrefsSurfaceQuickActions]) return @"flashlight.on.fill";
     if ([identifier isEqualToString:LGPrefsSurfacePasscode]) return @"circle.grid.3x3.fill";
     if ([identifier isEqualToString:LGPrefsSurfaceClock]) return @"clock.fill";
@@ -173,6 +177,7 @@ NSArray<NSDictionary *> *LGPrefsSurfaceItems(NSString *identifier) {
         @{ @"type": @"nav", @"title": LGPrefsSurfaceTitle(LGPrefsSurfaceNotifications), @"surface_identifier": LGPrefsSurfaceNotifications },
         @{ @"type": @"nav", @"title": LGPrefsSurfaceTitle(LGPrefsSurfaceNotificationCenter), @"surface_identifier": LGPrefsSurfaceNotificationCenter },
         @{ @"type": @"nav", @"title": LGPrefsSurfaceTitle(LGPrefsSurfaceDynamicIsland), @"surface_identifier": LGPrefsSurfaceDynamicIsland },
+        @{ @"type": @"nav", @"title": LGPrefsSurfaceTitle(LGPrefsSurfaceDynamicIsland2), @"surface_identifier": LGPrefsSurfaceDynamicIsland2 },
         @{ @"type": @"nav", @"title": LGPrefsSurfaceTitle(LGPrefsSurfaceQuickActions), @"surface_identifier": LGPrefsSurfaceQuickActions },
         @{ @"type": @"nav", @"title": LGPrefsSurfaceTitle(LGPrefsSurfacePasscode), @"surface_identifier": LGPrefsSurfacePasscode },
         @{ @"type": @"nav", @"title": LGPrefsSurfaceTitle(LGPrefsSurfaceClock), @"surface_identifier": LGPrefsSurfaceClock },
@@ -203,6 +208,7 @@ NSArray<NSDictionary *> *LGPrefsSurfaceItems(NSString *identifier) {
     if ([identifier isEqualToString:LGPrefsSurfaceNotifications]) return LGRendererItemsForHostPrefix(@"Notification");
     if ([identifier isEqualToString:LGPrefsSurfaceNotificationCenter]) return LGRendererItemsForHostPrefix(@"NotificationCenter");
     if ([identifier isEqualToString:LGPrefsSurfaceDynamicIsland]) return LGDynamicIslandItems();
+    if ([identifier isEqualToString:LGPrefsSurfaceDynamicIsland2]) return LGDynamicIsland2Items();
     if ([identifier isEqualToString:LGPrefsSurfaceQuickActions]) return LGRendererItemsForHostPrefix(@"QuickActions");
     if ([identifier isEqualToString:LGPrefsSurfacePasscode]) return LGRendererItemsForHostPrefix(@"Passcode");
     if ([identifier isEqualToString:LGPrefsSurfaceClock]) return LGClockItems();

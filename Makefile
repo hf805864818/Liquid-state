@@ -16,10 +16,13 @@ liquidass_FILES     = Tweak.x Hooks/Dock.x Hooks/Folder.x Hooks/AppIcons.x Hooks
                       Hooks/QuickActions.x Hooks/Passcode.x Hooks/Clock.x Hooks/Alerts.x \
                       Hooks/PreferencesControls.x Hooks/CoverSheet.x Hooks/TabBar.x \
                       Hooks/Keyboard.x Hooks/LandscapeVolume.x Hooks/NotificationCenter.x Hooks/DynamicIsland.x \
+                      Hooks/DynamicIsland2.x \
                       LiquidAssPrefs/LGPrefsLiquidSlider.m \
                       LiquidAssPrefs/LGPrefsLiquidSwitch.m \
                       Shared/LGGlassKit.x Shared/LGLiveBackdropView.m \
                       Shared/LGDIContentProvider.m \
+                      Shared/LGDI2View.m \
+                      Shared/LGDI2Mutex.m \
                       Shared/LGSharedSupport.m
 liquidass_CFLAGS    = -fobjc-arc -DLIQUIDASS_DEBUG=$(LIQUIDASS_DEBUG) -DLG_PACKAGE_VERSION=@\"$(LG_PACKAGE_VERSION)\"
 liquidass_FRAMEWORKS = UIKit QuartzCore CoreText CoreGraphics CoreMotion IOSurface

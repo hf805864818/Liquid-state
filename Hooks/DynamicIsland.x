@@ -41,6 +41,7 @@
 #import "../Shared/LGGlassKit.h"
 #import "../Shared/LGDIContentProvider.h"
 #import "../Shared/LGDIWallpaperCapture.h"
+#import "../Shared/LGDI2Mutex.h"
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -3267,6 +3268,8 @@ static void LGDIScheduleDeferredTeardown(void) {
 static BOOL LGDIFeatureEnabled(void) {
     // [锁屏检测 v5] 锁屏时不渲染液态玻璃，省电降温
     if (sLGDIOnLockScreen) return NO;
+    // [互斥] DI2 开启时，DI1 自动关闭
+    if (LG_prefBool(@"DynamicIsland2.Enabled", NO)) return NO;
     return lgHostEnabled(kLGDIFilterPrefix);
 }
 
@@ -3823,6 +3826,15 @@ static void LGDynamicIslandInit(void) {
     // 设置变更：开关关闭时恢复原黑色岛，开启时重新装配（滤镜参数刷新由
     // LGLiveBackdropView 全局监听 ParametersReloaded 自动完成，无需此处处理）
     lgObservePreferenceReload(^{
+        // [互斥] 如果 DI1 和 DI2 同时开启，自动关闭 DI2
+        if (LG_prefBool(@"DynamicIsland.Enabled", YES) &&
+            LG_prefBool(@"DynamicIsland2.Enabled", NO)) {
+            LGDILog(@"mutual exclusion: DI1 on, turning off DI2");
+            CFPreferencesSetAppValue(CFSTR("DynamicIsland2.Enabled"),
+                                     kCFBooleanFalse,
+                                     (__bridge CFStringRef)LGPrefsDomain);
+            CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+        }
         LGDIReconcile();
 #if LIQUIDASS_DEBUG
         // 诊断开关随时可开：timer 自身按 开关+活动 双条件门控
