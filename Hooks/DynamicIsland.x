@@ -910,7 +910,7 @@ static void LGDIDiagDumpLayered(UIView *v, unsigned int depth,
     // mask / clips / contents 三个维度：黑边最常见的成因
     CALayer *l = v.layer;
     BOOL hasMask = (l.mask != nil);
-    BOOL hasClip = (l.mask != nil) || v clipsToBounds;
+    BOOL hasClip = (l.mask != nil) || v.clipsToBounds;
     BOOL hasContents = (l.contents != nil);
 
     LGDILog(@"  %c%d %@ frame=%@ subs=%lu mask=%d clips=%d contents=%d",
