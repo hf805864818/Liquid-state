@@ -51,6 +51,7 @@ typedef struct {
     X(VolumeHUD,      "dylv.liquidglass.volumehud",    "VolumeHUD",     0.50f,          (28.0f / 220.0f) * 1.8f,       20.0f, 1.8f, 1.60f, 15.0f, 0.8f,  0.0f, "#FFFFFF33", "#00000033") \
     X(NotificationCenter,"dylv.liquidglass.notifcenter", "NotificationCenter", 28.0f / 220.0f, (28.0f / 220.0f) * 1.26f,  20.0f, 2.0f, 1.60f, 2.0f, 1.0f,  0.0f, "#FFFFFF1A", "#00000000") \
     X(DynamicIsland,  "dylv.liquidglass.dynamicisland","DynamicIsland",   0.50f,          0.45f,                         20.0f, 3.5f, 1.70f, 0.1f, 1.0f,  0.6f, "#FFFFFF20", "#0000001A") \
+    X(Island,         "dylv.liquidglass.island",       "Island",          0.50f,          0.45f,                         20.0f, 3.5f, 1.70f, 0.1f, 1.0f,  0.6f, "#FFFFFF20", "#0000001A") \
     X(DynamicIsland2, "dylv.liquidglass.dynamicisland2","DynamicIsland2",  0.50f,          0.45f,                         20.0f, 3.5f, 1.70f, 0.1f, 1.0f,  0.6f, "#FFFFFF20", "#0000001A")
 
 enum LGHostIdentifier {
