@@ -2,8 +2,7 @@
 //  DynamicIsland2.x — 灵动岛2（原版 Liquid (Gl)ass 架构）
 //
 //  完全复刻 Banana deb 的实现方式：
-//  - Hook _SBSystemApertureMagiciansCurtainView（系统灵动岛幕布视图）
-//  - 直接在系统视图上注入玻璃层，不创建独立视图
+//  - Hook 系统灵动岛视图，直接注入玻璃层
 //  - 使用 dylv.liquidglass.island 滤镜类型
 //  - 极简配置：Enabled + HideWhenInactive
 // =============================================================================
@@ -17,9 +16,8 @@
 #import "../Shared/LGHostRegistry.h"
 #import <notify.h>
 
-#ifndef LIQUIDASS_DEBUG
-#define LIQUIDASS_DEBUG 0
-#endif
+// 强制开启调试，方便排查问题
+#define LIQUIDASS_DEBUG 1
 
 static void LGDI2Log(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
 static void LGDI2Log(NSString *fmt, ...) {
@@ -36,6 +34,8 @@ static void LGDI2Log(NSString *fmt, ...) {
 // 私有类前向声明
 @interface _SBSystemApertureMagiciansCurtainView : UIView
 @end
+@interface SBSystemApertureContainerView : UIView
+@end
 
 // =============================================================================
 // 功能开关
@@ -50,7 +50,48 @@ static BOOL LGDI2FeatureEnabled(void) {
 }
 
 // =============================================================================
-// Hook _SBSystemApertureMagiciansCurtainView
+// 递归查找灵动岛相关视图（fallback 方案）
+// =============================================================================
+
+static UIView *LGDI2FindIslandView(UIView *rootView) {
+    if (!rootView) return nil;
+
+    NSString *className = NSStringFromClass(rootView.class);
+    if ([className containsString:@"MagiciansCurtain"] ||
+        [className containsString:@"ApertureContainer"]) {
+        LGDI2Log(@"found island view: %@ (frame=%@)", className,
+                 NSStringFromCGRect(rootView.frame));
+        return rootView;
+    }
+
+    for (UIView *subview in rootView.subviews) {
+        UIView *found = LGDI2FindIslandView(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
+// =============================================================================
+// 尝试在窗口中查找并注入玻璃
+// =============================================================================
+
+static void LGDI2TryInjectInWindow(UIWindow *window) {
+    if (!window) return;
+
+    UIView *islandView = LGDI2FindIslandView(window.rootViewController.view);
+    if (!islandView) {
+        // 也试试直接遍历窗口的子视图
+        islandView = LGDI2FindIslandView(window);
+    }
+
+    if (islandView && LGDI2FeatureEnabled()) {
+        LGDI2Log(@"injecting glass into: %@", NSStringFromClass(islandView.class));
+        [[LGIslandGlassDriver sharedDriver] attachToCurtainView:islandView];
+    }
+}
+
+// =============================================================================
+// Hook _SBSystemApertureMagiciansCurtainView（主要注入点）
 // =============================================================================
 
 %hook _SBSystemApertureMagiciansCurtainView
@@ -58,17 +99,21 @@ static BOOL LGDI2FeatureEnabled(void) {
 - (void)didMoveToSuperview {
     %orig;
 
-    LGDI2Log(@"MagiciansCurtainView didMoveToSuperview: self=%@ superview=%@",
+    LGDI2Log(@"[_SBSystemApertureMagiciansCurtainView] didMoveToSuperview: "
+             @"self=%@ superview=%@ frame=%@",
              NSStringFromClass(self.class),
-             self.superview ? NSStringFromClass(self.superview.class) : @"nil");
+             self.superview ? NSStringFromClass(self.superview.class) : @"nil",
+             NSStringFromCGRect(self.frame));
 
     if (!LGDI2FeatureEnabled()) return;
 
     if (self.superview) {
         // 延迟一下等布局稳定
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-            (int64_t)(0.1 * NSEC_PER_SEC)),
+            (int64_t)(0.2 * NSEC_PER_SEC)),
             dispatch_get_main_queue(), ^{
+            LGDI2Log(@"[_SBSystemApertureMagiciansCurtainView] attaching glass, "
+                     @"bounds=%@", NSStringFromCGRect(self.bounds));
             [[LGIslandGlassDriver sharedDriver] attachToCurtainView:self];
         });
     }
@@ -79,7 +124,6 @@ static BOOL LGDI2FeatureEnabled(void) {
 
     if (!LGDI2FeatureEnabled()) return;
 
-    // 布局变化时更新玻璃层
     LGIslandGlassDriver *driver = [LGIslandGlassDriver sharedDriver];
     if (driver.curtainView == self) {
         [driver updateLayout];
@@ -91,10 +135,10 @@ static BOOL LGDI2FeatureEnabled(void) {
 
     if (!LGDI2FeatureEnabled()) return;
 
-    // 同步隐藏玻璃层
     LGIslandGlassDriver *driver = [LGIslandGlassDriver sharedDriver];
-    if (driver.curtainView == self) {
-        [driver.glass setHidden:hidden];
+    if (driver.curtainView == self && driver.glass) {
+        driver.glass.hidden = hidden;
+        LGDI2Log(@"[_SBSystemApertureMagiciansCurtainView] setHidden=%d", hidden);
     }
 }
 
@@ -103,10 +147,53 @@ static BOOL LGDI2FeatureEnabled(void) {
 
     if (!LGDI2FeatureEnabled()) return;
 
-    // 同步透明度
     LGIslandGlassDriver *driver = [LGIslandGlassDriver sharedDriver];
     if (driver.curtainView == self && driver.glass) {
         driver.glass.alpha = alpha;
+    }
+}
+
+%end
+
+// =============================================================================
+// Hook SBSystemApertureContainerView（备用注入点）
+// =============================================================================
+
+%hook SBSystemApertureContainerView
+
+- (void)didMoveToSuperview {
+    %orig;
+
+    LGDI2Log(@"[SBSystemApertureContainerView] didMoveToSuperview: "
+             @"self=%@ superview=%@ frame=%@",
+             NSStringFromClass(self.class),
+             self.superview ? NSStringFromClass(self.superview.class) : @"nil",
+             NSStringFromCGRect(self.frame));
+
+    if (!LGDI2FeatureEnabled()) return;
+
+    if (self.superview) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+            (int64_t)(0.3 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+            // 检查是否已经通过 MagiciansCurtainView 注入了
+            LGIslandGlassDriver *driver = [LGIslandGlassDriver sharedDriver];
+            if (!driver.curtainView) {
+                LGDI2Log(@"[SBSystemApertureContainerView] fallback inject");
+                [driver attachToCurtainView:self];
+            }
+        });
+    }
+}
+
+- (void)layoutSubviews {
+    %orig;
+
+    if (!LGDI2FeatureEnabled()) return;
+
+    LGIslandGlassDriver *driver = [LGIslandGlassDriver sharedDriver];
+    if (driver.curtainView == self) {
+        [driver updateLayout];
     }
 }
 
@@ -121,20 +208,23 @@ static void LGDynamicIsland2Init(void) {
     if (!LGIsSpringBoardProcess()) return;
     if (@available(iOS 16.0, *)) {} else return;
 
-    LGDI2Log(@"constructor: DI2 module loaded (original Liquid (Gl)ass style)");
+    LGDI2Log(@"========================================");
+    LGDI2Log(@"DI2 module loaded (Liquid (Gl)ass style)");
+    LGDI2Log(@"========================================");
 
-    // 验证 HostRegistry 中存在 Island 条目
+    // 验证 HostRegistry
     NSString *filterType = LGFilterTypeForHostPrefix(@"Island");
-    if (filterType) {
-        LGDI2Log(@"host registry OK: filterType=%@", filterType);
-    } else {
-        LGDI2Log(@"WARNING: Island not found in LG_HOST_REGISTRY, using fallback");
-    }
+    LGDI2Log(@"HostRegistry: Island filterType=%@", filterType);
 
-    // [启动时互斥检查] 如果 DI2 已开启，确保 DI1 关闭
-    if (LG_prefBool(@"DynamicIsland2.Enabled", NO) &&
-        LG_prefBool(@"DynamicIsland.Enabled", YES)) {
-        LGDI2Log(@"startup mutual exclusion: DI2 enabled, disabling DI1");
+    // 检查功能是否开启
+    BOOL di2Enabled = LG_prefBool(@"DynamicIsland2.Enabled", NO);
+    BOOL di1Enabled = LG_prefBool(@"DynamicIsland.Enabled", YES);
+    BOOL globalEnabled = LG_globalEnabled();
+    LGDI2Log(@"config: DI2=%d DI1=%d global=%d", di2Enabled, di1Enabled, globalEnabled);
+
+    // 启动时互斥检查
+    if (di2Enabled && di1Enabled) {
+        LGDI2Log(@"startup: DI2+DI1 both enabled, disabling DI1");
         CFPreferencesSetAppValue(CFSTR("DynamicIsland.Enabled"),
                                  kCFBooleanFalse,
                                  (__bridge CFStringRef)LGPrefsDomain);
@@ -142,28 +232,53 @@ static void LGDynamicIsland2Init(void) {
         notify_post(LGPrefsChangedNotificationCString);
     }
 
-    // 监听偏好变更（用于互斥切换和配置刷新）
+    // 监听偏好变更
     lgObservePreferenceReload(^{
-        LGDI2Log(@"preference reload");
+        LGDI2Log(@"preference reload fired");
 
-        // [互斥] 如果 DI2 和 DI1 同时开启，自动关闭 DI1
-        if (LG_prefBool(@"DynamicIsland2.Enabled", NO) &&
-            LG_prefBool(@"DynamicIsland.Enabled", YES)) {
-            LGDI2Log(@"mutual exclusion: DI2 on, turning off DI1");
+        BOOL di2Now = LG_prefBool(@"DynamicIsland2.Enabled", NO);
+        BOOL di1Now = LG_prefBool(@"DynamicIsland.Enabled", YES);
+        LGDI2Log(@"  DI2=%d DI1=%d", di2Now, di1Now);
+
+        // 互斥处理
+        if (di2Now && di1Now) {
+            LGDI2Log(@"  mutual exclusion: turning off DI1");
             CFPreferencesSetAppValue(CFSTR("DynamicIsland.Enabled"),
                                      kCFBooleanFalse,
                                      (__bridge CFStringRef)LGPrefsDomain);
             CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
         }
 
-        // 刷新驱动配置
         LGIslandGlassDriver *driver = [LGIslandGlassDriver sharedDriver];
         if (LGDI2FeatureEnabled()) {
+            LGDI2Log(@"  feature enabled, refreshing");
             [driver refreshConfiguration];
+            // 如果还没注入，尝试在所有窗口中查找
+            if (!driver.curtainView) {
+                for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                    LGDI2TryInjectInWindow(w);
+                }
+            }
         } else {
+            LGDI2Log(@"  feature disabled, detaching");
             [driver detach];
         }
     });
 
-    LGDI2Log(@"DI2 module initialized (original Liquid (Gl)ass architecture)");
+    // 延迟尝试首次注入（等 SpringBoard 完全启动）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+        (int64_t)(2.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+        LGDI2Log(@"delayed initial injection attempt");
+        if (LGDI2FeatureEnabled()) {
+            for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                LGDI2Log(@"  scanning window: %@", NSStringFromClass(w.class));
+                LGDI2TryInjectInWindow(w);
+            }
+        } else {
+            LGDI2Log(@"  feature not enabled, skipping");
+        }
+    });
+
+    LGDI2Log(@"DI2 initialization complete");
 }

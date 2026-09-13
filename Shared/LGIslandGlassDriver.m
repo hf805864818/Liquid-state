@@ -1,7 +1,11 @@
 // =============================================================================
 //  LGIslandGlassDriver.m — 灵动岛玻璃驱动实现（原版 Liquid (Gl)ass 架构）
 //
-//  完全复刻原版方式：直接在系统灵动岛幕布视图上注入玻璃层
+//  完全复刻原版方式：
+//  - 找到系统灵动岛幕布视图 (_SBSystemApertureMagiciansCurtainView)
+//  - 将幕布视图背景设为透明
+//  - 在幕布视图的 superview 上插入玻璃层（幕布下方）
+//  - 玻璃尺寸和位置跟随幕布视图自动同步
 // =============================================================================
 
 #import "LGIslandGlassDriver.h"
@@ -10,9 +14,8 @@
 #import "LGHostRegistry.h"
 #import <objc/runtime.h>
 
-#ifndef LIQUIDASS_DEBUG
-#define LIQUIDASS_DEBUG 0
-#endif
+// 强制开启调试
+#define LIQUIDASS_DEBUG 1
 
 static void LGIslandLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
 static void LGIslandLog(NSString *fmt, ...) {
@@ -28,6 +31,7 @@ static void LGIslandLog(NSString *fmt, ...) {
 
 static const void *kLGIslandGlassKey = &kLGIslandGlassKey;
 static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
+static const void *kLGIslandOriginalBGKey = &kLGIslandOriginalBGKey;
 
 @implementation LGIslandGlassDriver
 
@@ -55,7 +59,10 @@ static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
     if (!curtainView) return;
     if (self.curtainView == curtainView && self.glass) return;
 
-    LGIslandLog(@"attachToCurtainView: %@", NSStringFromClass(curtainView.class));
+    LGIslandLog(@"attachToCurtainView: %@ frame=%@ bounds=%@",
+                 NSStringFromClass(curtainView.class),
+                 NSStringFromCGRect(curtainView.frame),
+                 NSStringFromCGRect(curtainView.bounds));
 
     // 如果之前挂载过，先卸载
     if (self.curtainView && self.curtainView != curtainView) {
@@ -64,7 +71,19 @@ static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
 
     self.curtainView = curtainView;
 
-    // 创建玻璃视图
+    // 保存原始背景色
+    UIColor *originalBG = objc_getAssociatedObject(curtainView, kLGIslandOriginalBGKey);
+    if (!originalBG) {
+        originalBG = curtainView.backgroundColor ?: [UIColor blackColor];
+        objc_setAssociatedObject(curtainView, kLGIslandOriginalBGKey, originalBG,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    // 将幕布视图背景设为透明，让玻璃能透出来
+    curtainView.backgroundColor = [UIColor clearColor];
+    LGIslandLog(@"curtainView background set to clearColor");
+
+    // 创建玻璃视图（加在 superview 上，在 curtainView 下方）
     [self createGlassView];
 
     // 创建增益图层
@@ -79,10 +98,21 @@ static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
     // 关联对象（防止重复创建）
     objc_setAssociatedObject(curtainView, kLGIslandDriverKey, self,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    LGIslandLog(@"attach complete: glass=%@", self.glass ? @"OK" : @"FAIL");
 }
 
 - (void)detach {
     LGIslandLog(@"detach");
+
+    // 恢复原始背景色
+    if (self.curtainView) {
+        UIColor *originalBG = objc_getAssociatedObject(self.curtainView, kLGIslandOriginalBGKey);
+        if (originalBG) {
+            self.curtainView.backgroundColor = originalBG;
+            LGIslandLog(@"restored original background color");
+        }
+    }
 
     if (self.glass) {
         [self.glass removeFromSuperview];
@@ -105,29 +135,45 @@ static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
     if (!self.curtainView) return;
     if (self.glass) return;
 
-    LGIslandLog(@"createGlassView");
+    UIView *containerView = self.curtainView.superview;
+    if (!containerView) {
+        LGIslandLog(@"ERROR: curtainView has no superview");
+        return;
+    }
+
+    LGIslandLog(@"createGlassView in container: %@", NSStringFromClass(containerView.class));
 
     // 使用 island 滤镜类型（原版方式）
     NSString *filterType = LGFilterTypeForHostPrefix(@"Island");
     if (!filterType) {
         filterType = @"dylv.liquidglass.island";
     }
+    LGIslandLog(@"  filterType: %@", filterType);
 
-    self.glass = [[LGLiveBackdropView alloc] initWithFrame:self.curtainView.bounds
+    // 计算玻璃的 frame（和 curtainView 一样的位置和大小）
+    CGRect glassFrame = [containerView convertRect:self.curtainView.frame
+                                       fromView:self.curtainView.superview];
+
+    self.glass = [[LGLiveBackdropView alloc] initWithFrame:glassFrame
                                                 groupName:@"IslandGlass"
                                                filterType:filterType];
-    self.glass.autoresizingMask = UIViewAutoresizingFlexibleWidth |
-                                  UIViewAutoresizingFlexibleHeight;
+    self.glass.autoresizingMask = UIViewAutoresizingNone;
     self.glass.alpha = 1.0;
+    self.glass.userInteractionEnabled = NO;
 
-    // 插入到幕布视图的最底层（在系统内容下方）
-    [self.curtainView insertSubview:self.glass atIndex:0];
+    // 插入到 curtainView 的下方
+    NSInteger curtainIndex = [containerView.subviews indexOfObject:self.curtainView];
+    if (curtainIndex == NSNotFound) {
+        curtainIndex = 0;
+    }
+    [containerView insertSubview:self.glass atIndex:curtainIndex];
+
+    LGIslandLog(@"  glass inserted at index %ld, frame=%@",
+                 (long)curtainIndex, NSStringFromCGRect(self.glass.frame));
 
     // 关联对象
     objc_setAssociatedObject(self.curtainView, kLGIslandGlassKey,
                              self.glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    LGIslandLog(@"glass view created: %@", NSStringFromCGRect(self.glass.frame));
 }
 
 #pragma mark - 增益图层创建（液态高光效果）
@@ -140,21 +186,24 @@ static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
 
     self.gainMapLayer = [CALayer layer];
     self.gainMapLayer.name = @"LGIslandGainMapLayer";
-    self.gainMapLayer.opacity = 0.3;
+    self.gainMapLayer.opacity = 0.25;
+    self.gainMapLayer.zPosition = 0.1;
 
     // 创建渐变层模拟增益图效果
     CAGradientLayer *gradient = [CAGradientLayer layer];
     gradient.colors = @[
-        (__bridge id)[UIColor colorWithWhite:1.0 alpha:0.6].CGColor,
-        (__bridge id)[UIColor colorWithWhite:1.0 alpha:0.2].CGColor,
+        (__bridge id)[UIColor colorWithWhite:1.0 alpha:0.5].CGColor,
+        (__bridge id)[UIColor colorWithWhite:1.0 alpha:0.15].CGColor,
         (__bridge id)[UIColor clearColor].CGColor
     ];
-    gradient.locations = @[@0.0, @0.5, @1.0];
+    gradient.locations = @[@0.0, @0.4, @1.0];
     gradient.startPoint = CGPointMake(0.5, 0.0);
     gradient.endPoint = CGPointMake(0.5, 1.0);
     [self.gainMapLayer addSublayer:gradient];
 
-    [self.curtainView.layer addSublayer:self.gainMapLayer];
+    if (self.glass) {
+        [self.glass.layer addSublayer:self.gainMapLayer];
+    }
 }
 
 #pragma mark - 边缘高光层
@@ -170,8 +219,11 @@ static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
     // 顶部边缘高光
     CALayer *topRim = [CALayer layer];
     topRim.name = @"LGIslandRimTop";
-    topRim.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.15].CGColor;
-    [self.curtainView.layer addSublayer:topRim];
+    topRim.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12].CGColor;
+    topRim.zPosition = 0.2;
+    if (self.glass) {
+        [self.glass.layer addSublayer:topRim];
+    }
     [layers addObject:topRim];
 
     self.rimLayers = [layers copy];
@@ -181,24 +233,36 @@ static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
 
 - (void)updateLayout {
     if (!self.curtainView || !self.layoutEnabled) return;
+    if (!self.glass) return;
 
-    CGRect bounds = self.curtainView.bounds;
-    CGFloat cornerRadius = CGRectGetHeight(bounds) / 2.0;
+    UIView *containerView = self.glass.superview;
+    if (!containerView) return;
 
-    LGIslandLog(@"updateLayout: bounds=%@ cornerRadius=%.1f",
-                NSStringFromCGRect(bounds), cornerRadius);
+    // 同步玻璃的 frame 到 curtainView 的位置
+    CGRect curtainFrame = self.curtainView.frame;
+    CGFloat cornerRadius = CGRectGetHeight(curtainFrame) / 2.0;
 
-    // 更新玻璃视图
-    if (self.glass) {
-        self.glass.frame = bounds;
-        self.glass.layer.cornerRadius = cornerRadius;
-        self.glass.layer.masksToBounds = YES;
-        [self.glass applyFilters];
-    }
+    LGIslandLog(@"updateLayout: curtainFrame=%@ cornerRadius=%.1f",
+                 NSStringFromCGRect(curtainFrame), cornerRadius);
+
+    // 转换坐标到玻璃所在的容器视图
+    CGRect glassFrame = [containerView convertRect:curtainFrame
+                                       fromView:self.curtainView.superview];
+    self.glass.frame = glassFrame;
+
+    // 更新圆角
+    self.glass.layer.cornerRadius = cornerRadius;
+    self.glass.layer.masksToBounds = YES;
+
+    // 重新应用滤镜
+    [self.glass applyFilters];
+
+    // 强制刷新 backdrop（灵动岛窗口特殊，需要强制重采样）
+    [self.glass lgForceRefreshBackdrop];
 
     // 更新增益图层
     if (self.gainMapLayer) {
-        self.gainMapLayer.frame = bounds;
+        self.gainMapLayer.frame = self.glass.bounds;
         self.gainMapLayer.cornerRadius = cornerRadius;
         self.gainMapLayer.masksToBounds = YES;
 
@@ -210,7 +274,7 @@ static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
     // 更新边缘高光层
     if (self.rimLayers.count > 0) {
         CALayer *topRim = self.rimLayers.firstObject;
-        topRim.frame = CGRectMake(0, 0, CGRectGetWidth(bounds), 1.5);
+        topRim.frame = CGRectMake(0, 0, CGRectGetWidth(self.glass.bounds), 1.0);
         topRim.cornerRadius = cornerRadius;
         topRim.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
     }
@@ -261,6 +325,7 @@ static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
 
     if (self.glass) {
         [self.glass applyFilters];
+        [self.glass lgForceRefreshBackdrop];
     }
 
     [self updateLayout];
