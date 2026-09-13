@@ -17,6 +17,7 @@ typedef NS_ENUM(NSInteger, LGDI2LayoutMode) {
 @interface LGDI2View : UIView
 
 @property (nonatomic, assign) LGDI2LayoutMode layoutMode;
+@property (nonatomic, strong, readonly) LGLiveBackdropView *glassView;
 
 // 创建并安装到指定父视图
 + (instancetype)installInSuperview:(UIView *)superview
