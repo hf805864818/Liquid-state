@@ -1,13 +1,16 @@
 // =============================================================================
 //  DynamicIsland2.x — 灵动岛2（原版 Liquid (Gl)ass 架构）
 //
-//  策略：
-//  1. 先尝试 hook 已知的灵动岛类名
-//  2. 同时在 SpringBoard 启动后递归扫描所有窗口查找灵动岛视图
-//  3. 找到后注入玻璃
+//  基于逆向分析的原版实现方式：
+//  1. Hook SBFTouchPassThroughView（稳定容器，玻璃宿主）
+//  2. Hook _SBSystemApertureMagiciansCurtainView（黑色幕布）
+//  3. 隐藏系统黑色材质（material + gainMap）
+//  4. 玻璃插在 SBFTouchPassThroughView 里、curtainView 下方
+//  5. 玻璃尺寸跟随 curtainView 形变
 // =============================================================================
 
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import "../Shared/LGIslandGlassDriver.h"
 #import "../Shared/LGDI2Mutex.h"
@@ -16,7 +19,6 @@
 #import "../Shared/LGHostRegistry.h"
 #import <notify.h>
 
-// 强制开启调试
 #define LIQUIDASS_DEBUG 1
 
 static void LGDI2Log(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
@@ -31,6 +33,12 @@ static void LGDI2Log(NSString *fmt, ...) {
 #endif
 }
 
+// 私有类前向声明
+@interface _SBSystemApertureMagiciansCurtainView : UIView
+@end
+@interface SBFTouchPassThroughView : UIView
+@end
+
 // =============================================================================
 // 功能开关
 // =============================================================================
@@ -43,176 +51,221 @@ static BOOL LGDI2FeatureEnabled(void) {
 }
 
 // =============================================================================
-// 递归查找灵动岛视图
+// 全局状态
 // =============================================================================
 
-static BOOL LGDI2LooksLikeIslandView(UIView *view) {
-    if (!view) return NO;
-    NSString *cls = NSStringFromClass(view.class);
-    // 匹配各种可能的灵动岛视图类名
-    return ([cls containsString:@"MagiciansCurtain"] ||
-            [cls containsString:@"ApertureCurtain"] ||
-            [cls containsString:@"IslandCurtain"]);
-}
+static __weak UIView *sLGDI2Curtain = nil;    // 黑色幕布
+static __weak UIView *sLGDI2Host = nil;       // 玻璃宿主（TouchPassThroughView）
+static __weak LGLiveBackdropView *sLGDI2Glass = nil;  // 玻璃视图
 
-static UIView *LGDI2FindIslandViewInView(UIView *rootView) {
-    if (!rootView) return nil;
+// =============================================================================
+// 隐藏系统黑色材质
+// =============================================================================
 
-    if (LGDI2LooksLikeIslandView(rootView)) {
-        return rootView;
-    }
+static void LGDI2HideSystemBlack(UIView *curtain) {
+    if (!curtain) return;
 
-    for (UIView *subview in rootView.subviews) {
-        UIView *found = LGDI2FindIslandViewInView(subview);
-        if (found) return found;
-    }
-    return nil;
-}
+    LGDI2Log(@"hideSystemBlack in %@", NSStringFromClass(curtain.class));
 
-static UIView *LGDI2FindIslandViewGlobally(void) {
-    NSArray *windows = [UIApplication sharedApplication].windows;
-    for (UIWindow *w in windows) {
-        UIView *found = LGDI2FindIslandViewInView(w);
-        if (found) {
-            LGDI2Log(@"found island view in window: %@", NSStringFromClass(w.class));
-            return found;
+    // 递归隐藏材质/增益图/装饰视图
+    for (UIView *sv in curtain.subviews) {
+        NSString *cls = NSStringFromClass(sv.class);
+        BOOL shouldHide = NO;
+
+        if ([cls containsString:@"Material"]) shouldHide = YES;
+        if ([cls containsString:@"GainMap"]) shouldHide = YES;
+        if ([cls containsString:@"Backdrop"]) shouldHide = YES;
+        if ([cls containsString:@"Vibrancy"]) shouldHide = YES;
+
+        if (shouldHide) {
+            LGDI2Log(@"  hiding: %@ (was hidden=%d)", cls, sv.hidden);
+            sv.hidden = YES;
         }
-        // 也试试 rootViewController.view
-        if (w.rootViewController.view) {
-            found = LGDI2FindIslandViewInView(w.rootViewController.view);
-            if (found) {
-                LGDI2Log(@"found island view in window.rootViewController.view: %@",
-                         NSStringFromClass(w.class));
-                return found;
+
+        // 继续递归
+        LGDI2HideSystemBlack(sv);
+    }
+
+    // 幕布本身也清底
+    curtain.backgroundColor = [UIColor clearColor];
+}
+
+// =============================================================================
+// 创建玻璃并插入
+// =============================================================================
+
+static void LGDI2EngageGlass(void) {
+    if (!LGDI2FeatureEnabled()) return;
+    if (sLGDI2Glass) return;  // 已经有了
+    if (!sLGDI2Curtain || !sLGDI2Host) return;
+
+    LGDI2Log(@"engageGlass: curtain=%@ host=%@",
+             NSStringFromClass(sLGDI2Curtain.class),
+             NSStringFromClass(sLGDI2Host.class));
+
+    // 创建玻璃
+    NSString *filterType = LGFilterTypeForHostPrefix(@"Island");
+    if (!filterType) filterType = @"dylv.liquidglass.island";
+
+    CGRect glassFrame = [sLGDI2Host convertRect:sLGDI2Curtain.frame
+                                       fromView:sLGDI2Curtain.superview];
+
+    LGLiveBackdropView *glass = [[LGLiveBackdropView alloc]
+        initWithFrame:glassFrame
+            groupName:@"IslandGlass"
+           filterType:filterType];
+    glass.userInteractionEnabled = NO;
+    glass.alpha = 1.0;
+
+    // 插在 curtainView 的下方
+    NSInteger curtainIdx = [sLGDI2Host.subviews indexOfObject:sLGDI2Curtain];
+    if (curtainIdx == NSNotFound) curtainIdx = 0;
+    [sLGDI2Host insertSubview:glass atIndex:curtainIdx];
+
+    glass.layer.cornerRadius = CGRectGetHeight(glassFrame) / 2.0;
+    glass.layer.masksToBounds = YES;
+
+    [glass applyFilters];
+    [glass lgForceRefreshBackdrop];
+
+    sLGDI2Glass = glass;
+
+    // 隐藏系统黑色背景
+    LGDI2HideSystemBlack(sLGDI2Curtain);
+
+    LGDI2Log(@"engageGlass complete: frame=%@ cornerRadius=%.1f",
+             NSStringFromCGRect(glassFrame), CGRectGetHeight(glassFrame) / 2.0);
+}
+
+// 移除玻璃
+static void LGDI2DisengageGlass(void) {
+    if (sLGDI2Glass) {
+        [sLGDI2Glass removeFromSuperview];
+        sLGDI2Glass = nil;
+        LGDI2Log(@"disengageGlass");
+    }
+}
+
+// 更新玻璃布局（跟随 curtainView）
+static void LGDI2UpdateGlassLayout(void) {
+    if (!sLGDI2Glass || !sLGDI2Curtain || !sLGDI2Host) return;
+
+    CGRect curtainFrame = sLGDI2Curtain.frame;
+    CGRect glassFrame = [sLGDI2Host convertRect:curtainFrame
+                                       fromView:sLGDI2Curtain.superview];
+
+    sLGDI2Glass.frame = glassFrame;
+    CGFloat cornerRadius = CGRectGetHeight(glassFrame) / 2.0;
+    sLGDI2Glass.layer.cornerRadius = cornerRadius;
+    sLGDI2Glass.layer.masksToBounds = YES;
+
+    [sLGDI2Glass applyFilters];
+}
+
+// =============================================================================
+// Hook _SBSystemApertureMagiciansCurtainView
+// =============================================================================
+
+%hook _SBSystemApertureMagiciansCurtainView
+
+- (void)didMoveToWindow {
+    %orig;
+
+    LGDI2Log(@"[Curtain] didMoveToWindow: window=%@",
+             self.window ? NSStringFromClass(self.window.class) : @"nil");
+
+    if (!LGDI2FeatureEnabled()) return;
+
+    if (self.window) {
+        sLGDI2Curtain = self;
+        // 尝试装配玻璃
+        LGDI2EngageGlass();
+    } else {
+        if (sLGDI2Curtain == self) {
+            sLGDI2Curtain = nil;
+            LGDI2DisengageGlass();
+        }
+    }
+}
+
+- (void)layoutSubviews {
+    %orig;
+
+    if (!LGDI2FeatureEnabled()) return;
+
+    sLGDI2Curtain = self;
+
+    if (sLGDI2Glass) {
+        LGDI2UpdateGlassLayout();
+    } else {
+        LGDI2EngageGlass();
+    }
+}
+
+- (void)setHidden:(BOOL)hidden {
+    %orig(hidden);
+
+    if (!LGDI2FeatureEnabled()) return;
+
+    if (sLGDI2Glass && sLGDI2Curtain == self) {
+        sLGDI2Glass.hidden = hidden;
+    }
+}
+
+- (void)setAlpha:(CGFloat)alpha {
+    %orig(alpha);
+
+    if (!LGDI2FeatureEnabled()) return;
+
+    if (sLGDI2Glass && sLGDI2Curtain == self) {
+        sLGDI2Glass.alpha = alpha;
+    }
+}
+
+%end
+
+// =============================================================================
+// Hook SBFTouchPassThroughView（玻璃的稳定宿主）
+// =============================================================================
+
+%hook SBFTouchPassThroughView
+
+- (void)didMoveToWindow {
+    %orig;
+
+    LGDI2Log(@"[TouchPassThrough] didMoveToWindow: window=%@ subviews=%lu",
+             self.window ? NSStringFromClass(self.window.class) : @"nil",
+             (unsigned long)self.subviews.count);
+
+    if (!LGDI2FeatureEnabled()) return;
+
+    if (self.window) {
+        // 检查这个 TouchPassThroughView 是不是灵动岛的
+        // （它的子视图里应该有 MagiciansCurtainView）
+        for (UIView *sv in self.subviews) {
+            if ([NSStringFromClass(sv.class) containsString:@"MagiciansCurtain"]) {
+                LGDI2Log(@"[TouchPassThrough] found island host");
+                sLGDI2Host = self;
+                sLGDI2Curtain = sv;
+                LGDI2EngageGlass();
+                break;
             }
         }
     }
-    return nil;
 }
 
-// 打印视图层级（调试用）
-static void LGDI2PrintViewTree(UIView *view, NSInteger depth) {
-    if (!view) return;
-    NSString *indent = [@"" stringByPaddingToLength:depth * 2 withString:@" " startingAtIndex:0];
-    CGRect f = view.frame;
-    LGDI2Log(@"%@%@ (%.0f,%.0f %.0fx%.0f) alpha=%.2f hidden=%d",
-             indent, NSStringFromClass(view.class),
-             f.origin.x, f.origin.y, f.size.width, f.size.height,
-             view.alpha, view.hidden);
-    for (UIView *sv in view.subviews) {
-        LGDI2PrintViewTree(sv, depth + 1);
-    }
-}
-
-// =============================================================================
-// 尝试注入
-// =============================================================================
-
-static void LGDI2TryInject(void) {
-    if (!LGDI2FeatureEnabled()) return;
-
-    LGIslandGlassDriver *driver = [LGIslandGlassDriver sharedDriver];
-    if (driver.curtainView && driver.glass) {
-        // 已经注入了，刷新一下
-        [driver refreshConfiguration];
-        return;
-    }
-
-    UIView *islandView = LGDI2FindIslandViewGlobally();
-    if (islandView) {
-        LGDI2Log(@"injecting glass into island view: %@", NSStringFromClass(islandView.class));
-        LGDI2Log(@"  island view frame: %@", NSStringFromCGRect(islandView.frame));
-        LGDI2Log(@"  island view bounds: %@", NSStringFromCGRect(islandView.bounds));
-        LGDI2Log(@"  subviews:");
-        LGDI2PrintViewTree(islandView, 2);
-
-        [driver attachToCurtainView:islandView];
-    } else {
-        LGDI2Log(@"no island view found, will retry later");
-        // 打印所有窗口类名方便排查
-        for (UIWindow *w in [UIApplication sharedApplication].windows) {
-            LGDI2Log(@"  window: %@ subviews=%lu",
-                     NSStringFromClass(w.class), (unsigned long)w.subviews.count);
-        }
-    }
-}
-
-// =============================================================================
-// 动态 hook：尝试对已知的灵动岛类名进行 hook
-// 如果类不存在（类名不对），%hook 会静默失败，所以我们用 runtime 方式检查
-// =============================================================================
-
-// 尝试多个可能的类名
-static NSArray *LGDI2CandidateClassNames(void) {
-    return @[
-        @"_SBSystemApertureMagiciansCurtainView",
-        @"SBSystemApertureMagiciansCurtainView",
-        @"_SAUIMagiciansCurtainView",
-        @"SAUIMagiciansCurtainView",
-    ];
-}
-
-static Class LGDI2FindIslandViewClass(void) {
-    for (NSString *name in LGDI2CandidateClassNames()) {
-        Class cls = NSClassFromString(name);
-        if (cls) {
-            LGDI2Log(@"found island view class: %@", name);
-            return cls;
-        }
-    }
-    LGDI2Log(@"no island view class found from candidates");
-    return nil;
-}
-
-// =============================================================================
-// 用 runtime 方式 swizzle layoutSubviews
-// =============================================================================
-
-static IMP original_LGDI2_layoutSubviews = NULL;
-
-static void swizzled_LGDI2_layoutSubviews(id self, SEL _cmd) {
-    if (original_LGDI2_layoutSubviews) {
-        ((void(*)(id, SEL))original_LGDI2_layoutSubviews)(self, _cmd);
-    }
+- (void)layoutSubviews {
+    %orig;
 
     if (!LGDI2FeatureEnabled()) return;
 
-    @autoreleasepool {
-        UIView *view = (UIView *)self;
-        LGIslandGlassDriver *driver = [LGIslandGlassDriver sharedDriver];
-
-        if (driver.curtainView != view) {
-            // 首次发现，注入
-            LGDI2Log(@"swizzled layoutSubviews: found island view %@",
-                     NSStringFromClass([view class]));
-            [driver attachToCurtainView:view];
-        } else {
-            // 已注入，更新布局
-            [driver updateLayout];
-        }
+    // 如果这是灵动岛的宿主，更新玻璃布局
+    if (sLGDI2Host == self && sLGDI2Glass) {
+        LGDI2UpdateGlassLayout();
     }
 }
 
-static void LGDI2SwizzleIslandClass(void) {
-    Class islandCls = LGDI2FindIslandViewClass();
-    if (!islandCls) {
-        LGDI2Log(@"cannot swizzle: no island class found");
-        return;
-    }
-
-    SEL layoutSel = @selector(layoutSubviews);
-    Method layoutMethod = class_getInstanceMethod(islandCls, layoutSel);
-    if (!layoutMethod) {
-        LGDI2Log(@"cannot swizzle: layoutSubviews not found on %@",
-                 NSStringFromClass(islandCls));
-        return;
-    }
-
-    original_LGDI2_layoutSubviews = method_getImplementation(layoutMethod);
-    method_setImplementation(layoutMethod, (IMP)swizzled_LGDI2_layoutSubviews);
-
-    LGDI2Log(@"swizzled layoutSubviews on %@", NSStringFromClass(islandCls));
-}
+%end
 
 // =============================================================================
 // 构造函数
@@ -224,10 +277,9 @@ static void LGDynamicIsland2Init(void) {
     if (@available(iOS 16.0, *)) {} else return;
 
     LGDI2Log(@"========================================");
-    LGDI2Log(@"DI2 module loaded");
+    LGDI2Log(@"DI2 module loaded (Liquid (Gl)ass architecture)");
     LGDI2Log(@"========================================");
 
-    // 检查功能
     BOOL di2Enabled = LG_prefBool(@"DynamicIsland2.Enabled", NO);
     BOOL di1Enabled = LG_prefBool(@"DynamicIsland.Enabled", YES);
     LGDI2Log(@"config: DI2=%d DI1=%d global=%d",
@@ -243,9 +295,6 @@ static void LGDynamicIsland2Init(void) {
         notify_post(LGPrefsChangedNotificationCString);
     }
 
-    // 尝试 swizzle 灵动岛类
-    LGDI2SwizzleIslandClass();
-
     // 监听偏好变更
     lgObservePreferenceReload(^{
         LGDI2Log(@"preference reload");
@@ -253,7 +302,6 @@ static void LGDynamicIsland2Init(void) {
         BOOL di2Now = LG_prefBool(@"DynamicIsland2.Enabled", NO);
         BOOL di1Now = LG_prefBool(@"DynamicIsland.Enabled", YES);
 
-        // 互斥
         if (di2Now && di1Now) {
             LGDI2Log(@"  mutual exclusion: turning off DI1");
             CFPreferencesSetAppValue(CFSTR("DynamicIsland.Enabled"),
@@ -262,26 +310,12 @@ static void LGDynamicIsland2Init(void) {
             CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
         }
 
-        LGIslandGlassDriver *driver = [LGIslandGlassDriver sharedDriver];
         if (LGDI2FeatureEnabled()) {
-            LGDI2Log(@"  feature enabled, trying inject");
-            LGDI2TryInject();
+            LGDI2EngageGlass();
         } else {
-            LGDI2Log(@"  feature disabled, detaching");
-            [driver detach];
+            LGDI2DisengageGlass();
         }
     });
-
-    // 多次延迟尝试（灵动岛可能启动较晚）
-    NSArray *delays = @[@1.0, @2.0, @4.0, @8.0];
-    for (NSNumber *delay in delays) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-            (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
-            dispatch_get_main_queue(), ^{
-            LGDI2Log(@"delayed inject attempt (%.0fs)", delay.doubleValue);
-            LGDI2TryInject();
-        });
-    }
 
     LGDI2Log(@"DI2 init complete");
 }
