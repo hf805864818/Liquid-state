@@ -69,11 +69,25 @@ static BOOL LGDI2FeatureEnabled(void) {
 // 视图树查找
 // =============================================================================
 
+// 安全获取所有窗口（兼容 connectedScenes）
+static NSArray<UIWindow *> *LGDI2AllWindows(void) {
+    NSMutableArray<UIWindow *> *result = [NSMutableArray array];
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        [result addObjectsFromArray:((UIWindowScene *)scene).windows];
+    }
+    if (result.count == 0) {
+        [result addObjectsFromArray:[UIApplication sharedApplication].windows];
+    }
+    return result;
+}
+
 // 在所有窗口中查找合适的挂载点
 // 优先级：CoverSheet 窗口 > 主窗口
 static UIView *LGDI2FindHostView(void) {
+    NSArray<UIWindow *> *windows = LGDI2AllWindows();
     // 优先查找 CoverSheet 窗口（锁屏态）
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+    for (UIWindow *w in windows) {
         NSString *winClass = NSStringFromClass(w.class);
         if ([winClass containsString:@"CoverSheet"] ||
             [winClass containsString:@"Notification"]) {
@@ -87,11 +101,12 @@ static UIView *LGDI2FindHostView(void) {
             }
         }
     }
-    // 回退：主窗口（桌面态）
-    UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
-    if (mainWindow) {
-        LGDI2Log(@"fallback to main window: %@", NSStringFromClass(mainWindow.class));
-        return mainWindow;
+    // 回退：第一个有视图的窗口（桌面态）
+    for (UIWindow *w in windows) {
+        if (w.rootViewController.view) {
+            LGDI2Log(@"fallback to window: %@", NSStringFromClass(w.class));
+            return w.rootViewController.view;
+        }
     }
     LGDI2Log(@"ERROR: no host view found!");
     return nil;

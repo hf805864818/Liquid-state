@@ -163,13 +163,7 @@ static void LGDI2Log(NSString *fmt, ...) {
 // compact (长药丸) / expanded (展开卡片) = 活动
 // inert (默认小药丸) / minimal (极小) = 不活动
 - (BOOL)lgIsSystemDIActive {
-    UIWindow *apertureWindow = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if ([NSStringFromClass(w.class) containsString:@"Aperture"]) {
-            apertureWindow = w;
-            break;
-        }
-    }
+    UIWindow *apertureWindow = [self lgFindApertureWindow];
     if (!apertureWindow) return NO;
 
     CGFloat w = CGRectGetWidth(apertureWindow.bounds);
@@ -180,16 +174,33 @@ static void LGDI2Log(NSString *fmt, ...) {
     return active;
 }
 
+// 安全获取所有窗口（兼容 connectedScenes 和 windows）
++ (NSArray<UIWindow *> *)lgAllWindows {
+    NSMutableArray<UIWindow *> *result = [NSMutableArray array];
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        [result addObjectsFromArray:((UIWindowScene *)scene).windows];
+    }
+    if (result.count == 0) {
+        [result addObjectsFromArray:[UIApplication sharedApplication].windows];
+    }
+    return result;
+}
+
+// 查找 Aperture 窗口
+- (UIWindow *)lgFindApertureWindow {
+    for (UIWindow *w in [LGDI2View lgAllWindows]) {
+        if ([NSStringFromClass(w.class) containsString:@"Aperture"]) {
+            return w;
+        }
+    }
+    return nil;
+}
+
 // 计算 DI1 底边 Y 坐标
 - (CGFloat)lgCalculateDI1BottomY {
     // 方案1：读系统灵动岛窗口的实际 frame
-    UIWindow *apertureWindow = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if ([NSStringFromClass(w.class) containsString:@"Aperture"]) {
-            apertureWindow = w;
-            break;
-        }
-    }
+    UIWindow *apertureWindow = [self lgFindApertureWindow];
     if (apertureWindow) {
         CGFloat bottom = CGRectGetMaxY(apertureWindow.frame);
         LGDI2Log(@"DI1 bottom Y from aperture window: %.1f", bottom);
@@ -197,13 +208,13 @@ static void LGDI2Log(NSString *fmt, ...) {
     }
 
     // 方案2：回退到状态栏高度 + 默认药丸高度
-    // 使用 statusBarManager 替代已废弃的 statusBarFrame
     CGFloat statusBarH = 54.0;
-    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
-    if (keyWindow && [keyWindow respondsToSelector:@selector(windowScene)]) {
-        UIWindowScene *scene = keyWindow.windowScene;
-        if (scene && [scene.statusBarManager respondsToSelector:@selector(statusBarFrame)]) {
-            statusBarH = CGRectGetHeight(scene.statusBarManager.statusBarFrame);
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *ws = (UIWindowScene *)scene;
+        if ([ws.statusBarManager respondsToSelector:@selector(statusBarFrame)]) {
+            statusBarH = CGRectGetHeight(ws.statusBarManager.statusBarFrame);
+            break;
         }
     }
     if (statusBarH < 1) statusBarH = 54.0; // fallback
