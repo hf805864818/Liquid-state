@@ -1859,6 +1859,25 @@ static void LGDIDriverTick(CADisplayLink *link) {
         // 先逐帧同步几何（内部按状态决定 pill 玻璃还是展开玻璃在管）
         LGDISyncGeometryFromPresentation(YES);
 
+        // [诊断 D] 每帧打 pill 玻璃当前状态 — 定位黑框帧到底是哪块玻璃在渲染
+        // 限频 2/秒，避免日志爆炸。直接看到黑框帧的 pill frame/hidden/window。
+        {
+            static CFTimeInterval sDiagLastFrameLog = 0;
+            CFTimeInterval nowTs = CACurrentMediaTime();
+            if (nowTs - sDiagLastFrameLog > 0.5) {
+                sDiagLastFrameLog = nowTs;
+                CALayer *pres = curtain.layer.presentationLayer;
+                LGDILog(@"pillFrame t=%.2f pill=%@ hidden=%d win=%@ curtainPres=%@ expGlass=%@ centerCoverHidden=%d",
+                        nowTs,
+                        sLGDIGlass ? NSStringFromCGRect(sLGDIGlass.frame) : @"<nil>",
+                        sLGDIGlass ? (int)sLGDIGlass.hidden : -1,
+                        sLGDIGlass && sLGDIGlass.window ? NSStringFromClass(sLGDIGlass.window.class) : @"<nil>",
+                        pres ? NSStringFromCGRect(pres.frame) : @"<nil>",
+                        sLGDIExpGlass ? NSStringFromCGRect(sLGDIExpGlass.frame) : @"<nil>",
+                        sLGDICenterCover ? (int)sLGDICenterCover.hidden : -1);
+            }
+        }
+
         // 几何稳定判定。[阶段4] 展开态 compact curtain 保持 compact 尺寸不动，
         // 形变发生在展开卡片窗口，必须改以展开玻璃帧为判稳源，否则展开弹簧
         // 还没跑完 driver 就会因 curtain「静止」而提前停机、玻璃帧冻在中途。
