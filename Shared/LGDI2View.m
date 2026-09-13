@@ -76,6 +76,9 @@ static void LGDI2Log(NSString *fmt, ...) {
 - (void)updateLayout {
     if (!self.superview) return;
 
+    // 确保在最上层显示
+    [self.superview bringSubviewToFront:self];
+
     CGFloat screenWidth = CGRectGetWidth(self.superview.bounds);
     CGFloat di1BottomY = [self lgCalculateDI1BottomY];
 
@@ -85,7 +88,7 @@ static void LGDI2Log(NSString *fmt, ...) {
     CGFloat height = LG_prefFloat(@"DynamicIsland2.Height", 37.0);
     CGFloat cornerRadius = LG_prefFloat(@"DynamicIsland2.CornerRadius", 18.5);
 
-    BOOL hideWhenInactive = LG_prefBool(@"DynamicIsland2.HideWhenInactive", YES);
+    BOOL hideWhenInactive = LG_prefBool(@"DynamicIsland2.HideWhenInactive", NO);
 
     if (self.layoutMode == LGDI2LayoutModeExpanded) {
         height = LG_prefFloat(@"DynamicIsland2.ExpandedHeight", 160.0);
@@ -163,14 +166,19 @@ static void LGDI2Log(NSString *fmt, ...) {
 // compact (长药丸) / expanded (展开卡片) = 活动
 // inert (默认小药丸) / minimal (极小) = 不活动
 - (BOOL)lgIsSystemDIActive {
-    UIWindow *apertureWindow = [self lgFindApertureWindow];
-    if (!apertureWindow) return NO;
+    // 查找灵动岛幕布视图（不是窗口！）
+    UIView *curtainView = [self lgFindApertureCurtainView];
+    if (!curtainView) {
+        LGDI2Log(@"lgIsSystemDIActive: no curtain view found, assuming active");
+        return YES; // 找不到就默认显示，避免永远隐藏
+    }
 
-    CGFloat w = CGRectGetWidth(apertureWindow.bounds);
-    CGFloat h = CGRectGetHeight(apertureWindow.bounds);
-    // inert/minimal 时窗口极小（约 36x37），compact 时宽度 > 120
+    // 通过幕布视图尺寸判断模式
+    CGFloat w = CGRectGetWidth(curtainView.bounds);
+    CGFloat h = CGRectGetHeight(curtainView.bounds);
+    // inert/minimal 时尺寸很小，compact 时宽度 > 100
     BOOL active = (w > 100.0 || h > 50.0);
-    LGDI2Log(@"lgIsSystemDIActive: aperture=%.1fx%.1f active=%d", w, h, active);
+    LGDI2Log(@"lgIsSystemDIActive: curtain=%.1fx%.1f active=%d", w, h, active);
     return active;
 }
 
@@ -187,24 +195,46 @@ static void LGDI2Log(NSString *fmt, ...) {
     return result;
 }
 
-// 查找 Aperture 窗口
-- (UIWindow *)lgFindApertureWindow {
-    for (UIWindow *w in [LGDI2View lgAllWindows]) {
-        if ([NSStringFromClass(w.class) containsString:@"Aperture"]) {
-            return w;
+// 递归查找指定类名的子视图
+static UIView *LGDI2FindSubviewOfClass(UIView *parent, NSString *className) {
+    if (!parent) return nil;
+    for (UIView *subview in parent.subviews) {
+        if ([NSStringFromClass(subview.class) containsString:className]) {
+            return subview;
         }
+        UIView *found = LGDI2FindSubviewOfClass(subview, className);
+        if (found) return found;
+    }
+    return nil;
+}
+
+// 查找灵动岛幕布视图（_SBSystemApertureMagiciansCurtainView）
+- (UIView *)lgFindApertureCurtainView {
+    for (UIWindow *w in [LGDI2View lgAllWindows]) {
+        UIView *found = LGDI2FindSubviewOfClass(w, @"MagiciansCurtainView");
+        if (found) return found;
+    }
+    // 备用：搜索 Aperture 相关视图
+    for (UIWindow *w in [LGDI2View lgAllWindows]) {
+        UIView *found = LGDI2FindSubviewOfClass(w, @"SystemAperture");
+        if (found) return found;
     }
     return nil;
 }
 
 // 计算 DI1 底边 Y 坐标
 - (CGFloat)lgCalculateDI1BottomY {
-    // 方案1：读系统灵动岛窗口的实际 frame
-    UIWindow *apertureWindow = [self lgFindApertureWindow];
-    if (apertureWindow) {
-        CGFloat bottom = CGRectGetMaxY(apertureWindow.frame);
-        LGDI2Log(@"DI1 bottom Y from aperture window: %.1f", bottom);
-        return bottom;
+    // 方案1：通过幕布视图获取实际位置
+    UIView *curtainView = [self lgFindApertureCurtainView];
+    if (curtainView && curtainView.window) {
+        // 转换到屏幕坐标系
+        CGRect screenFrame = [curtainView.superview convertRect:curtainView.frame
+                                                         toView:nil];
+        CGFloat bottom = CGRectGetMaxY(screenFrame);
+        if (bottom > 20 && bottom < 200) { // 合理范围检查
+            LGDI2Log(@"DI1 bottom Y from curtain view: %.1f", bottom);
+            return bottom;
+        }
     }
 
     // 方案2：回退到状态栏高度 + 默认药丸高度

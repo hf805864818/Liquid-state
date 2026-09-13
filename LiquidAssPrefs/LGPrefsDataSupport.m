@@ -1773,7 +1773,7 @@ NSArray<NSDictionary *> *LGDynamicIsland2Items(void) {
             LGSwitchSetting(@"DynamicIsland2.HideWhenInactive",
                             @"无活动时隐藏",
                             @"系统灵动岛处于空闲状态时自动隐藏灵动岛2",
-                            YES),
+                            NO),
             LGSwitchSetting(@"DynamicIsland2.ShowCenterBar",
                             @"显示中心条",
                             @"compact 模式下保持系统黑色中心条外观",

@@ -274,6 +274,17 @@ static void LGDynamicIsland2Init(void) {
         return; // 不继续加载，避免后续崩溃
     }
 
+    // [启动时互斥检查] 如果 DI2 已开启，确保 DI1 关闭
+    if (LG_prefBool(@"DynamicIsland2.Enabled", NO) &&
+        LG_prefBool(@"DynamicIsland.Enabled", YES)) {
+        LGDI2Log(@"startup mutual exclusion: DI2 enabled, disabling DI1");
+        CFPreferencesSetAppValue(CFSTR("DynamicIsland.Enabled"),
+                                 kCFBooleanFalse,
+                                 (__bridge CFStringRef)LGPrefsDomain);
+        CFPreferencesAppSynchronize((__bridge CFStringRef)LGPrefsDomain);
+        notify_post(LGPrefsChangedNotificationCString);
+    }
+
     // 监听偏好变更（用于互斥切换）
     lgObservePreferenceReload(^{
         LGDI2Log(@"preference reload, reconciling");
