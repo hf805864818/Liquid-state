@@ -1,11 +1,10 @@
 // =============================================================================
 //  LGIslandGlassDriver.m — 灵动岛玻璃驱动实现（原版 Liquid (Gl)ass 架构）
 //
-//  完全复刻原版方式：
-//  - 找到系统灵动岛幕布视图 (_SBSystemApertureMagiciansCurtainView)
-//  - 将幕布视图背景设为透明
-//  - 在幕布视图的 superview 上插入玻璃层（幕布下方）
-//  - 玻璃尺寸和位置跟随幕布视图自动同步
+//  复刻原版实现方式：
+//  - 玻璃是 _SBSystemApertureMagiciansCurtainView 的子视图
+//  - 隐藏系统的 material（黑色背景），让玻璃透出来
+//  - 玻璃视图跟随 curtainView 的 bounds 自动适配
 // =============================================================================
 
 #import "LGIslandGlassDriver.h"
@@ -31,7 +30,8 @@ static void LGIslandLog(NSString *fmt, ...) {
 
 static const void *kLGIslandGlassKey = &kLGIslandGlassKey;
 static const void *kLGIslandDriverKey = &kLGIslandDriverKey;
-static const void *kLGIslandOriginalBGKey = &kLGIslandOriginalBGKey;
+static const void *kLGIslandMaterialHiddenKey = &kLGIslandMaterialHiddenKey;
+static const void *kLGIslandOriginalSubviewsKey = &kLGIslandOriginalSubviewsKey;
 
 @implementation LGIslandGlassDriver
 
@@ -59,10 +59,15 @@ static const void *kLGIslandOriginalBGKey = &kLGIslandOriginalBGKey;
     if (!curtainView) return;
     if (self.curtainView == curtainView && self.glass) return;
 
-    LGIslandLog(@"attachToCurtainView: %@ frame=%@ bounds=%@",
-                 NSStringFromClass(curtainView.class),
+    LGIslandLog(@"attachToCurtainView: %@", NSStringFromClass(curtainView.class));
+    LGIslandLog(@"  frame=%@ bounds=%@",
                  NSStringFromCGRect(curtainView.frame),
                  NSStringFromCGRect(curtainView.bounds));
+    LGIslandLog(@"  subviews count=%lu", (unsigned long)curtainView.subviews.count);
+    for (UIView *sv in curtainView.subviews) {
+        LGIslandLog(@"    subview: %@ frame=%@",
+                     NSStringFromClass(sv.class), NSStringFromCGRect(sv.frame));
+    }
 
     // 如果之前挂载过，先卸载
     if (self.curtainView && self.curtainView != curtainView) {
@@ -71,19 +76,10 @@ static const void *kLGIslandOriginalBGKey = &kLGIslandOriginalBGKey;
 
     self.curtainView = curtainView;
 
-    // 保存原始背景色
-    UIColor *originalBG = objc_getAssociatedObject(curtainView, kLGIslandOriginalBGKey);
-    if (!originalBG) {
-        originalBG = curtainView.backgroundColor ?: [UIColor blackColor];
-        objc_setAssociatedObject(curtainView, kLGIslandOriginalBGKey, originalBG,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    // 隐藏系统黑色背景（material），这是原版的关键
+    [self hideSystemMaterial];
 
-    // 将幕布视图背景设为透明，让玻璃能透出来
-    curtainView.backgroundColor = [UIColor clearColor];
-    LGIslandLog(@"curtainView background set to clearColor");
-
-    // 创建玻璃视图（加在 superview 上，在 curtainView 下方）
+    // 创建玻璃视图（直接加在 curtainView 内部，最底层）
     [self createGlassView];
 
     // 创建增益图层
@@ -99,20 +95,14 @@ static const void *kLGIslandOriginalBGKey = &kLGIslandOriginalBGKey;
     objc_setAssociatedObject(curtainView, kLGIslandDriverKey, self,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    LGIslandLog(@"attach complete: glass=%@", self.glass ? @"OK" : @"FAIL");
+    LGIslandLog(@"attach complete");
 }
 
 - (void)detach {
     LGIslandLog(@"detach");
 
-    // 恢复原始背景色
-    if (self.curtainView) {
-        UIColor *originalBG = objc_getAssociatedObject(self.curtainView, kLGIslandOriginalBGKey);
-        if (originalBG) {
-            self.curtainView.backgroundColor = originalBG;
-            LGIslandLog(@"restored original background color");
-        }
-    }
+    // 恢复系统 material
+    [self restoreSystemMaterial];
 
     if (self.glass) {
         [self.glass removeFromSuperview];
@@ -129,19 +119,95 @@ static const void *kLGIslandOriginalBGKey = &kLGIslandOriginalBGKey;
     self.curtainView = nil;
 }
 
+#pragma mark - 隐藏/恢复系统 material
+
+- (void)hideSystemMaterial {
+    if (!self.curtainView) return;
+
+    NSNumber *alreadyHidden = objc_getAssociatedObject(self.curtainView,
+                                                        kLGIslandMaterialHiddenKey);
+    if (alreadyHidden.boolValue) {
+        LGIslandLog(@"material already hidden, skipping");
+        return;
+    }
+
+    LGIslandLog(@"hideSystemMaterial: finding material views");
+
+    // 递归查找并隐藏 MTMaterialView 或类似的材质视图
+    [self hideMaterialInView:self.curtainView];
+
+    // 也试试把 curtainView 本身的背景设为透明
+    if (self.curtainView.backgroundColor) {
+        LGIslandLog(@"  curtainView had backgroundColor, setting to clear");
+        self.curtainView.backgroundColor = [UIColor clearColor];
+    }
+
+    objc_setAssociatedObject(self.curtainView, kLGIslandMaterialHiddenKey,
+                             @(YES), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    LGIslandLog(@"hideSystemMaterial complete");
+}
+
+- (void)hideMaterialInView:(UIView *)view {
+    if (!view) return;
+
+    NSString *className = NSStringFromClass(view.class);
+
+    // 材质视图类名特征
+    BOOL isMaterial = ([className containsString:@"Material"] ||
+                       [className containsString:@"Backdrop"] ||
+                       [className containsString:@"Vibrancy"]);
+
+    if (isMaterial && view != self.glass) {
+        LGIslandLog(@"  hiding material view: %@ (hidden was %d)",
+                     className, view.hidden);
+        view.hidden = YES;
+    }
+
+    for (UIView *subview in view.subviews) {
+        [self hideMaterialInView:subview];
+    }
+}
+
+- (void)restoreSystemMaterial {
+    if (!self.curtainView) return;
+
+    NSNumber *alreadyHidden = objc_getAssociatedObject(self.curtainView,
+                                                        kLGIslandMaterialHiddenKey);
+    if (!alreadyHidden.boolValue) return;
+
+    LGIslandLog(@"restoreSystemMaterial");
+
+    [self restoreMaterialInView:self.curtainView];
+
+    objc_setAssociatedObject(self.curtainView, kLGIslandMaterialHiddenKey,
+                             nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (void)restoreMaterialInView:(UIView *)view {
+    if (!view) return;
+
+    NSString *className = NSStringFromClass(view.class);
+    BOOL isMaterial = ([className containsString:@"Material"] ||
+                       [className containsString:@"Backdrop"] ||
+                       [className containsString:@"Vibrancy"]);
+
+    if (isMaterial && view != self.glass) {
+        view.hidden = NO;
+    }
+
+    for (UIView *subview in view.subviews) {
+        [self restoreMaterialInView:subview];
+    }
+}
+
 #pragma mark - 玻璃视图创建
 
 - (void)createGlassView {
     if (!self.curtainView) return;
     if (self.glass) return;
 
-    UIView *containerView = self.curtainView.superview;
-    if (!containerView) {
-        LGIslandLog(@"ERROR: curtainView has no superview");
-        return;
-    }
-
-    LGIslandLog(@"createGlassView in container: %@", NSStringFromClass(containerView.class));
+    LGIslandLog(@"createGlassView inside curtainView");
 
     // 使用 island 滤镜类型（原版方式）
     NSString *filterType = LGFilterTypeForHostPrefix(@"Island");
@@ -150,30 +216,22 @@ static const void *kLGIslandOriginalBGKey = &kLGIslandOriginalBGKey;
     }
     LGIslandLog(@"  filterType: %@", filterType);
 
-    // 计算玻璃的 frame（和 curtainView 一样的位置和大小）
-    CGRect glassFrame = [containerView convertRect:self.curtainView.frame
-                                       fromView:self.curtainView.superview];
-
-    self.glass = [[LGLiveBackdropView alloc] initWithFrame:glassFrame
+    self.glass = [[LGLiveBackdropView alloc] initWithFrame:self.curtainView.bounds
                                                 groupName:@"IslandGlass"
                                                filterType:filterType];
-    self.glass.autoresizingMask = UIViewAutoresizingNone;
+    self.glass.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                  UIViewAutoresizingFlexibleHeight;
     self.glass.alpha = 1.0;
     self.glass.userInteractionEnabled = NO;
 
-    // 插入到 curtainView 的下方
-    NSInteger curtainIndex = [containerView.subviews indexOfObject:self.curtainView];
-    if (curtainIndex == NSNotFound) {
-        curtainIndex = 0;
-    }
-    [containerView insertSubview:self.glass atIndex:curtainIndex];
-
-    LGIslandLog(@"  glass inserted at index %ld, frame=%@",
-                 (long)curtainIndex, NSStringFromCGRect(self.glass.frame));
+    // 插入到 curtainView 的最底层
+    [self.curtainView insertSubview:self.glass atIndex:0];
 
     // 关联对象
     objc_setAssociatedObject(self.curtainView, kLGIslandGlassKey,
                              self.glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    LGIslandLog(@"  glass inserted at index 0");
 }
 
 #pragma mark - 增益图层创建（液态高光效果）
@@ -235,29 +293,21 @@ static const void *kLGIslandOriginalBGKey = &kLGIslandOriginalBGKey;
     if (!self.curtainView || !self.layoutEnabled) return;
     if (!self.glass) return;
 
-    UIView *containerView = self.glass.superview;
-    if (!containerView) return;
+    CGRect bounds = self.curtainView.bounds;
+    CGFloat cornerRadius = CGRectGetHeight(bounds) / 2.0;
 
-    // 同步玻璃的 frame 到 curtainView 的位置
-    CGRect curtainFrame = self.curtainView.frame;
-    CGFloat cornerRadius = CGRectGetHeight(curtainFrame) / 2.0;
+    LGIslandLog(@"updateLayout: bounds=%@ cornerRadius=%.1f",
+                 NSStringFromCGRect(bounds), cornerRadius);
 
-    LGIslandLog(@"updateLayout: curtainFrame=%@ cornerRadius=%.1f",
-                 NSStringFromCGRect(curtainFrame), cornerRadius);
-
-    // 转换坐标到玻璃所在的容器视图
-    CGRect glassFrame = [containerView convertRect:curtainFrame
-                                       fromView:self.curtainView.superview];
-    self.glass.frame = glassFrame;
-
-    // 更新圆角
+    // 玻璃充满整个 curtainView
+    self.glass.frame = bounds;
     self.glass.layer.cornerRadius = cornerRadius;
     self.glass.layer.masksToBounds = YES;
 
-    // 重新应用滤镜
+    // 应用滤镜
     [self.glass applyFilters];
 
-    // 强制刷新 backdrop（灵动岛窗口特殊，需要强制重采样）
+    // 强制刷新 backdrop
     [self.glass lgForceRefreshBackdrop];
 
     // 更新增益图层
