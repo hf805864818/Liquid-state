@@ -197,8 +197,15 @@ static void LGDI2Log(NSString *fmt, ...) {
     }
 
     // 方案2：回退到状态栏高度 + 默认药丸高度
-    CGFloat statusBarH = CGRectGetHeight(
-        [UIApplication sharedApplication].statusBarFrame);
+    // 使用 statusBarManager 替代已废弃的 statusBarFrame
+    CGFloat statusBarH = 54.0;
+    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+    if (keyWindow && [keyWindow respondsToSelector:@selector(windowScene)]) {
+        UIWindowScene *scene = keyWindow.windowScene;
+        if (scene && [scene.statusBarManager respondsToSelector:@selector(statusBarFrame)]) {
+            statusBarH = CGRectGetHeight(scene.statusBarManager.statusBarFrame);
+        }
+    }
     if (statusBarH < 1) statusBarH = 54.0; // fallback
     CGFloat di1Height = 37.0; // 默认药丸高度
     CGFloat bottom = statusBarH + di1Height;
