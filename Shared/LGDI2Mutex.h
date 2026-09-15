@@ -18,7 +18,7 @@ typedef NS_ENUM(NSInteger, LGDIMode) {
 
 // 查询当前生效的灵动岛模式
 static inline LGDIMode LGDIActiveMode(void) {
-    BOOL di1 = LG_prefBool(@"DynamicIsland.Enabled", YES);
+    BOOL di1 = LG_prefBool(@"DynamicIsland.Enabled", NO);
     BOOL di2 = LG_prefBool(@"DynamicIsland2.Enabled", NO);
 
     if (di1 && di2) {

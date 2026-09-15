@@ -652,7 +652,20 @@ NSArray<NSDictionary *> *LGRendererItemsForHostPrefix(NSString *prefix) {
     };
     NSString *lightTint = [NSString stringWithUTF8String:host->lightTintHex];
     NSString *darkTint = [NSString stringWithUTF8String:host->darkTintHex];
-    BOOL enabledByDefault = ![prefix isEqualToString:@"AppIcons"];
+    // 以下功能总开关默认关闭（深浅模式均生效）
+    BOOL enabledByDefault = !([prefix isEqualToString:@"AppIcons"] ||
+        [prefix isEqualToString:@"FolderIcon"] ||
+        [prefix isEqualToString:@"OpenFolder"] ||
+        [prefix isEqualToString:@"Banner"] ||
+        [prefix isEqualToString:@"SearchPill"] ||
+        [prefix isEqualToString:@"Spotlight"] ||
+        [prefix isEqualToString:@"Widgets"] ||
+        [prefix isEqualToString:@"DynamicIsland"] ||
+        [prefix isEqualToString:@"Passcode"] ||
+        [prefix isEqualToString:@"CoverSheet"] ||
+        [prefix isEqualToString:@"AppLibrary"] ||
+        [prefix isEqualToString:@"AppLibSearch"] ||
+        [prefix isEqualToString:@"Keyboard"]);
     CGFloat centerTintDefault = [prefix isEqualToString:@"ContextMenu"] ? 0.20 : 1.0;
     return @[
         LGGlassEnabledSetting(key(@"Enabled"), enabledByDefault),
@@ -1001,8 +1014,8 @@ NSArray<NSDictionary *> *LGKeyboardItems(void) {
                             LGLocalized(@"prefs.control.keyboard_overhang"),
                             LGLocalized(@"prefs.subtitle.keyboard_overhang"),
                             LGKeyboardDefaultOverhang, 0.0, 60.0, 1),
-        ], @"Keyboard.Enabled", @YES),
-    ]);
+        ], @"Keyboard.Enabled", @NO),
+    ];
 }
 
 NSArray<NSDictionary *> *LGFolderItems(void) {

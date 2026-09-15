@@ -3827,7 +3827,7 @@ static void LGDynamicIslandInit(void) {
     // LGLiveBackdropView 全局监听 ParametersReloaded 自动完成，无需此处处理）
     lgObservePreferenceReload(^{
         // [互斥] 如果 DI1 和 DI2 同时开启，自动关闭 DI2
-        if (LG_prefBool(@"DynamicIsland.Enabled", YES) &&
+        if (LG_prefBool(@"DynamicIsland.Enabled", NO) &&
             LG_prefBool(@"DynamicIsland2.Enabled", NO)) {
             LGDILog(@"mutual exclusion: DI1 on, turning off DI2");
             CFPreferencesSetAppValue(CFSTR("DynamicIsland2.Enabled"),

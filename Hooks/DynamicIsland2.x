@@ -56,7 +56,7 @@ static BOOL LGDI2FeatureEnabled(void) {
     if (!LG_prefBool(@"DynamicIsland2.Enabled", NO)) return NO;
     if (!LG_globalEnabled()) return NO;
     // DI1 开着时 DI2 不工作（互斥）
-    if (LG_prefBool(@"DynamicIsland.Enabled", YES)) return NO;
+    if (LG_prefBool(@"DynamicIsland.Enabled", NO)) return NO;
     return YES;
 }
 
@@ -304,7 +304,7 @@ static void LGDynamicIsland2Init(void) {
     LGDI2Log(@"========================================");
 
     BOOL di2Enabled = LG_prefBool(@"DynamicIsland2.Enabled", NO);
-    BOOL di1Enabled = LG_prefBool(@"DynamicIsland.Enabled", YES);
+    BOOL di1Enabled = LG_prefBool(@"DynamicIsland.Enabled", NO);
     LGDI2Log(@"config: DI2=%d DI1=%d global=%d",
              di2Enabled, di1Enabled, LG_globalEnabled());
 
@@ -331,7 +331,7 @@ static void LGDynamicIsland2Init(void) {
         LGDI2Log(@"preference reload");
 
         BOOL di2Now = LG_prefBool(@"DynamicIsland2.Enabled", NO);
-        BOOL di1Now = LG_prefBool(@"DynamicIsland.Enabled", YES);
+        BOOL di1Now = LG_prefBool(@"DynamicIsland.Enabled", NO);
 
         // 互斥
         if (di2Now && di1Now) {

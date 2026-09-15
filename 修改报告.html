@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Liquid-state 总开关默认值修改报告</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: #0a0a0c;
+            color: #e0e0e4;
+            line-height: 1.7;
+            padding: 20px;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 {
+            font-size: 1.8em;
+            background: linear-gradient(135deg, #60a5fa, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+        }
+        .subtitle { color: #888; font-size: 0.9em; margin-bottom: 30px; }
+        h2 {
+            font-size: 1.3em;
+            color: #60a5fa;
+            margin-top: 28px;
+            margin-bottom: 12px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid #1e1e22;
+        }
+        h3 {
+            font-size: 1.05em;
+            color: #a78bfa;
+            margin-top: 18px;
+            margin-bottom: 8px;
+        }
+        .summary-box {
+            background: #121215;
+            border: 1px solid #1e1e22;
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-bottom: 24px;
+        }
+        .summary-box p { margin-bottom: 8px; }
+        .summary-box .highlight { color: #4ade80; font-weight: 600; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 16px;
+            font-size: 0.88em;
+        }
+        th, td {
+            text-align: left;
+            padding: 8px 12px;
+            border-bottom: 1px solid #1e1e22;
+        }
+        th {
+            background: #16161a;
+            color: #a78bfa;
+            font-weight: 600;
+        }
+        td { color: #c0c0c8; }
+        .on { color: #f87171; font-weight: 600; }
+        .off { color: #4ade80; font-weight: 600; }
+        .na { color: #666; }
+
+        .file-block {
+            background: #121215;
+            border: 1px solid #1e1e22;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+        .file-header {
+            background: #1a1a1e;
+            padding: 10px 16px;
+            font-family: "SF Mono", "Fira Code", monospace;
+            font-size: 0.85em;
+            color: #60a5fa;
+            border-bottom: 1px solid #1e1e22;
+        }
+        .file-body { padding: 14px 16px; }
+        .file-body p { margin-bottom: 8px; font-size: 0.92em; }
+        .code {
+            background: #0d0d0f;
+            border-radius: 6px;
+            padding: 10px 14px;
+            font-family: "SF Mono", "Fira Code", monospace;
+            font-size: 0.82em;
+            color: #c0c0c8;
+            overflow-x: auto;
+            margin: 8px 0;
+        }
+        .removed { color: #f87171; }
+        .added { color: #4ade80; }
+        .comment { color: #6a9955; }
+
+        .note {
+            background: #1a1a2e;
+            border-left: 3px solid #a78bfa;
+            padding: 10px 16px;
+            margin: 12px 0;
+            border-radius: 0 6px 6px 0;
+            font-size: 0.9em;
+        }
+
+        .stat {
+            display: inline-block;
+            background: #1a1a1e;
+            border-radius: 6px;
+            padding: 4px 12px;
+            margin-right: 8px;
+            font-size: 0.85em;
+        }
+        .stat span { color: #60a5fa; font-weight: 600; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Liquid-state 总开关默认值修改报告</h1>
+    <p class="subtitle">项目: hf805864818/Liquid-state | 修改日期: 2026-09-15</p>
+
+    <div class="summary-box">
+        <p><span class="stat">修改文件: <span>5</span></span> <span class="stat">改动行数: <span>+43 / -9</span></span></p>
+        <p>已将用户指定的 <span class="highlight">13 个功能总开关</span>的默认值从「开启(YES)」修改为「关闭(NO)」，涵盖深色模式和浅色模式。</p>
+        <p>修改涉及三个层面：<strong>运行时核心检查</strong>、<strong>设置界面 UI 默认值</strong>、<strong>Hook 互斥逻辑回退值</strong>。</p>
+    </div>
+
+    <h2>一、修改前的默认值分析</h2>
+    <p>项目中功能总开关的默认值由以下三层机制共同决定：</p>
+
+    <h3>1. 运行时核心检查 — <code>lgHostEnabled()</code></h3>
+    <p>位于 <code>Shared/LGGlassKit.x</code>，是所有 Hook 文件调用的核心函数。当用户未设置偏好值时，原逻辑仅对 AppIcons 返回 NO，其余全部返回 <span class="on">YES（默认开启）</span>。</p>
+
+    <h3>2. 设置界面 UI 默认值 — <code>LGRendererItemsForHostPrefix()</code></h3>
+    <p>位于 <code>LiquidAssPrefs/LGPrefsDataSupport.m</code>，控制设置面板中开关的初始显示状态。原逻辑 <code>enabledByDefault = ![prefix isEqualToString:@"AppIcons"]</code>，即除应用图标外全部默认开启。</p>
+
+    <h3>3. Hook 互斥逻辑回退值</h3>
+    <p>灵动岛 DI1/DI2 互斥逻辑中，<code>LG_prefBool(@"DynamicIsland.Enabled", YES)</code> 使用 <span class="on">YES</span> 作为回退值，导致未设置时 DI1 被视为开启状态，会阻止 DI2 工作。</p>
+
+    <h2>二、各功能开关修改一览</h2>
+    <table>
+        <tr>
+            <th>栏目</th>
+            <th>功能名称</th>
+            <th>Prefix / Key</th>
+            <th>修改前</th>
+            <th>修改后</th>
+        </tr>
+        <tr><td rowspan="7">主屏幕</td><td>文件夹图标</td><td>FolderIcon</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td>应用图标</td><td>AppIcons</td><td class="off">NO</td><td class="off">NO (无需改)</td></tr>
+        <tr><td>打开的文件夹</td><td>OpenFolder</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td>横幅</td><td>Banner</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td>搜索栏</td><td>SearchPill</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td>Spotlight 搜索栏</td><td>Spotlight</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td>小组件</td><td>Widgets</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td rowspan="4">锁屏</td><td>灵动岛</td><td>DynamicIsland</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td>灵动岛2</td><td>DynamicIsland2.Enabled</td><td class="off">NO</td><td class="off">NO (无需改)</td></tr>
+        <tr><td>密码</td><td>Passcode</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td>顶部下拉</td><td>CoverSheet</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td rowspan="2">App 资源库</td><td>分类 Pod</td><td>AppLibrary</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td>搜索字段</td><td>AppLibSearch</td><td class="on">YES</td><td class="off">NO</td></tr>
+        <tr><td>系统界面</td><td>键盘</td><td>Keyboard</td><td class="on">YES</td><td class="off">NO</td></tr>
+    </table>
+
+    <h2>三、具体修改详情</h2>
+
+    <div class="file-block">
+        <div class="file-header">Shared/LGGlassKit.x — lgHostEnabled() 运行时核心默认值</div>
+        <div class="file-body">
+            <p>将默认返回值从仅排除 AppIcons，扩展为排除全部 13 个指定功能的 prefix。使用 <code>dispatch_once</code> + <code>NSSet</code> 保证线程安全与高效查找。</p>
+            <div class="code">
+<span class="removed">- if ([prefix isEqualToString:@"AppIcons"]) return NO;</span>
+<span class="removed">- return YES;</span>
+<span class="added">+ static NSSet *disabledByDefaultPrefixes;</span>
+<span class="added">+ // ... dispatch_once 初始化 NSSet ...</span>
+<span class="added">+ if ([disabledByDefaultPrefixes containsObject:prefix]) return NO;</span>
+<span class="added">+ return YES;</span>
+            </div>
+            <p class="comment">// 这是所有 Hook 调用的核心检查函数。未设置偏好时返回 NO = 功能关闭。</p>
+            <p class="comment">// 深浅模式均生效：LGGlassPreferenceValue() 先查 .Light/.Dark 后缀键，无值时回退到基础键，最终由此函数决定默认值。</p>
+        </div>
+    </div>
+
+    <div class="file-block">
+        <div class="file-header">LiquidAssPrefs/LGPrefsDataSupport.m — LGRendererItemsForHostPrefix() UI 默认值</div>
+        <div class="file-body">
+            <p>设置界面中开关的初始显示状态。修改后，所有指定功能在设置面板中默认显示为关闭。</p>
+            <div class="code">
+<span class="removed">- BOOL enabledByDefault = ![prefix isEqualToString:@"AppIcons"];</span>
+<span class="added">+ BOOL enabledByDefault = !([prefix isEqualToString:@"AppIcons"] ||</span>
+<span class="added">+     [prefix isEqualToString:@"FolderIcon"] || ... ||</span>
+<span class="added">+     [prefix isEqualToString:@"Keyboard"]);</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="file-block">
+        <div class="file-header">LiquidAssPrefs/LGPrefsDataSupport.m — LGKeyboardItems() 键盘受控面板</div>
+        <div class="file-body">
+            <p>键盘几何参数（圆角、突出度）面板的 <code>enabled_default</code> 从 <code>@YES</code> 改为 <code>@NO</code>。</p>
+            <div class="code">
+<span class="removed">- ], @"Keyboard.Enabled", @YES),</span>
+<span class="added">+ ], @"Keyboard.Enabled", @NO),</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="file-block">
+        <div class="file-header">Hooks/DynamicIsland.x + Hooks/DynamicIsland2.x + Shared/LGDI2Mutex.h — 灵动岛互斥逻辑</div>
+        <div class="file-body">
+            <p>共 5 处 <code>LG_prefBool(@"DynamicIsland.Enabled", YES)</code> 改为 <code>NO</code>，确保 DI1 未设置时不会被误判为开启状态，从而不会错误阻止 DI2 工作。</p>
+            <div class="code">
+<span class="removed">- LG_prefBool(@"DynamicIsland.Enabled", YES)</span>  <span class="comment">// DynamicIsland.x:3830</span>
+<span class="removed">- LG_prefBool(@"DynamicIsland.Enabled", YES)</span>  <span class="comment">// DynamicIsland2.x:59</span>
+<span class="removed">- LG_prefBool(@"DynamicIsland.Enabled", YES)</span>  <span class="comment">// DynamicIsland2.x:307</span>
+<span class="removed">- LG_prefBool(@"DynamicIsland.Enabled", YES)</span>  <span class="comment">// DynamicIsland2.x:334</span>
+<span class="removed">- LG_prefBool(@"DynamicIsland.Enabled", YES)</span>  <span class="comment">// LGDI2Mutex.h:21</span>
+<span class="added">+ 以上全部改为 NO</span>
+            </div>
+        </div>
+    </div>
+
+    <h2>四、深浅模式生效说明</h2>
+    <div class="note">
+        <p><strong>深浅模式分离机制</strong>：当 <code>Appearance.SeparateModes</code> 开启时，<code>LGGlassPreferenceValue()</code> 会优先查找带 <code>.Light</code> 或 <code>.Dark</code> 后缀的偏好键。如果模式特定键不存在，回退到基础键；如果基础键也不存在，则由 <code>lgHostEnabled()</code> 的返回值决定。</p>
+        <p>本次修改将 <code>lgHostEnabled()</code> 的默认返回值改为 NO，因此<strong>无论深色还是浅色模式，只要用户未显式设置偏好值，功能均处于关闭状态</strong>。</p>
+    </div>
+
+    <h2>五、修改文件清单</h2>
+    <table>
+        <tr><th>文件路径</th><th>改动</th><th>说明</th></tr>
+        <tr><td><code>Shared/LGGlassKit.x</code></td><td>+17 -1</td><td>运行时核心默认值</td></tr>
+        <tr><td><code>LiquidAssPrefs/LGPrefsDataSupport.m</code></td><td>+16 -3</td><td>UI 默认值 + 键盘受控面板</td></tr>
+        <tr><td><code>Hooks/DynamicIsland.x</code></td><td>+1 -1</td><td>DI1 互斥逻辑回退值</td></tr>
+        <tr><td><code>Hooks/DynamicIsland2.x</code></td><td>+3 -3</td><td>DI2 互斥逻辑回退值</td></tr>
+        <tr><td><code>Shared/LGDI2Mutex.h</code></td><td>+1 -1</td><td>DI 模式查询回退值</td></tr>
+    </table>
+
+</div>
+</body>
+</html>

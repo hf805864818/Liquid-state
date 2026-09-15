@@ -54,7 +54,28 @@ BOOL lgHostEnabled(NSString *prefix) {
     }
     if ([v isKindOfClass:[NSNumber class]]) return [v boolValue];
 
-    if ([prefix isEqualToString:@"AppIcons"]) return NO;
+    // 以下功能总开关默认关闭（深浅模式均生效）
+    // 当用户未显式设置偏好值时，这些 surface 的液态玻璃效果不启用
+    static NSSet<NSString *> *disabledByDefaultPrefixes;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        disabledByDefaultPrefixes = [NSSet setWithObjects:
+            @"AppIcons",       // 应用图标
+            @"FolderIcon",     // 文件夹图标
+            @"OpenFolder",     // 打开的文件夹
+            @"Banner",         // 横幅
+            @"SearchPill",     // 搜索栏
+            @"Spotlight",      // Spotlight 搜索栏
+            @"Widgets",        // 小组件
+            @"DynamicIsland",  // 灵动岛
+            @"Passcode",       // 密码
+            @"CoverSheet",     // 顶部下拉
+            @"AppLibrary",     // 分类 Pod
+            @"AppLibSearch",   // 搜索字段
+            @"Keyboard",       // 键盘
+            nil];
+    });
+    if ([disabledByDefaultPrefixes containsObject:prefix]) return NO;
     return YES;
 }
 
