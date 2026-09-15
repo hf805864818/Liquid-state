@@ -1016,12 +1016,30 @@ static NSString *LGLunarDateString(void) {
     return [NSString stringWithFormat:@"%@%@%@", yearStr, monthStr, dayStr];
 }
 
+// 按当前小时返回中文时间段文字（{period} 占位符）
+static NSString *LGDayPeriodString(void) {
+    static NSString * const periods[24] = {
+        @"凌晨", @"凌晨", @"凌晨", @"凌晨", @"凌晨", @"拂晓", // 00-05
+        @"拂晓", @"黎明", @"黎明", @"上午", @"上午", @"正午", // 06-11
+        @"正午", @"午后", @"午后", @"下午", @"下午", @"黄昏", // 12-17
+        @"黄昏", @"傍晚", @"傍晚", @"夜晚", @"夜晚", @"深夜", // 18-23
+    };
+    NSInteger hour = [[NSCalendar autoupdatingCurrentCalendar]
+                         component:NSCalendarUnitHour
+                         fromDate:[NSDate date]];
+    if (hour < 0 || hour > 23) return @"";
+    return periods[hour];
+}
+
 static NSString *LGClockCustomDateString(void) {
     NSString *format = LGClockDateFormatString();
     BOOL hasLunar = [format containsString:@"{lunar}"];
-    NSString *solarFormat = hasLunar
-        ? [format stringByReplacingOccurrencesOfString:@"{lunar}" withString:@""]
-        : format;
+    BOOL hasPeriod = [format containsString:@"{period}"];
+    NSString *solarFormat = format;
+    if (hasLunar)
+        solarFormat = [solarFormat stringByReplacingOccurrencesOfString:@"{lunar}" withString:@""];
+    if (hasPeriod)
+        solarFormat = [solarFormat stringByReplacingOccurrencesOfString:@"{period}" withString:@""];
 
     static NSDateFormatter *formatter;
     static dispatch_once_t onceToken;
@@ -1031,9 +1049,19 @@ static NSString *LGClockCustomDateString(void) {
 
     formatter.locale = [NSLocale autoupdatingCurrentLocale];
     formatter.timeZone = [NSTimeZone localTimeZone];
-    formatter.dateFormat = solarFormat.length ? solarFormat : @"EEE MMM d";
+    // 若格式串只剩下占位符被清空, 传空让其输出空串, 避免强制补默认日期
+    formatter.dateFormat = solarFormat;
 
     NSString *text = [formatter stringFromDate:[NSDate date]];
+
+    if (hasPeriod) {
+        NSString *period = LGDayPeriodString();
+        if (period.length) {
+            text = text.length
+                ? [NSString stringWithFormat:@"%@ %@", period, text]
+                : period;
+        }
+    }
 
     if (hasLunar) {
         NSString *lunar = LGLunarDateString();
