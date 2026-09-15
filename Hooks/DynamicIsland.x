@@ -1363,8 +1363,10 @@ static CGRect LGDIFindExpandedTarget(UIView *curtain,
     __block CGRect bestFrameWin = CGRectNull;
     __block UIView *bestView = nil;
     __block NSInteger bestScore = 0;
-    __block CGFloat bestArea = 0;
+    __block NSInteger bestArea = 0;
+#if LIQUIDASS_DEBUG
     __block NSUInteger candidateCount = 0;
+#endif
     NSString *bundleHint = LGDICurrentContentBundleID();
 
     void (^checkView)(UIView *) = ^(UIView *v) {
@@ -1394,7 +1396,9 @@ static CGRect LGDIFindExpandedTarget(UIView *curtain,
         // 必须在屏幕顶部灵动岛区域
         if (f.origin.y > 320) return;
 
+        #if LIQUIDASS_DEBUG
         candidateCount++;
+#endif
         id<DIContentProviding> p =
             [[DIContentProviderRegistry shared] providerForView:v hintBundleID:bundleHint];
         NSInteger score = [p scoreExpandedCandidate:v];
@@ -1597,7 +1601,9 @@ static void LGDIEnsureExpandedGlass(CGRect frame, UIView *host,
     // [诊断 B 触发点 2/3] 展开玻璃创建/换宿主后逐层 dump：
     // 展开场景是"活动周边闪烁"的最大漏口，这里抓展开侧的
     // element/glass 子树，定位展开内容黑底承载层。
+#if LIQUIDASS_DEBUG
     LGDIDiagLayeredSnapshot(@"expanded");
+#endif
 
 }
 
@@ -3121,7 +3127,9 @@ static void LGDIInstallGlass(UIView *curtain) {
     // [诊断 B 触发点 1/3] 装玻璃后立即逐层 dump：
     // 黑边最高发的就是"玻璃刚装、首帧采样"这一刻，这里抓
     // element/glass 两棵浅子树 + refs + transform，定位黑底承载层。
+#if LIQUIDASS_DEBUG
     LGDIDiagLayeredSnapshot(@"install");
+#endif
 
 #if LIQUIDASS_DEBUG
     LGDIProbeEnsureTimer();
@@ -3400,7 +3408,9 @@ static void LGDIDoScheduledSync(void) {
         // 保住 render server 捕获组；新 host 上的 applyFilters 走快速重采样。
         // [诊断 B 触发点 3/3] host 切换前快拍：抓玻璃即将离窗这一帧的
         // element/glass 子树，定位重装路径黑边来源。
+#if LIQUIDASS_DEBUG
         LGDIDiagLayeredSnapshot(@"host-switch-before");
+#endif
         [sLGDIGlass lgPrepareReparenting];
         [sLGDIGlass removeFromSuperview];
         sLGDIHost = nil;
