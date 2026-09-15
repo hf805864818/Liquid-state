@@ -54,7 +54,7 @@ static BOOL ccIsInControlCenterModule(UIView *mat) {
 // 污染，导致大卡片被误设成圆形。
 // 取值范围限定在 (1, 短边*0.30)，严格排除胶囊/圆形值(≈短边*0.5)。
 // 读不到时回退到卡片级比例圆角（短边*0.22，上限 44pt，连续圆角观感）。
-static CGFloat ccLargeCardCornerRadius(UIView *mat, CGFloat shortEdge) {
+static CGFloat __attribute__((unused)) ccLargeCardCornerRadius(UIView *mat, CGFloat shortEdge) {
     CGFloat pillLimit = shortEdge * 0.30;
     CGFloat best = 0.0;
     UIView *module = ccModuleAncestor(mat);
@@ -103,26 +103,18 @@ static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
     // 导致 CCUIContentModuleContainerView 的尺寸与实际显示不一致而被误判为正方形，
     // 进而走 ccModuleCornerRadius 的 h/2 回退 → 大卡片变圆形。
     // 只要两边都 >100，直接按大卡片处理，最稳妥。
-    if (w > 100.0 && h > 100.0) {
-        return ccLargeCardCornerRadius(mat, fmin(w, h));
-    }
-
+    // 统一模块卡的圆角：材质铺满模块容器大部分面积时视为卡片本体，
+    // 一律采用连续大圆角（短边×0.22、上限44），方向锁定/录屏/深色/电量/
+    // 专注模式全部同一观感。同时修复原胶囊 + 全局缓存串值造成的四角棱角。
+    // 明显小于容器、仅作为内部圆形图标/装饰的材质（如专注模式的圆底）不命中，
+    // 继续走 ccPillRadius 保持圆形。
     UIView *module = ccModuleAncestor(mat);
-    if (module && ccIsModuleCandidate(module)) return ccModuleCornerRadius(module);
-
-    // 如果模块容器本身是大卡片或宽扁卡片（宽 >100），
-    // 内部材质即使某一边 <100 也按大卡片处理，避免被 h/2 回退拉成椭圆。
-    // 例：CustomCCBg 隐藏主材质后，内部次级材质可能宽 >100 但高 <100，
-    // 此时若仍用 h*0.5 胶囊圆角，就会变成横向椭圆。
-    // 播放控制模块（宽 320 高 80）就是典型的宽扁卡片。
     if (module) {
-        CGSize ms = module.bounds.size;
-        if (ms.width > 100.0 && (ms.height > 100.0 || ms.width > ms.height * 1.5))
-            return ccLargeCardCornerRadius(mat, fmin(ms.width, ms.height));
+        CGFloat mw = CGRectGetWidth(module.bounds), mh = CGRectGetHeight(module.bounds);
+        if (mw > 0.0 && mh > 0.0 && w >= mw * 0.55 && h >= mh * 0.55)
+            return ccModuleCornerRadius(module);
     }
 
-    // 其余宽扁/窄高模块卡统一用连续大圆角比例（短边×0.22、上限 44），
-    // 与专注模式等卡片保持同一圆角风格，不再使用 h*0.5 的胶囊形回退。
     if (w > 100.0 && h < 100.0) return fmin(h * 0.22, 44.0);
     if (h > 100.0 && w < 100.0) return fmin(w * 0.22, 44.0);
 
