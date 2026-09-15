@@ -2371,6 +2371,13 @@ void LGResetPreferencesForKeys(NSArray<NSString *> *keys) {
 
     for (NSString *key in uniqueKeys) {
         LGRemovePreference(key);
+        // 分深浅模式的参数都以 .Light/.Dark 后缀单独存储，若非深
+        // 浅分离模式则调用 LGKeySupportsAppearanceMode=YES；这里同步
+        // 清理后缀变体，否则旧值会绕过 lgHostEnabled 的默认关闭。
+        [@[ @".Light", @".Dark" ] enumerateObjectsUsingBlock:^(NSString *suffix, NSUInteger idx, BOOL *stop) {
+            (void)idx; (void)stop;
+            LGRemovePreference([key stringByAppendingString:suffix]);
+        }];
     }
     [[NSNotificationCenter defaultCenter] postNotificationName:kLGPrefsUIRefreshNotification object:nil];
 }
