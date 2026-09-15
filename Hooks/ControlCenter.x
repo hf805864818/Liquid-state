@@ -8,8 +8,6 @@
 
 #pragma mark - taxonomy
 
-static CGFloat sCCSmallModuleRadius = 0.0;
-
 static UIView *ccModuleAncestor(UIView *v) {
     for (UIView *a = v.superview; a; a = a.superview)
         if (isExactClass(a, @"CCUIContentModuleContainerView")) return a;
@@ -23,12 +21,14 @@ static BOOL ccIsModuleCandidate(UIView *module) {
     return mx <= mn * 1.25;
 }
 
+// 统一连续大圆角：所有控制中心模块卡（方向锁定/录屏/深色/电量/专注模式等）
+// 共用同一圆角比例（短边×0.22、上限 44pt），不再用胶囊/圆形与固定比例混用，
+// 避免各模块观感不一致。同时去掉跨模块的 sCCSmallModuleRadius 全局缓存
+// （原实现会复用首个矮小模块的半径，导致大模块圆角串值、四角残留）。
 static CGFloat ccModuleCornerRadius(UIView *module) {
-    CGFloat h = CGRectGetHeight(module.bounds);
-    if (h <= 0.0) return 0.0;
-    CGFloat r = h * 0.5;
-    if (h < 100.0) { sCCSmallModuleRadius = r; return r; }
-    return sCCSmallModuleRadius > 0.0 ? sCCSmallModuleRadius : r;
+    CGFloat s = fmin(CGRectGetWidth(module.bounds), CGRectGetHeight(module.bounds));
+    if (s <= 0.0) return 0.0;
+    return fmin(s * 0.22, 44.0);
 }
 
 static BOOL ccIsInsideSlider(UIView *mat) {
@@ -121,8 +121,10 @@ static CGFloat ccGlassRadiusForMaterial(UIView *mat) {
             return ccLargeCardCornerRadius(mat, fmin(ms.width, ms.height));
     }
 
-    if (w > 100.0 && h < 100.0) return h * 0.5;
-    if (h > 100.0 && w < 100.0) return w * 0.5;
+    // 其余宽扁/窄高模块卡统一用连续大圆角比例（短边×0.22、上限 44），
+    // 与专注模式等卡片保持同一圆角风格，不再使用 h*0.5 的胶囊形回退。
+    if (w > 100.0 && h < 100.0) return fmin(h * 0.22, 44.0);
+    if (h > 100.0 && w < 100.0) return fmin(w * 0.22, 44.0);
 
     return ccPillRadius(mat);
 }
