@@ -594,12 +594,12 @@ static CGFloat LGGoToTopCornerRadiusForView(UIView *view) {
     NSString *currentFormat = LGReadPreferenceObject(@"Clock.DateFormat.Format", @"EEE MMM d");
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:LGLocalized(@"prefs.control.date_format")
-                         message:@"Unicode 日期格式。使用 {lunar} 插入农历日期。\n例如: M月d日EEE {lunar}\n输出: 9月1日周二 丙午年七月二十"
-                  preferredStyle:UIAlertControllerStyleAlert];
+                         message:@"Unicode 日期格式。{lunar} 插入农历; {period} 按时间段显示(凌晨/拂晓/黎明/正午/黄昏等)。\n例如: {period} M月d日EEE {lunar}\n输出: 正午 9月15日周二 丙午年七月二十"
+                         preferredStyle:UIAlertControllerStyleAlert];
 
     [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.text = currentFormat;
-        textField.placeholder = @"M月d日EEE {lunar}";
+        textField.placeholder = @"M月d日EEE {lunar} {period}";
         textField.autocorrectionType = UITextAutocorrectionTypeNo;
         textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
