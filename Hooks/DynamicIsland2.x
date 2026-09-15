@@ -18,7 +18,9 @@
 #import "../Shared/LGDI2Mutex.h"
 #import <notify.h>
 
-#define LIQUIDASS_DEBUG 1
+#ifndef LIQUIDASS_DEBUG
+#define LIQUIDASS_DEBUG 0
+#endif
 
 static void LGDI2Log(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
 static void LGDI2Log(NSString *fmt, ...) {

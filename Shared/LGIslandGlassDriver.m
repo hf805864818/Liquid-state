@@ -10,7 +10,9 @@
 #import "LGHostRegistry.h"
 #import <objc/runtime.h>
 
-#define LIQUIDASS_DEBUG 1
+#ifndef LIQUIDASS_DEBUG
+#define LIQUIDASS_DEBUG 0
+#endif
 
 static void LGIslandLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
 static void LGIslandLog(NSString *fmt, ...) {
