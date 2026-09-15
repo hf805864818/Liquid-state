@@ -1015,7 +1015,7 @@ NSArray<NSDictionary *> *LGKeyboardItems(void) {
                             LGLocalized(@"prefs.subtitle.keyboard_overhang"),
                             LGKeyboardDefaultOverhang, 0.0, 60.0, 1),
         ], @"Keyboard.Enabled", @NO),
-    ];
+    });
 }
 
 NSArray<NSDictionary *> *LGFolderItems(void) {
