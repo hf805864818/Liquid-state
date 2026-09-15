@@ -589,6 +589,7 @@ static void LGDIDiagLogAncestorChain(UIView *v, NSUInteger maxUp, NSString *pref
 
 #endif
 
+#if LIQUIDASS_DEBUG
 // DEBUG：一次性打印灵动岛窗口真实层级，定位黑色形体的实际承载视图
 static void LGDIDumpTree(UIView *v, NSUInteger depth, NSUInteger maxDepth) {
 #if LIQUIDASS_DEBUG
@@ -656,6 +657,7 @@ static void LGDIDumpTree(UIView *v, NSUInteger depth, NSUInteger maxDepth) {
     (void)v; (void)depth; (void)maxDepth;
 #endif
 }
+#endif
 
 #if LIQUIDASS_DEBUG
 
